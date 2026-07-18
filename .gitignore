@@ -1,0 +1,11 @@
+.playwright-mcp/
+.DS_Store
+
+# Python (server/)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.superpowers/
+claude_notes/
