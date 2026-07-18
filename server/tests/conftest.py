@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
+from introspect.search import get_search_index
 from tests.fixtures.records import (
     make_assistant_line,
     make_session_file,
@@ -46,9 +47,18 @@ BACKUP_EPOCH = 1720000000
 # the destination tmp_path varies per test. Every main file has >=1 user + >=1 assistant
 # line; session 1 additionally carries an ai-title and a file-history-snapshot line.
 
+# NOTE(claude): session 1's user/assistant text carry distinctive, single-occurrence
+# search phrases ("horizon" + the exact bigram "still water") the FTS5 tests (Task P2-2)
+# rely on. They appear ONLY in session 1 so the session-scoping test can assert they are
+# absent from other sessions. Sessions 2/3 keep the default "synthetic ..." text (search
+# tests need a horizon-free session, and test_migration_0002 relies on at least one main
+# user line still reading "synthetic user message"). Changing text is free for
+# TOTAL_FIXTURE_LINES (it counts lines, not content); do NOT add or remove lines here.
 _SESSION_1_LINES = [
-    make_user_line(sessionId=SESSION_UUID_1),
-    make_assistant_line(sessionId=SESSION_UUID_1),
+    make_user_line(text="the horizon band maps hours to color", sessionId=SESSION_UUID_1),
+    make_assistant_line(
+        text="still water runs deep beneath the surface", sessionId=SESSION_UUID_1
+    ),
     make_thin_meta_line("ai-title", session_id=SESSION_UUID_1),
     make_snapshot_line(session_id=SESSION_UUID_1),
 ]
@@ -130,6 +140,22 @@ def db_session(tmp_path: Path) -> Iterator[Session]:
     factory = session_factory(engine)
     with factory() as session:
         yield session
+
+
+@pytest.fixture
+def indexed_fixture(db_session: Session, fixture_tree: Path) -> Session:
+    """Capture the pinned fixture tree, then build the FTS5 search index over it.
+
+    Returns the same ``db_session`` (already populated + indexed) so search tests can
+    query it directly. ``rebuild`` is the from-scratch path production uses after a bulk
+    import, so this exercises the real indexing predicate over real interpreted rows.
+    """
+    for f in discover(fixture_tree):
+        capture_file(db_session, f)
+    db_session.commit()
+    get_search_index().rebuild(db_session)
+    db_session.commit()
+    return db_session
 
 
 # --- Single-line interpretation fixtures (Task 8) ----------------------------------------

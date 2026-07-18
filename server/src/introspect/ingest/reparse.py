@@ -28,6 +28,7 @@ from introspect.models import (
     TokenUsage,
 )
 from introspect.schema import SCHEMA_VERSION, parse_line
+from introspect.search import get_search_index
 
 CHUNK_SIZE = 500
 
@@ -65,9 +66,12 @@ def reparse_all(db: Session) -> ReparseStats:
     ``unknown_record_type``, ``unknown_field``, ``validation_error``, ``interpret_failure``,
     ``whitespace_line``) — capture-phase integrity anomalies (``uuid_content_conflict``,
     ``source_diverged``, ``source_reappeared``, ``file_ingest_failure``) are history reparse
-    cannot regenerate from raw bytes and MUST survive. Resets the ``ChatSession`` title/time
-    caches (``ai_title``, ``custom_title``, ``started_at``, ``last_activity_at`` -> ``None``)
-    so :func:`interpret.apply`'s folds rebuild them deterministically instead of merging into
+    cannot regenerate from raw bytes and MUST survive. Clears the FTS search index too (via
+    :meth:`SearchIndex.delete_all`) so :func:`interpret.apply` re-indexes each primary text
+    block from scratch as it rebuilds — which makes reparse the index backfill path for a
+    pre-Phase-2 archive as well. Resets the ``ChatSession`` title/time caches (``ai_title``,
+    ``custom_title``, ``started_at``, ``last_activity_at`` -> ``None``) so
+    :func:`interpret.apply`'s folds rebuild them deterministically instead of merging into
     stale state.
 
     Then re-runs :func:`introspect.schema.parse_line` + :func:`interpret.apply` over every
@@ -88,6 +92,12 @@ def reparse_all(db: Session) -> ReparseStats:
     anomalies_before = db.query(ParseAnomaly).count()
 
     _delete_all_interpretation_rows(db)
+    # Clear the FTS index the corruption-safe way (the 'delete-all' external-content command,
+    # which needs no backing text) now that the content_blocks are gone; apply() re-indexes
+    # each primary text block as it rebuilds below. This is also why `introspect reparse` fully
+    # backfills the search index for a pre-Phase-2 archive that was captured before indexing
+    # existed — no separate backfill command is needed.
+    get_search_index().delete_all(db)
     _delete_interpretation_anomalies(db)
     _reset_session_caches(db)
     db.commit()

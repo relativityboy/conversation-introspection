@@ -194,3 +194,12 @@ class SessionEvent(Base):
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.session_uuid"))
     event_kind: Mapped[str]
     payload: Mapped[dict] = mapped_column(JSON)
+
+
+class Favorite(Base):
+    # NOTE(claude): session_uuid is both PK and FK — a session is favorited at most once
+    # (added/removed by presence of the row, not a boolean flag). See migration 0002.
+    __tablename__ = "favorites"
+
+    session_uuid: Mapped[str] = mapped_column(ForeignKey("sessions.session_uuid"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)

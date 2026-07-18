@@ -40,6 +40,7 @@ from introspect.models import (
     Transcript,
 )
 from introspect.schema import SCHEMA_VERSION, ParseResult
+from introspect.search import get_search_index
 
 # Records that carry a conversational envelope and become a Message + ContentBlocks.
 _CONVERSATIONAL = frozenset({"user", "assistant", "system", "attachment"})
@@ -110,7 +111,8 @@ def remove_interpretation_for_source_file(db: Session, source_file_id: int) -> N
 
     Used when a generation is demoted (see capture's ``_handle_divergence``): the superseding
     generation re-ingests the same ``record_uuid`` values, so the old generation's Messages must
-    go or the reading room would show cross-generation duplicates. Rows are removed child-first
+    go or the reading room would show cross-generation duplicates. The old generation's blocks
+    are de-indexed FIRST (while their text is still readable), then rows are removed child-first
     (``content_blocks`` and ``token_usage`` before ``messages``; ``session_events`` independently)
     to respect foreign keys. Stages the deletes on ``db``; the caller owns the commit.
     """
@@ -128,6 +130,16 @@ def remove_interpretation_for_source_file(db: Session, source_file_id: int) -> N
         for (mid,) in db.query(Message.id).filter(Message.raw_record_id.in_(raw_ids)).all()
     ]
     if message_ids:
+        block_ids = [
+            bid
+            for (bid,) in db.query(ContentBlock.id)
+            .filter(ContentBlock.message_id.in_(message_ids))
+            .all()
+        ]
+        # De-index BEFORE deleting the content_blocks rows: FTS5 external-content keeps no copy
+        # of the text, so delete_for_blocks must re-read it from the still-present rows. Doing
+        # this after the delete would corrupt the index (see search.fts5.delete_for_blocks).
+        get_search_index().delete_for_blocks(db, block_ids)
         db.query(ContentBlock).filter(ContentBlock.message_id.in_(message_ids)).delete(
             synchronize_session=False
         )
@@ -164,19 +176,31 @@ def _apply_conversational(db: Session, pr: ParseResult, raw: RawRecord) -> None:
     db.add(message)
     db.flush()  # assign message.id so child rows can reference it
 
+    new_blocks: list[ContentBlock] = []
     for index, block in enumerate(record.blocks()):
-        db.add(
-            ContentBlock(
-                message_id=message.id,
-                block_index=index,
-                block_kind=block.kind,
-                text_content=block.text,
-                tool_name=block.tool_name,
-                tool_use_id=block.tool_use_id,
-                is_error=block.is_error,
-                payload=block.payload,
-            )
+        content_block = ContentBlock(
+            message_id=message.id,
+            block_index=index,
+            block_kind=block.kind,
+            text_content=block.text,
+            tool_name=block.tool_name,
+            tool_use_id=block.tool_use_id,
+            is_error=block.is_error,
+            payload=block.payload,
         )
+        db.add(content_block)
+        new_blocks.append(content_block)
+
+    if new_blocks:
+        # Index the new blocks in THIS transaction (index_blocks self-filters to the text-only
+        # predicate, so passing every block id is correct — non-text ids are skipped). apply()
+        # never flushed its ContentBlock rows before, but index_blocks reads their text by id,
+        # so flush to assign ids first.
+        # NOTE(claude): the index rows share capture's interpretation transaction, so
+        # _interpret_chunk's rollback-on-failure discards them together with the blocks they
+        # describe — indexing inherits apply()'s all-or-nothing containment for free.
+        db.flush()
+        get_search_index().index_blocks(db, [b.id for b in new_blocks])
 
     usage = getattr(message_model, "usage", None)
     if usage is not None:
