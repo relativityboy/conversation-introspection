@@ -1,0 +1,105 @@
+/* Markdown prose — the one place the repo's inline-style convention can't reach: these are
+   descendant rules over react-markdown's generated tree, which we don't render element-by-
+   element. Palette tokens come from theme.css. The hljs block below IS the highlight theme —
+   a minimal Still-Water tuning; no stock highlight.js theme is imported (they fight the
+   palette). */
+
+.markdown-prose {
+  overflow-wrap: break-word;
+}
+
+.markdown-prose > :first-child {
+  margin-top: 0;
+}
+.markdown-prose > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-prose a {
+  color: var(--dragonfly);
+}
+
+.markdown-prose code {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.markdown-prose :not(pre) > code {
+  background: var(--depth);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.markdown-prose pre {
+  background: var(--depth);
+  border: 1px solid var(--shore);
+  border-radius: 6px;
+  line-height: 1.5;
+  overflow-x: auto;
+  padding: 12px 14px;
+}
+
+.markdown-prose blockquote {
+  border-left: 2px solid var(--shore);
+  color: var(--mist);
+  margin: 0 0 1em;
+  padding-left: 14px;
+}
+
+.markdown-prose table {
+  border-collapse: collapse;
+}
+.markdown-prose th,
+.markdown-prose td {
+  border: 1px solid var(--shore);
+  font-size: 14px;
+  padding: 4px 10px;
+}
+
+.markdown-prose hr {
+  border: none;
+  border-top: 1px solid var(--shore);
+}
+
+/* ---- minimal Still-Water highlight theme (hljs- classes from rehype-highlight) ---- */
+
+.markdown-prose .hljs-comment,
+.markdown-prose .hljs-quote,
+.markdown-prose .hljs-meta {
+  color: var(--mist);
+  font-style: italic;
+}
+
+.markdown-prose .hljs-keyword,
+.markdown-prose .hljs-selector-tag,
+.markdown-prose .hljs-built_in,
+.markdown-prose .hljs-literal {
+  color: var(--dragonfly);
+}
+
+.markdown-prose .hljs-string,
+.markdown-prose .hljs-regexp,
+.markdown-prose .hljs-addition {
+  color: var(--dawn);
+}
+
+.markdown-prose .hljs-number,
+.markdown-prose .hljs-attr,
+.markdown-prose .hljs-attribute,
+.markdown-prose .hljs-symbol,
+.markdown-prose .hljs-template-variable,
+.markdown-prose .hljs-variable {
+  color: #9fb4d0; /* the day-cycle's 16:00 blue — quiet, readable on --depth */
+}
+
+.markdown-prose .hljs-title,
+.markdown-prose .hljs-name,
+.markdown-prose .hljs-section,
+.markdown-prose .hljs-selector-id,
+.markdown-prose .hljs-selector-class {
+  color: var(--moonpaper);
+}
+
+.markdown-prose .hljs-deletion {
+  color: var(--ember);
+}

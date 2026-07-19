@@ -59,3 +59,25 @@ a:focus-visible,button:focus-visible,input:focus-visible{
 .mono{
   font-family:var(--mono);
 }
+
+/* ===== deep-link arrival glow (lib/glow.ts) ===== */
+/* A single dawn-gold wash that fades out over 2s. glow.ts adds this class on the deep-linked
+   target row, then removes it on animationend (2.5s timeout fallback). Under reduced motion the
+   class is never added, so the @media block below is belt-and-suspenders only. */
+@keyframes deep-link-glow-fade{
+  from{
+    background:rgba(229,165,75,.16);           /* --dawn at low alpha */
+    box-shadow:inset 0 0 0 1px rgba(229,165,75,.5), 0 0 22px rgba(229,165,75,.28);
+  }
+  to{
+    background:transparent;
+    box-shadow:inset 0 0 0 1px transparent, 0 0 0 transparent;
+  }
+}
+.deep-link-glow{
+  border-radius:8px;
+  animation:deep-link-glow-fade 2s ease-out;
+}
+@media (prefers-reduced-motion:reduce){
+  .deep-link-glow{animation:none;background:transparent;box-shadow:none;}
+}

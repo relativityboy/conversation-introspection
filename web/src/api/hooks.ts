@@ -106,6 +106,10 @@ export function useImportRun(id: number | null) {
     queryKey: importRunKey(id ?? -1),
     queryFn: () => fetchImportRun(id as number),
     enabled: id !== null,
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? 1000 : false),
+    // Stop on query error too, not just on a terminal run status: a failed refetch keeps the
+    // STALE data (status still 'running'), so without the error check a mid-run server death
+    // would poll a dead server every 1s forever.
+    refetchInterval: (query) =>
+      query.state.status !== 'error' && query.state.data?.status === 'running' ? 1000 : false,
   })
 }

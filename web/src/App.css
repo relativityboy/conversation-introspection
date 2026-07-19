@@ -17,8 +17,19 @@
 .app > main {
   grid-area: main;
   background: var(--surface);
-  overflow-y: auto;
   min-width: 0;
+  /* Column layout: the route-derived TabBar is fixed at the top; .main-view takes the rest and
+     owns scrolling. The reader's Virtuoso manages its own inner scroll and fills .main-view
+     exactly, so only long non-virtualized surfaces (search results) actually scroll here. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app > main > .main-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .app > footer {

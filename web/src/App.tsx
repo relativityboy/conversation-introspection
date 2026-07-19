@@ -4,10 +4,16 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import './App.css'
 import { makeQueryClient } from './api/hooks'
 import { Sidebar } from './components/Sidebar'
+import { StatusBar } from './components/StatusBar'
+import { TabBar } from './components/TabBar'
+import { SearchPage } from './routes/SearchPage'
+import { SessionPage } from './routes/SessionPage'
+import { SubagentPage } from './routes/SubagentPage'
 
-// Phase 3 Task 4: router + query client wired in. Sidebar (title filter, favorites, session
-// list) lives in the nav region; the main pane keeps a placeholder route until the search/
-// conversation-reader tasks land. Tabs, reader, and status-bar content still land in later tasks.
+// Phase 3 Task 8: the reading room is complete. Global search (/search), the conversation reader
+// (/s/:uuid, /s/:uuid/m/:msgUuid), and the subagent drill-in (/s/:uuid/a/:agentHex[/m/:msgUuid])
+// route below a route-derived TabBar; the waterline StatusBar occupies the footer on every route.
+// The catch-all placeholder remains for the home surface (no session selected).
 function App() {
   const [queryClient] = useState(() => makeQueryClient())
 
@@ -19,12 +25,20 @@ function App() {
             <Sidebar />
           </nav>
           <main>
-            <Routes>
-              <Route path="*" element={<p>Main — search and conversation reader go here.</p>} />
-            </Routes>
+            <TabBar />
+            <div className="main-view">
+              <Routes>
+                <Route path="/search" element={<SearchPage />} />
+                <Route path="/s/:uuid" element={<SessionPage />} />
+                <Route path="/s/:uuid/m/:msgUuid" element={<SessionPage />} />
+                <Route path="/s/:uuid/a/:agentHex" element={<SubagentPage />} />
+                <Route path="/s/:uuid/a/:agentHex/m/:msgUuid" element={<SubagentPage />} />
+                <Route path="*" element={<p>Main — search goes here.</p>} />
+              </Routes>
+            </div>
           </main>
           <footer>
-            <p>Waterline — import status goes here.</p>
+            <StatusBar />
           </footer>
         </div>
       </BrowserRouter>
