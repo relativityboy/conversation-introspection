@@ -1,0 +1,61 @@
+/* ===== Still Water — blue-hour lake at dawn ===== */
+/* Transcribed verbatim from docs/design/2026-07-13-still-water-mockup.html — do not
+   re-derive these values; edit the mockup first, then re-transcribe. */
+:root{
+  --depth:#0B1220;      /* app bg, sidebar — deepest water */
+  --surface:#111B2E;    /* reading pane, cards — lifted toward surface */
+  --shore:#1A2740;      /* borders, dividers, hover fills */
+  --moonpaper:#E7ECF4;  /* primary text */
+  --mist:#8A99B0;       /* secondary text, labels, timestamps */
+  --dawn:#E5A54B;       /* Donovan's voice, favorite stars, highlights */
+  --dragonfly:#6FD3C7;  /* Claude's voice, links, active tab */
+  --ember:#D4756B;      /* errors / anomaly badge only */
+
+  --serif:Charter,'Iowan Old Style',Georgia,serif;
+  --sans:-apple-system,system-ui,'Segoe UI',sans-serif;
+  --mono:ui-monospace,'SF Mono',Menlo,monospace;
+
+  /* the full 24h day-cycle mapped onto one gradient period */
+  --daycycle:linear-gradient(90deg,
+    #0B1220 0%,     /* midnight */
+    #16233C 16.67%, /* 4am */
+    #E5A54B 25%,    /* 6am dawn */
+    #DCE4EE 41.67%, /* 10am pale */
+    #9FB4D0 66.67%, /* 16:00 */
+    #33456B 83.33%, /* 20:00 dusk */
+    #0B1220 100%);  /* midnight */
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0;
+  background:var(--depth);
+  color:var(--moonpaper);
+  font-family:var(--sans);
+  font-size:14px;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* shared visible focus ring on every interactive element */
+a:focus-visible,button:focus-visible,input:focus-visible{
+  outline:2px solid var(--dragonfly);
+  outline-offset:2px;
+  border-radius:3px;
+}
+
+/* ===== base utility classes (used across reader components) ===== */
+
+/* serif reading prose (message bodies, conversation text) */
+.prose{
+  font-family:var(--serif);
+  font-size:17px;
+  line-height:1.65;
+  max-width:72ch;
+  color:var(--moonpaper);
+}
+
+/* monospace utility (timestamps, ids, tool output, code material) */
+.mono{
+  font-family:var(--mono);
+}

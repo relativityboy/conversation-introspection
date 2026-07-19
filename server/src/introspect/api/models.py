@@ -43,6 +43,7 @@ class TranscriptInfo(BaseModel):
     agent_hex_id: str | None
     agent_type: str | None
     agent_description: str | None
+    parent_tool_use_id: str | None
 
 
 class SessionDetail(SessionSummary):
@@ -56,6 +57,7 @@ class BlockOut(BaseModel):
     block_kind: str
     text_content: str | None
     tool_name: str | None
+    tool_use_id: str | None
     is_error: bool | None
 
 

@@ -54,10 +54,20 @@ BACKUP_EPOCH = 1720000000
 # tests need a horizon-free session, and test_migration_0002 relies on at least one main
 # user line still reading "synthetic user message"). Changing text is free for
 # TOTAL_FIXTURE_LINES (it counts lines, not content); do NOT add or remove lines here.
+#
+# NOTE(claude): the assistant line also carries a tool_use block whose id is pinned to
+# AGENT_TOOL_USE_ID -- the same id the subagent's meta.json reports as its toolUseId
+# (see AGENT_TOOL_USE_ID below). This makes the main-transcript "dispatch" block and the
+# subagent transcript's parent_tool_use_id a REAL join, not just two constants that
+# happen to match (Task P3-0). Adding a block to an existing line is free for
+# TOTAL_FIXTURE_LINES too.
 _SESSION_1_LINES = [
     make_user_line(text="the horizon band maps hours to color", sessionId=SESSION_UUID_1),
     make_assistant_line(
-        text="still water runs deep beneath the surface", sessionId=SESSION_UUID_1
+        text="still water runs deep beneath the surface",
+        with_tool_use=True,
+        tool_use_id=AGENT_TOOL_USE_ID,
+        sessionId=SESSION_UUID_1,
     ),
     make_thin_meta_line("ai-title", session_id=SESSION_UUID_1),
     make_snapshot_line(session_id=SESSION_UUID_1),

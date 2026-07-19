@@ -1,0 +1,28 @@
+.app {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'nav main'
+    'footer footer';
+  height: 100vh;
+}
+
+.app > nav {
+  grid-area: nav;
+  background: var(--depth);
+  overflow-y: auto;
+}
+
+.app > main {
+  grid-area: main;
+  background: var(--surface);
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.app > footer {
+  grid-area: footer;
+  background: var(--depth);
+  border-top: 1px solid var(--shore);
+}

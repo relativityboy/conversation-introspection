@@ -22,6 +22,7 @@ from introspect.ingest.discovery import discover
 from introspect.models import ChatSession, Favorite, Message, Transcript
 from tests.conftest import (
     AGENT_HEX_ID,
+    AGENT_TOOL_USE_ID,
     AGENT_TYPE,
     PROJECT_SLUG_1,
     PROJECT_SLUG_2,
@@ -187,6 +188,27 @@ def test_session_detail_includes_subagent_transcript(client: TestClient) -> None
     assert subagent["agent_hex_id"] == AGENT_HEX_ID
     assert subagent["agent_type"] == AGENT_TYPE
     assert subagent["agent_description"]
+
+
+def test_subagent_transcript_info_join_key_matches_dispatching_block(
+    db_session: Session, client: TestClient
+) -> None:
+    """The UI's SubagentChip join: a subagent's TranscriptInfo.parent_tool_use_id must
+    equal the tool_use_id of some block in the main transcript's messages -- the
+    dispatching ``tool_use`` block that spawned it (Task P3-0)."""
+    body = client.get(f"/api/v1/sessions/{SESSION_UUID_1}").json()
+    subagent = next(t for t in body["transcripts"] if t["kind"] == "subagent")
+    assert subagent["parent_tool_use_id"] == AGENT_TOOL_USE_ID
+
+    tid = _main_transcript_id(db_session, SESSION_UUID_1)
+    messages = client.get(f"/api/v1/transcripts/{tid}/messages").json()["items"]
+    main_tool_use_ids = {
+        block["tool_use_id"]
+        for message in messages
+        for block in message["blocks"]
+        if block["tool_use_id"] is not None
+    }
+    assert subagent["parent_tool_use_id"] in main_tool_use_ids
 
 
 # --- Transcript messages ----------------------------------------------------------------

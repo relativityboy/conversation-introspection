@@ -78,6 +78,7 @@ def make_assistant_line(
     *,
     with_thinking: bool = False,
     with_tool_use: bool = False,
+    tool_use_id: str | None = None,
     model: str = "claude-opus-4-synthetic",
     usage: dict | None = None,
     extra: dict | None = None,
@@ -94,6 +95,9 @@ def make_assistant_line(
     ``message_extra`` merges keys into the ``message`` sub-object (used to exercise
     message-level drift such as the CLI's ``type: "message"`` echo). ``tool_use_caller``
     attaches a ``caller`` payload to the ``tool_use`` block (block-level drift).
+    ``tool_use_id`` pins the ``tool_use`` block's ``id`` (default: random) — used by
+    callers that need a dispatching block's id to match a known subagent's
+    ``parent_tool_use_id``.
     """
     content: list[dict] = []
     if with_thinking:
@@ -103,7 +107,7 @@ def make_assistant_line(
     if with_tool_use:
         tool_block = {
             "type": "tool_use",
-            "id": "toolu_" + _short(),
+            "id": tool_use_id or ("toolu_" + _short()),
             "name": "Bash",
             "input": {"command": "echo synthetic"},
         }
