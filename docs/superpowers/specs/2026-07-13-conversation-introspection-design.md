@@ -145,3 +145,38 @@ Dev: uvicorn + Vite dev server (proxy `/api`); FastAPI serves `web/dist` for the
 ## Review log
 
 - 2026-07-13: Donovan approved cron cadence (15 min), `.bak` capture, DB home `~/.conversation-introspection/`; `history.jsonl` deferred to v2 (rationale above). Sections 6–13 reviewed live in session.
+
+## 14. Phase 4 — Publication readiness (added 2026-07-19, Donovan's feature set + Claude's resolutions)
+
+Four features that make the reading room publishable. Donovan's UI specifications are binding where given verbatim below; Claude's design resolutions were reviewed and approved in-session. **Execution: a fresh instance** (this addendum + plan written by the 5-day session; build belongs to full headroom). Orientation for that instance includes walking the built room.
+
+### 14.1 Sidebar content search
+The sidebar's single input matches **title OR chat content** (was: title only). As-you-type (debounced 250ms) stays.
+- Server: `GET /sessions` gains `q=` (replaces the title-only `title=` param; accept `title=` as a deprecated alias for one release). Matching: title LIKE (over user/ai/custom titles, see §14.3) OR FTS content match (distinct sessions via the existing index; block_kind='text' scope). Response items gain `match_snippet: str | null` — populated (best-rank snippet, `<mark>`s included) only when the session matched by content and not by title.
+- UI: content-matched sessions show a one-line mist snippet hint under the title (mark-splitting renderer reused). Sidebar URL param renamed `?filter=` (client accepts legacy `?title=` on read).
+
+### 14.2 Project filter (the subsystem)
+Scope everything by a chosen subset of projects. **Donovan's UI spec, binding verbatim:**
+- Thin top bar (app level, above sidebar + main — spans both, since its context scopes both) showing a chip "all projects" with an 'x'.
+- 'x' removes it and replaces with a SearchBox. SearchBox focused: down-arrow when empty → alphabetized select-list of projects; typing → select-list filtered on dir_slug `%str%`; **double-tap `<esc>`**: if select-list open OR text present → clear text + close list; else (list closed, box empty) → remove ALL selected project chips & filtering.
+- Selecting a project in the list → adds a project chip to the right of the search box, clears the box. Chip 'x' removes that chip. Zero chips selected → bar reverts to the "all projects" chip.
+Semantics:
+- Both search tabs (`Search all conversations`, `Current conversation`) inherit the filter context. All existing deep links carry it (URL param `projects=slug1,slug2` — comma list, everywhere: sidebar, /search, /s/*; consistent with the everything-in-the-URL rule).
+- As filters change, the session list re-queries live (and the sidebar content search of §14.1 respects the filter).
+- Server: `projects=` multi-value on `GET /sessions` and `GET /search` (global scope; join transcripts→sessions→projects, slug IN). Session-scope search is inherently single-session (param accepted, harmless).
+
+### 14.3 Editable session titles (user data)
+- **Data:** new `user_titles` table — `session_uuid (PK, FK), title (TEXT), updated_at (UTCDateTime)`. User-data layer: never touched by import/reparse (favorites-family invariant, tested identically). Structurally excluded from export (export reads raw bytes only).
+- **API:** `PUT /api/v1/sessions/{uuid}/title {title: str}` → 204; empty/whitespace title → deletes the row (revert to archive titles). 404 problem unknown session. `SessionSummary`/`SessionDetail` gain `user_title: str | null`.
+- **Display + search precedence everywhere:** `user_title > ai_title > custom_title > uuid-prefix`. The §14.1 title LIKE match includes user_titles. "IS searchable" is satisfied via the title path (user titles are not injected into content FTS).
+- **UI (Claude's approved choice): inline** — click the session-header title → becomes an input; Enter commits, double-esc reverts, blur commits-if-changed; a small mist "edited" dot marks renamed sessions (title attribute shows the archive's original).
+
+### 14.4 Conversation-only toggle
+One sticky toggle ("conversation only") hiding non-chat material. **Scope (approved): full prose mode** — hides system-type message rows AND tool_use/tool_result blocks inside kept messages; keeps prose and thinking glyphs.
+- Message-row filtering is **server-side** (windowing correctness: totals/offsets/around must be computed within the filtered set): `GET /transcripts/{id}/messages` gains `chat_only=1` → `type IN ('user','assistant')`.
+- Block-level hiding (tool blocks within assistant messages) is client-side presentation (no pagination impact).
+- Sticky via localStorage; applies in main and subagent readers. Toggle lives in the conversation header, mist styling.
+- Edge (spec'd): a deep-link `around=` target that is a system message while `chat_only=1` → server 404s within the filtered set; the client's existing not-found notice gains a "show all message types" action (disables the toggle for this view and refetches) when the toggle is active.
+
+### Execution notes
+Same arc: plan (fresh instance writes it against this addendum) → Opus critique → SDD with per-task reviews → final review → **walk** (mandatory — Phase 3's walk caught what tests couldn't). Backlog explicitly NOT in Phase 4: per-message ¶ copy-link anchor (mockup-only gap), drift-floor schema loop (24→27), ghost recovery (§13), push-to-public decision (Donovan's).
