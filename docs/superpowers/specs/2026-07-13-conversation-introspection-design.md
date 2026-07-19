@@ -152,7 +152,8 @@ Four features that make the reading room publishable. Donovan's UI specification
 
 ### 14.1 Sidebar content search
 The sidebar's single input matches **title OR chat content** (was: title only). As-you-type (debounced 250ms) stays.
-- Server: `GET /sessions` gains `q=` (replaces the title-only `title=` param; accept `title=` as a deprecated alias for one release). Matching: title LIKE (over user/ai/custom titles, see §14.3) OR FTS content match (distinct sessions via the existing index; block_kind='text' scope). Response items gain `match_snippet: str | null` — populated (best-rank snippet, `<mark>`s included) only when the session matched by content and not by title.
+- Server: `GET /sessions` gains `q=` (replaces the title-only `title=` param; accept `title=` as a deprecated alias for one release; writes strip the legacy key). Matching: title LIKE **as three ORs over user/ai/custom titles (find it wherever it lives — a user rename must not shadow an archive-title match; critique #5 resolution)** OR FTS content match. **Ordering: the union keeps the list contract `last_activity_at DESC NULLS LAST` — the snippet is a hint, never a re-rank (critique #2 resolution).** Response items gain `match_snippet: str | null` — populated (best-rank snippet, `<mark>`s included) only when the session matched by content and not by title.
+- **SearchIndex Protocol extension (critique #1 — binding; protects the §13 Postgres promise):** ALL new FTS SQL stays behind the interface. Protocol gains `session_uuids_matching(db, q, project_slugs: list[str] | None) -> list[str]` and `best_snippet(db, session_uuid, q) -> str | None`; `search()` gains `project_slugs: list[str] | None = None`. Routes compose these — zero raw FTS SQL in `sessions.py`/`search.py`. Snippet strategy: one FTS pass per request for the page's content-matched sessions, never a query-per-session-per-keystroke.
 - UI: content-matched sessions show a one-line mist snippet hint under the title (mark-splitting renderer reused). Sidebar URL param renamed `?filter=` (client accepts legacy `?title=` on read).
 
 ### 14.2 Project filter (the subsystem)
@@ -163,20 +164,26 @@ Scope everything by a chosen subset of projects. **Donovan's UI spec, binding ve
 Semantics:
 - Both search tabs (`Search all conversations`, `Current conversation`) inherit the filter context. All existing deep links carry it (URL param `projects=slug1,slug2` — comma list, everywhere: sidebar, /search, /s/*; consistent with the everything-in-the-URL rule).
 - As filters change, the session list re-queries live (and the sidebar content search of §14.1 respects the filter).
-- Server: `projects=` multi-value on `GET /sessions` and `GET /search` (global scope; join transcripts→sessions→projects, slug IN). Session-scope search is inherently single-session (param accepted, harmless).
+- Server: `projects=` multi-value on `GET /sessions` and `GET /search` (global scope; via the Protocol's `project_slugs` param). **Session-scope search: the route explicitly IGNORES `projects=` (critique #7 — threading it through would filter out the very session being read; "accepted, harmless" means accepted-and-ignored, tested).**
+- Unknown/stale slug in `projects=`: chip renders the raw slug (critique #11). Double-esc window: two Escape keydowns within **400ms** (critique #8).
 
 ### 14.3 Editable session titles (user data)
 - **Data:** new `user_titles` table — `session_uuid (PK, FK), title (TEXT), updated_at (UTCDateTime)`. User-data layer: never touched by import/reparse (favorites-family invariant, tested identically). Structurally excluded from export (export reads raw bytes only).
 - **API:** `PUT /api/v1/sessions/{uuid}/title {title: str}` → 204; empty/whitespace title → deletes the row (revert to archive titles). 404 problem unknown session. `SessionSummary`/`SessionDetail` gain `user_title: str | null`.
 - **Display + search precedence everywhere:** `user_title > ai_title > custom_title > uuid-prefix`. The §14.1 title LIKE match includes user_titles. "IS searchable" is satisfied via the title path (user titles are not injected into content FTS).
-- **UI (Claude's approved choice): inline** — click the session-header title → becomes an input; Enter commits, double-esc reverts, blur commits-if-changed; a small mist "edited" dot marks renamed sessions (title attribute shows the archive's original).
+- Title length: cap **200 chars**, server 422 problem on overflow (critique #10).
+- **UI (Claude's approved choice): inline** — click the session-header title → becomes an input; Enter commits, **single esc cancels the edit (convention), double-esc (400ms) clears the user title entirely (revert to archive titles)**, blur commits-if-changed; a small mist "edited" dot marks renamed sessions (title attribute shows the archive's original).
 
 ### 14.4 Conversation-only toggle
 One sticky toggle ("conversation only") hiding non-chat material. **Scope (approved): full prose mode** — hides system-type message rows AND tool_use/tool_result blocks inside kept messages; keeps prose and thinking glyphs.
 - Message-row filtering is **server-side** (windowing correctness: totals/offsets/around must be computed within the filtered set): `GET /transcripts/{id}/messages` gains `chat_only=1` → `type IN ('user','assistant')`.
 - Block-level hiding (tool blocks within assistant messages) is client-side presentation (no pagination impact).
-- Sticky via localStorage; applies in main and subagent readers. Toggle lives in the conversation header, mist styling.
-- Edge (spec'd): a deep-link `around=` target that is a system message while `chat_only=1` → server 404s within the filtered set; the client's existing not-found notice gains a "show all message types" action (disables the toggle for this view and refetches) when the toggle is active.
+- Sticky via localStorage key `introspect.chatOnly.v1`; applies in main and subagent readers. Toggle lives in the conversation header, mist styling. Header keeps the unfiltered `message_count` and appends mist "· conversation only" while active (no second server count — critique #6 resolution).
+- **Client plumbing (critique #3 — the implementer trap, binding):** `chat_only` threads through ALL THREE fetch sites in ConversationView (the `useMessages` seed AND both direct `fetchMessages` edge loaders), into the react-query key, and into the `MessageStream` remount key (`${transcriptId}:${around}:${chatOnly}`) so toggling re-seeds the window cleanly. Unfiltered edge pages against a filtered window corrupt the offset math — the plan must name all three sites.
+- Edge (spec'd): a deep-link `around=` target that is a system message while `chat_only=1` → server 404s within the filtered set; the not-found notice then offers BOTH actions with distinct semantics (critique #12): "show all message types" (disables the toggle, re-seeds with the same `around=`) and the existing "view from the beginning" (keeps the toggle, offset 0).
+
+### Open question (Donovan)
+- §14.4 `chat_only` filter: are `attachment`-type records (user-pasted files/images — conversational family) IN or OUT? Claude's recommendation: **IN** (`type IN ('user','assistant','attachment')`) — they're things a human said-by-pasting. Awaiting ruling; the plan uses IN unless overruled.
 
 ### Execution notes
-Same arc: plan (fresh instance writes it against this addendum) → Opus critique → SDD with per-task reviews → final review → **walk** (mandatory — Phase 3's walk caught what tests couldn't). Backlog explicitly NOT in Phase 4: per-message ¶ copy-link anchor (mockup-only gap), drift-floor schema loop (24→27), ghost recovery (§13), push-to-public decision (Donovan's).
+Same arc: plan (fresh instance writes it against this addendum) → Opus critique → SDD with per-task reviews → final review → **walk** (mandatory — Phase 3's walk caught what tests couldn't). Plan-authoring budget notes (critique #9): the `?title=`→`?filter=` rename touches urlState.ts helpers, all 10 urlState tests, and Sidebar test assertions — mechanical churn, budget it. Backlog explicitly NOT in Phase 4: per-message ¶ copy-link anchor (mockup-only gap), drift-floor schema loop (24→27), ghost recovery (§13), push-to-public decision (Donovan's).
