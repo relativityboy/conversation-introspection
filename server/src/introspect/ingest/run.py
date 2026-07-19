@@ -22,7 +22,21 @@ overlapping cron ticks can never interleave writes to the same archive:
 
 ``status`` is ``errors`` iff this run created any error-severity anomaly, else ``ok``. An
 unhandled exception finalizes the row as ``fatal`` (finished_at + best-effort counts) and
-re-raises, so cron fails loudly and no zombie ``running`` row is left behind.
+re-raises, so cron fails loudly and no zombie ``running`` row is left behind. Known residual
+(spec-owner decision): an API-precreated row whose DB is unopenable by both the worker
+(:class:`DbOpenError`) and the API's best-effort finalize attempt stays ``'running'`` -- an
+accepted residual alongside SIGKILL. No reaper by decision: archive imports are seconds-long;
+a reaper is machinery for a case that requires the DB to be down anyway.
+
+The ``run_id`` seam (Task P2-8): the ``POST /import`` API handler pre-creates the ``ImportRun``
+row (``trigger='api'``, ``status='running'``) under its own probe of the lock and passes its id
+to :func:`run_import`, which then FINALIZES that existing row instead of inserting one. The
+"already_running fast path writes no row" rule above holds for every CLI/cron caller
+(``run_id is None``); on the API path a lock lost between the handler's probe and this call
+instead finalizes the pre-created row ``'errors'`` (never stranded ``'running'``) via
+:func:`_finalize_lost_race`. :class:`DbOpenError` is the one exit that cannot finalize the
+pre-created row from here (the DB never opened); the API's thread wrapper makes its own
+best-effort ``'fatal'`` finalize, with the both-fail case the accepted residual above.
 
 Known limitation: a capture failure mid-file under-counts that run's ``records_added`` (lines
 committed before the failure are archived but uncounted). DB row counts are the truth;
@@ -79,7 +93,9 @@ _ALREADY_RUNNING = ImportSummary(
 )
 
 
-def run_import(db_path: Path, root: Path, trigger: str = "cli") -> ImportSummary:
+def run_import(
+    db_path: Path, root: Path, trigger: str = "cli", run_id: int | None = None
+) -> ImportSummary:
     """Take the exclusive advisory lock, migrate, and run one full import. Cron-safe.
 
     See the module docstring for the ordered contract. Returns an :class:`ImportSummary`; a
@@ -87,10 +103,19 @@ def run_import(db_path: Path, root: Path, trigger: str = "cli") -> ImportSummary
     a migration, or writing an ``ImportRun`` row. Raises :class:`DbOpenError` if the DB cannot
     be opened/migrated (nothing ran); any other exception is a mid-run fatal (row finalized
     ``'fatal'``, see :func:`_finalize_fatal`).
+
+    ``run_id`` is the API seam (Task P2-8). When ``None`` (every CLI/cron caller) the
+    ``ImportRun`` row is created here as before. When set, the ``POST /import`` handler already
+    created and committed that row under its own lock probe, so this call FINALIZES it instead
+    of inserting one -- and if the lock was lost between the handler's probe and here (a
+    concurrent run grabbed it), the pre-created row is finalized ``'errors'`` with zeroed counts
+    rather than left stranded ``'running'`` (see :func:`_finalize_lost_race`).
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     lock_fh = _acquire_lock(db_path.parent / "import.lock")
     if lock_fh is None:
+        if run_id is not None:
+            _finalize_lost_race(db_path, run_id)
         return _ALREADY_RUNNING
     try:
         try:
@@ -99,9 +124,36 @@ def run_import(db_path: Path, root: Path, trigger: str = "cli") -> ImportSummary
         except Exception as exc:
             raise DbOpenError(f"could not open database {db_path}: {exc}") from exc
         with session_factory(engine)() as db:
-            return _run_locked(db, root, trigger)
+            return _run_locked(db, root, trigger, run_id)
     finally:
         _release_lock(lock_fh)
+
+
+def _finalize_lost_race(db_path: Path, run_id: int) -> None:
+    """Finalize an API pre-created ``ImportRun`` row when the lock was lost after the probe.
+
+    The ``POST /import`` handler already committed this row as ``'running'``; we could not take
+    the lock (a concurrent run holds it), so no import work runs, but the row must not be left
+    stranded. Mark it ``'errors'`` with ``finished_at`` set and counts zeroed so the polling
+    client sees an honest terminal state. The DB is already migrated (the API opened it), so we
+    open the engine WITHOUT re-running migrations -- and this whole finalize is best-effort: a
+    failure here must never crash the worker thread.
+    """
+    try:
+        engine = get_engine(db_path)
+        with session_factory(engine)() as db:
+            run = db.get(ImportRun, run_id)
+            if run is None:  # the pre-created row never became durable -- nothing to finalize
+                return
+            run.status = "errors"
+            run.finished_at = utcnow()
+            run.files_seen = 0
+            run.records_added = 0
+            run.records_skipped_duplicate = 0
+            run.anomaly_count = 0
+            db.commit()
+    except Exception:  # noqa: BLE001, S110 -- best-effort; must not crash the worker
+        pass
 
 
 def _acquire_lock(lock_path: Path):  # noqa: ANN202 -- returns an open file handle or None
@@ -121,16 +173,22 @@ def _release_lock(lock_fh) -> None:  # noqa: ANN001 -- the handle _acquire_lock 
     lock_fh.close()
 
 
-def _run_locked(db, root: Path, trigger: str) -> ImportSummary:
-    started_at = utcnow()
+def _run_locked(db, root: Path, trigger: str, run_id: int | None = None) -> ImportSummary:
     # Anomalies created during THIS run are those with an id past the pre-run high-water mark
     # (autoincrement is monotonic and we are the only writer under the lock). This is exact and
     # free of any timestamp-format assumptions.
     baseline_anomaly_id = db.query(func.max(ParseAnomaly.id)).scalar() or 0
 
-    run = ImportRun(trigger=trigger, started_at=started_at, status="running")
-    db.add(run)
-    db.commit()
+    if run_id is None:
+        run = ImportRun(trigger=trigger, started_at=utcnow(), status="running")
+        db.add(run)
+        db.commit()
+    else:
+        # API seam: the POST /import handler pre-created and committed this row
+        # (trigger='api', status='running'); finalize IT rather than inserting a second row.
+        # Its started_at is the handler's request time and is left untouched. The fatal path
+        # below (_finalize_fatal, keyed on run.id) then also finalizes this same pre-created row.
+        run = db.get(ImportRun, run_id)
 
     files_seen = 0
     records_added = 0

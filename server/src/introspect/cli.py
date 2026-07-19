@@ -1,4 +1,4 @@
-"""Command-line entry point: ``introspect import|reparse|export|status``.
+"""Command-line entry point: ``introspect import|reparse|export|status|serve``.
 
 Thin layer — every subcommand resolves config, opens/migrates the DB, and delegates to the
 module that owns the logic (:mod:`introspect.ingest.run`, :mod:`introspect.ingest.reparse`,
@@ -16,8 +16,8 @@ Exit codes (spec §7), uniform across all four subcommands:
 ``import`` delegates its DB lifecycle (lock, open, migrate) to :func:`run_import`, which
 raises :class:`DbOpenError` when the engine-open/migrate step fails so this module can map it
 to exit 2 without duplicating the DB-opening; any other exception from ``run_import`` is a
-mid-run fatal → exit 1. ``reparse``, ``export``, and ``status`` open+migrate the DB directly
-here via ``_open_db_or_none``, whose failure likewise maps to exit 2.
+mid-run fatal → exit 1. ``reparse``, ``export``, ``status``, and ``serve`` open+migrate the
+DB directly here via ``_open_db_or_none``, whose failure likewise maps to exit 2.
 
 Summary lines go to stdout; error/detail messages go to stderr.
 """
@@ -28,7 +28,10 @@ import argparse
 import sys
 from pathlib import Path
 
+import uvicorn
+
 from introspect import config
+from introspect.api import create_app
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.export import SessionNotFoundError, TranscriptNotFoundError, export_session_to
 from introspect.ingest.reparse import reparse_all
@@ -68,6 +71,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_status = subparsers.add_parser("status", help="archive counts + last import run")
     p_status.add_argument("--db", help="path to the archive DB")
     p_status.set_defaults(handler=_cmd_status)
+
+    p_serve = subparsers.add_parser("serve", help="run the read-only archive API server")
+    p_serve.add_argument("--db", help="path to the archive DB")
+    p_serve.add_argument("--port", type=int, default=8765, help="port to listen on")
+    p_serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "host/interface to bind (default: 127.0.0.1, localhost-only -- binding to "
+            "0.0.0.0 or any other non-local address exposes your private transcript "
+            "archive, including message contents, to the network)"
+        ),
+    )
+    p_serve.set_defaults(handler=_cmd_serve)
 
     return parser
 
@@ -168,6 +185,20 @@ def _cmd_status(args: argparse.Namespace) -> int:
             f"last run: id={last_run.id} trigger={last_run.trigger} "
             f"status={last_run.status} finished_at={last_run.finished_at}"
         )
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    dbp = _resolve_db_path_or_none(args.db)
+    if dbp is None:
+        return 2
+    # NOTE(claude): validate DB open/migrate here (same exit-2 mapping as the other
+    # subcommands) even though create_app() below independently opens+migrates again --
+    # that duplication is intentional so create_app stays self-sufficient for callers
+    # (tests, future embedders) that construct it directly without going through this CLI.
+    if _open_db_or_none(dbp) is None:
+        return 2
+    uvicorn.run(create_app(db_path=dbp), host=args.host, port=args.port)
     return 0
 
 

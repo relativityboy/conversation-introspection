@@ -69,6 +69,26 @@ def export_transcript(
     return bytes(buf)
 
 
+def iter_transcript_lines(
+    db: Session,
+    session_uuid: str,
+    kind: str = "main",
+    agent_hex_id: str | None = None,
+) -> Iterator[bytes]:
+    """Yield the transcript's stored ``raw_line`` bytes one line at a time, streaming.
+
+    The generator form of :func:`export_transcript`: concatenating everything it yields equals
+    that function's bytes exactly, but nothing is buffered -- each line comes straight off the
+    ``yield_per`` query, so the HTTP export endpoint can stream a multi-MB transcript without
+    materializing it. Source-file resolution runs before the first yield, so priming the
+    generator with one ``next()`` surfaces :class:`SessionNotFoundError` /
+    :class:`TranscriptNotFoundError` eagerly -- the endpoint turns them into a 404 before any
+    ``200`` body starts. Same not-found contract as :func:`export_transcript`.
+    """
+    source_file = _resolve_source_file(db, session_uuid, kind, agent_hex_id)
+    yield from _iter_raw_lines(db, source_file.id)
+
+
 def export_session_to(db: Session, session_uuid: str, out_path: Path) -> int:
     """Write the session's ``main`` transcript bytes to ``out_path``; return the byte count.
 
