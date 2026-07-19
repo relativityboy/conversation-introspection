@@ -14,6 +14,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+# Shared pagination defaults/caps -- sessions.py, search.py, and admin.py each clamp their
+# `limit` query param against these (`min(max(limit, 1), _MAX_LIMIT)`); hoisted here rather
+# than to api/__init__.py since they're plain constants the route modules import, not part of
+# the app-factory surface.
+_DEFAULT_LIMIT = 50
+_MAX_LIMIT = 200
+
 
 class SessionSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)

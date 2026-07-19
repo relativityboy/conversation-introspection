@@ -1,4 +1,6 @@
-"""FastAPI application factory for the conversation-introspection read-only archive API.
+"""FastAPI application factory for the conversation-introspection archive API -- mostly a read
+layer, but not read-only: ``POST /import`` triggers a background import and the favorites
+router writes favorite/unfavorite state.
 
 ``create_app`` mirrors the CLI's DB lifecycle (:mod:`introspect.config` resolves paths,
 :mod:`introspect.db` opens + migrates the engine) so the same archive can be inspected via

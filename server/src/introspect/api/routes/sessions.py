@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from introspect.api.deps import get_db
 from introspect.api.models import (
+    _DEFAULT_LIMIT,
+    _MAX_LIMIT,
     BlockOut,
     MessageOut,
     SessionDetail,
@@ -31,9 +33,6 @@ from introspect.api.models import (
 from introspect.models import ChatSession, ContentBlock, Favorite, Message, Project, Transcript
 
 router = APIRouter(prefix="/api/v1")
-
-_DEFAULT_LIMIT = 50
-_MAX_LIMIT = 200
 
 
 # --- Response envelopes (route-local; the item models live in api.models) ---------------

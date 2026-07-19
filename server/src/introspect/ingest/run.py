@@ -189,6 +189,13 @@ def _run_locked(db, root: Path, trigger: str, run_id: int | None = None) -> Impo
         # Its started_at is the handler's request time and is left untouched. The fatal path
         # below (_finalize_fatal, keyed on run.id) then also finalizes this same pre-created row.
         run = db.get(ImportRun, run_id)
+        if run is None:
+            # NOTE(claude): mirrors _finalize_lost_race's guard -- the pre-created row vanished
+            # (unreachable in practice), so fall through to creating a fresh one rather than
+            # crashing on a None attribute access below.
+            run = ImportRun(trigger=trigger, started_at=utcnow(), status="running")
+            db.add(run)
+            db.commit()
 
     files_seen = 0
     records_added = 0

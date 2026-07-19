@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from introspect import export
 from introspect.api.deps import get_db
-from introspect.api.models import Problem
+from introspect.api.models import _DEFAULT_LIMIT, _MAX_LIMIT, Problem
 from introspect.export import SessionNotFoundError, TranscriptNotFoundError
 
 from introspect.db import get_engine, session_factory
@@ -49,9 +49,6 @@ from introspect.ingest.run import DbOpenError, _acquire_lock, _release_lock, run
 from introspect.models import ChatSession, ImportRun, ParseAnomaly, RawRecord, SourceFile
 
 router = APIRouter(prefix="/api/v1")
-
-_DEFAULT_LIMIT = 50
-_MAX_LIMIT = 200
 
 
 # --- Response models --------------------------------------------------------------------

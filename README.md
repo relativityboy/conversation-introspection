@@ -26,7 +26,8 @@ If you'd like to keep your conversation history — to search it later, reread s
 you or Claude said, or just not lose months of context — you need something copying those logs
 somewhere safe before deletion happens, automatically, forever. That's what this tool is: a
 scheduled job that reads every transcript it can find and archives it into a SQLite database,
-byte for byte, with nothing lost or reinterpreted along the way.
+byte for byte, with nothing lost or reinterpreted along the way. It also provides full-text
+search over every archived conversation, plus a localhost HTTP API (`introspect serve`).
 
 The trust promise, stated plainly: what goes in comes back out identical. Not "close enough" —
 identical. The project's flagship test is exactly this: import a transcript, export it back
@@ -190,6 +191,7 @@ All commands run via `uv run introspect <command>` from `server/`.
 | `introspect status` | Prints archive counts and the last import run | |
 | `introspect export <session-uuid> [-o file]` | Reconstructs a session's `.jsonl`, byte-identical to the source | Works even if the source file is gone |
 | `introspect reparse` | Rebuilds interpretation from stored raw bytes | For schema updates; takes the same advisory lock as `import` |
+| `introspect serve [--db PATH] [--port 8765] [--host 127.0.0.1]` | Serves the `/api/v1` read layer on localhost | The default host `127.0.0.1` is deliberate — binding any other interface exposes your entire conversation history to the network; don't, unless you fully understand the exposure |
 
 Every subcommand accepts `--db <path>` (or `INTROSPECT_DB`) to override the archive location;
 `import` also accepts `--source-root <path>` (or `INTROSPECT_SOURCE_ROOT`) to override the
@@ -241,9 +243,7 @@ useful contributions, roughly in order of how easy they are to make:
   without reviewing them first** — `detail` is intended to hold only field *names*, not
   message content, but review before pasting rather than trusting that blind. The schema
   registry this project relies on only grows by exactly these reports.
-- **Phase 2: FTS5 search + a FastAPI read layer.** Designed in the spec, not yet built. See
-  [Architecture](#architecture) for the data model it would sit on top of.
-- **Phase 3: the React reading-room UI.** Also designed, not built — see the "Still Water"
+- **Phase 3: the React reading-room UI.** Designed, not built — see the "Still Water"
   mockup at [`docs/design/2026-07-13-still-water-mockup.html`](docs/design/2026-07-13-still-water-mockup.html).
 - **Windows/WSL testing.** Untested territory; see [Prerequisites](#prerequisites).
 - **A Postgres storage path** for the same schema, as an alternative to SQLite.
@@ -283,8 +283,8 @@ the anomaly count to a 21-row drift floor.
 - **Phase 1 — shipped.** Importer and archive core: capture-then-interpret pipeline, schema
   registry, reparse, byte-faithful export, CLI. Python 3.12, uv, SQLAlchemy, Alembic,
   Pydantic v2. 131 tests, built test-first.
-- **Phase 2 — designed, not built.** FTS5 full-text search, a FastAPI read layer over the
-  archive, and favorites.
+- **Phase 2 — shipped.** FTS5 full-text search, a FastAPI read layer over the archive, and
+  favorites. 218 tests total, built test-first.
 - **Phase 3 — designed, not built.** A React reading-room UI in the "Still Water" theme
   (mockup: [`docs/design/2026-07-13-still-water-mockup.html`](docs/design/2026-07-13-still-water-mockup.html)).
 - **Future.** A Postgres storage path for the same schema; recovery of "ghost" sessions (ones
@@ -311,7 +311,8 @@ uv run ruff check .
 ```
 
 Tests are fixture-driven — real transcripts contain private conversation content and never
-enter the repo; synthetic fixtures stand in for every record type and CLI era. The flagship
-test, in `tests/test_export_roundtrip.py`, is a round trip: import a fixture tree, export it
-back out, and byte-compare the result to the source. That test is the project's bar for
-correctness — if a change can't survive it, it isn't done.
+enter the repo; synthetic fixtures stand in for every record type and CLI era. The API's
+tests live in `tests/test_api_*.py`, one file per router. The flagship test, in
+`tests/test_export_roundtrip.py`, is a round trip: import a fixture tree, export it back out,
+and byte-compare the result to the source. That test is the project's bar for correctness — if
+a change can't survive it, it isn't done.

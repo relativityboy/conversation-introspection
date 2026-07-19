@@ -44,15 +44,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from introspect.api.deps import get_db
-from introspect.api.models import HitOut, Problem, SessionSummary
+from introspect.api.models import _DEFAULT_LIMIT, _MAX_LIMIT, HitOut, Problem, SessionSummary
 from introspect.api.routes.sessions import _is_favorited, _main_message_count, _summary
 from introspect.models import ChatSession, Project
 from introspect.search import SearchHit, get_search_index
 
 router = APIRouter(prefix="/api/v1")
 
-_DEFAULT_LIMIT = 50
-_MAX_LIMIT = 200
 _GROUP_CAP = 5
 
 

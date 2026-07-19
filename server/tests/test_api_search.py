@@ -52,25 +52,31 @@ def client(db_session: Session, fixture_tree: Path, tmp_path: Path) -> TestClien
 
 # --- Global scope: grouping, best-rank-first ordering, per-group cap --------------------
 
-GROUP_STRONG_SESSION = "aaaaaaaa-1111-4111-8111-111111111111"  # 1 hit, dense term -> best rank
-GROUP_WEAK_SESSION = "bbbbbbbb-1111-4111-8111-111111111111"  # 7 hits, sparse term -> capped
+# NOTE(claude): the weak session's uuid ('aaaa...'), project slug ('-Users-x-1-weak'), and
+# discovery/insertion order (written first below) all sort/land BEFORE the strong session's --
+# the opposite of its bm25 rank. Only bm25 rank puts strong first in the response, so if a
+# regression ever swapped the ORDER BY for insertion/rowid order, this test would catch it
+# instead of passing by coincidence.
+GROUP_STRONG_SESSION = "ffffffff-1111-4111-8111-111111111111"  # 1 hit, dense term -> best rank
+GROUP_WEAK_SESSION = "aaaaaaaa-1111-4111-8111-111111111111"  # 7 hits, sparse term -> capped
 
 
 def test_global_search_orders_groups_by_best_rank_and_caps_at_five(
     tmp_path: Path, db_session: Session
 ) -> None:
     root = tmp_path / "search_tree"
-    # One session with a single, densely-matching message (short doc, repeated term) so its
-    # bm25 rank is unambiguously the best; another with 7 sparse single-occurrence hits (long
-    # filler around one match) so its best hit still ranks behind the dense one.
-    _write_session(
-        root, "-Users-x-strong", GROUP_STRONG_SESSION, ["zephyr zephyr zephyr strong signal"]
-    )
+    # Weak session written (and thus discovered/captured) FIRST, into a project slug that
+    # sorts first too -- both point away from its actual rank so only bm25 explains the order.
     weak_texts = [
         f"filler padding tokens surrounding a lone zephyr mention number {i} more words here"
         for i in range(7)
     ]
-    _write_session(root, "-Users-x-weak", GROUP_WEAK_SESSION, weak_texts)
+    _write_session(root, "-Users-x-1-weak", GROUP_WEAK_SESSION, weak_texts)
+    # Strong session: a single, densely-matching message (short doc, repeated term) so its
+    # bm25 rank is unambiguously the best, despite sorting/inserting after the weak session.
+    _write_session(
+        root, "-Users-x-2-strong", GROUP_STRONG_SESSION, ["zephyr zephyr zephyr strong signal"]
+    )
     _capture_and_index(db_session, root)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
