@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import './App.css'
 import { makeQueryClient } from './api/hooks'
 import { Sidebar } from './components/Sidebar'
@@ -33,7 +33,7 @@ function App() {
                 <Route path="/s/:uuid/m/:msgUuid" element={<SessionPage />} />
                 <Route path="/s/:uuid/a/:agentHex" element={<SubagentPage />} />
                 <Route path="/s/:uuid/a/:agentHex/m/:msgUuid" element={<SubagentPage />} />
-                <Route path="*" element={<p>Main — search goes here.</p>} />
+                <Route path="*" element={<Navigate to="/search" replace />} />
               </Routes>
             </div>
           </main>

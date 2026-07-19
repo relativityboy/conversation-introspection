@@ -20,7 +20,7 @@ from introspect.api import create_app
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
 from introspect.search import get_search_index
-from tests.conftest import SESSION_UUID_1
+from tests.conftest import AGENT_HEX_ID, SESSION_UUID_1
 from tests.fixtures.records import make_assistant_line, make_session_file, make_user_line
 
 
@@ -190,6 +190,31 @@ def test_snippet_highlighted_and_hit_out_shape(client: TestClient) -> None:
     hit = group["hits"][0]
     assert set(hit) == {
         "record_uuid", "transcript_id", "block_index", "block_kind", "snippet", "timestamp",
+        "agent_hex_id",
     }
     assert "<mark>" in hit["snippet"]
     assert hit["block_kind"] == "text"
+    # "horizon" lives in session 1's MAIN transcript, so this hit routes the main path (no hex).
+    assert hit["agent_hex_id"] is None
+
+
+# --- Deep-link seam: hits carry the subagent hex so the reader routes to /a/{hex}/ (P3-10) --
+
+
+def test_hit_agent_hex_id_distinguishes_subagent_from_main_transcript(client: TestClient) -> None:
+    """A hit in a SUBAGENT transcript carries its hex; a MAIN-transcript hit carries null.
+
+    Without this the reader deep-links every hit to the main-conversation path, which then
+    fetches the main transcript with a foreign record uuid and 404s (the cross-layer bug).
+    """
+    # "cormorant" is unique to the fixture's subagent transcript user line.
+    sub = client.get("/api/v1/search", params={"q": "cormorant"}).json()
+    assert sub["total"] == 1
+    sub_group = sub["groups"][0]
+    assert sub_group["session"]["session_uuid"] == SESSION_UUID_1  # subagent belongs to session 1
+    sub_hit = sub_group["hits"][0]
+    assert sub_hit["agent_hex_id"] == AGENT_HEX_ID
+
+    # "horizon" is unique to session 1's MAIN transcript -> the hit routes the main path.
+    main_hit = client.get("/api/v1/search", params={"q": "horizon"}).json()["groups"][0]["hits"][0]
+    assert main_hit["agent_hex_id"] is None

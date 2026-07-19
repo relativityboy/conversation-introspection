@@ -58,6 +58,9 @@ export interface HitOut {
   block_kind: string
   snippet: string
   timestamp: string | null
+  /** The subagent hex when this hit lives in a subagent transcript; null for the main
+   * transcript. HitSnippet routes by it — a subagent hit must deep-link the /a/{hex}/ path. */
+  agent_hex_id: string | null
 }
 
 export interface Problem {

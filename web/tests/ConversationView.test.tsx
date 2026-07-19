@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '../src/api/client'
 import type { MessageList, MessageOut } from '../src/api/types'
 import { ConversationView } from '../src/components/reader/ConversationView'
 
@@ -80,7 +82,10 @@ function pageOf(offset: number, count: number, total: number): MessageList {
 }
 
 function renderView(initialAroundUuid?: string) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // We deliberately DON'T disable retry here: useMessages owns the retry policy (skip 404s,
+  // else the default 3), and the 404/offline cases below exist to exercise exactly that.
+  // retryDelay 0 keeps the retrying (non-404) case instant instead of backing off for seconds.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <ConversationView transcriptId={TRANSCRIPT_ID} initialAroundUuid={initialAroundUuid} />
@@ -183,8 +188,10 @@ describe('endReached', () => {
 })
 
 describe('calm states', () => {
-  it('renders an inline offline message when the initial fetch fails', async () => {
-    fetchMessages.mockRejectedValueOnce(new Error('boom'))
+  it('renders an inline offline message when the initial fetch fails (non-404)', async () => {
+    // Persistent reject: a non-404 error retries (useMessages policy), so every attempt must fail
+    // for the query to settle into the error state that renders the offline text.
+    fetchMessages.mockRejectedValue(new Error('boom'))
     renderView()
     expect(await screen.findByText('archive offline')).toBeDefined()
   })
@@ -193,5 +200,38 @@ describe('calm states', () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 0, 0))
     renderView()
     expect(await screen.findByText('Nothing recorded in this transcript.')).toBeDefined()
+  })
+})
+
+describe('around-target not found (404)', () => {
+  it('shows a not-found notice and recovers to offset 0 via "view from the beginning"', async () => {
+    fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'record uuid-x not found'))
+    renderView('uuid-x')
+
+    expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { around: 'uuid-x', limit: 100 })
+
+    // Recovery: dropping the around-seed re-fetches offset 0 and renders the window.
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    await userEvent.click(screen.getByRole('button', { name: 'view from the beginning' }))
+
+    expect(await screen.findAllByTestId('row')).toHaveLength(100)
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+    expect(virtuosoProps.current?.firstItemIndex).toBe(0)
+  })
+
+  it('does not retry a 404 around-fetch (single call)', async () => {
+    fetchMessages.mockRejectedValue(new ApiError(404, 'Not Found', 'nope'))
+    renderView('uuid-x')
+
+    expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
+    // The 404-skipping retry policy means exactly one attempt, no storm.
+    expect(fetchMessages).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the offline text for a non-404 ApiError on an around-fetch', async () => {
+    fetchMessages.mockRejectedValue(new ApiError(503, 'Service Unavailable', 'down'))
+    renderView('uuid-x')
+    expect(await screen.findByText('archive offline')).toBeDefined()
   })
 })

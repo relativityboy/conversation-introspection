@@ -76,6 +76,13 @@ class HitOut(BaseModel):
     """One search hit. Field-compatible with ``introspect.search.SearchHit`` by attribute
     name, so routes build these via ``HitOut.model_validate(hit)`` rather than a manual
     field-by-field mapping.
+
+    ``agent_hex_id`` is the one field NOT carried by ``SearchHit`` (it defaults to ``None`` on
+    validate) -- the search route fills it from a single per-request transcript lookup: the
+    subagent hex when the hit's transcript is a subagent, ``None`` for a main transcript. The
+    reader's deep-link seam routes by it (a subagent hit must open the ``/a/{hex}/`` drill-in;
+    linking it to the main-conversation path makes the arrival view fetch the MAIN transcript
+    with a foreign record uuid and 404 -- the cross-layer bug this field closes, Task P3-10).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -86,6 +93,7 @@ class HitOut(BaseModel):
     block_kind: str
     snippet: str
     timestamp: datetime | None
+    agent_hex_id: str | None = None
 
 
 class Problem(BaseModel):

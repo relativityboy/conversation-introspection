@@ -6,6 +6,7 @@
 
 import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  ApiError,
   deleteFavorite,
   fetchImportRun,
   fetchMessages,
@@ -62,6 +63,11 @@ export function useMessages(transcriptId: number, opts: MessagesOptions = {}) {
   return useQuery({
     queryKey: messagesKey(transcriptId, opts),
     queryFn: () => fetchMessages(transcriptId, opts),
+    // An `around` deep-link to a record that isn't in this transcript is a 404 (a not-found,
+    // not a connectivity failure). Retrying it is a pointless storm that only delays the
+    // reader's recovery notice, so skip retries for 404s; keep the default 3 for the rest.
+    retry: (failureCount, error) =>
+      !(error instanceof ApiError && error.status === 404) && failureCount < 3,
   })
 }
 

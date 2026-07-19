@@ -27,6 +27,20 @@ from tests.fixtures.records import (
     make_user_line,
 )
 
+@pytest.fixture(autouse=True)
+def _no_ambient_ui_dist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test runs API-only unless it explicitly opts in to serving the UI.
+
+    ``create_app`` resolves a built ``web/dist`` by walking up from the installed package,
+    which in a repo checkout finds the developer's ambient build state -- whether ``web/dist``
+    happens to exist must never change what any python test observes. Tests that want the UI
+    opt in explicitly via the ``ui_dist`` param or the ``INTROSPECT_UI_DIST`` env var
+    (test_api_static.py does both).
+    """
+    monkeypatch.delenv("INTROSPECT_UI_DIST", raising=False)
+    monkeypatch.setattr("introspect.api._walk_up_for_ui_dist", lambda start: None)
+
+
 # --- Pinned identifiers (later tasks hardcode these) -------------------------------------
 
 PROJECT_SLUG_1 = "-Users-x-proj"  # 2 sessions
@@ -80,8 +94,15 @@ _SESSION_3_LINES = [
     make_user_line(sessionId=SESSION_UUID_3),
     make_assistant_line(sessionId=SESSION_UUID_3),
 ]
+# NOTE(claude): the subagent's user line carries the distinctive single-occurrence token
+# "cormorant" (same role "horizon" plays for session 1's MAIN transcript above): a global
+# search for it returns exactly one hit, and that hit lives in a SUBAGENT transcript. Task
+# P3-10's search test relies on this to assert the hit carries agent_hex_id == AGENT_HEX_ID
+# while a "horizon" (main) hit carries null. Text-only, so TOTAL_FIXTURE_LINES is untouched.
 _SUBAGENT_LINES = [
-    make_user_line(text="synthetic subagent user message", sessionId=SESSION_UUID_1),
+    make_user_line(
+        text="synthetic subagent user message about a lone cormorant", sessionId=SESSION_UUID_1
+    ),
     make_assistant_line(text="synthetic subagent assistant reply", sessionId=SESSION_UUID_1),
 ]
 

@@ -82,11 +82,16 @@ function shortLocal(iso: string | null): string {
 
 export function HitSnippet({ sessionUuid, hit, q }: HitSnippetProps) {
   const search = `?q=${encodeURIComponent(q)}`
-  // record_uuid is nullable in the API contract; a hit without one can only land on the session
-  // (there's no message to seed the around-window with), so degrade to the session route.
+  // A hit in a SUBAGENT transcript must deep-link through the /a/{hex}/ drill-in, not the
+  // main-conversation path: linking it to /s/{uuid}/m/{uuid} makes SessionPage fetch the MAIN
+  // transcript with a foreign record uuid, which 404s. agent_hex_id is the server's per-hit
+  // routing signal (null for main-transcript hits). See server search route (Task P3-10).
+  const base = hit.agent_hex_id ? `/s/${sessionUuid}/a/${hit.agent_hex_id}` : `/s/${sessionUuid}`
+  // record_uuid is nullable in the API contract; a hit without one can only land on the
+  // transcript base (there's no message to seed the around-window with), so degrade to it.
   const to = hit.record_uuid
-    ? { pathname: `/s/${sessionUuid}/m/${hit.record_uuid}`, search }
-    : { pathname: `/s/${sessionUuid}`, search }
+    ? { pathname: `${base}/m/${hit.record_uuid}`, search }
+    : { pathname: base, search }
   const time = shortLocal(hit.timestamp)
 
   return (

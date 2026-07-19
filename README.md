@@ -121,6 +121,14 @@ forward.
    and `echo $?` printing `0` — means the export is a perfect reconstruction of the original.
    That's the whole point of this tool, verified on your own data.
 
+6. **Build the reading-room UI, then serve it.** From the repo root:
+   ```bash
+   cd web && npm install && npm run build
+   cd ../server && uv run introspect serve
+   ```
+   Open [http://127.0.0.1:8765](http://127.0.0.1:8765) — one process, one port, API and UI
+   together.
+
 ## Keep it running (cron, ELI5)
 
 A single manual import only protects what existed at that moment. The transcripts still on

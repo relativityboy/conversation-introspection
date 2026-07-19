@@ -1,13 +1,24 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { useCallback, useRef, useState } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { fetchMessages } from '../../api/client'
+import { ApiError, fetchMessages } from '../../api/client'
 import { useMessages } from '../../api/hooks'
 import type { MessageList, MessageOut } from '../../api/types'
 import { applyGlow } from '../../lib/glow'
 import { MessageTurn } from './MessageTurn'
 
 const PAGE_SIZE = 100
+
+// A text button that reads as an inline link inside the calm notice — no chrome, dragonfly ink.
+const LINK_BUTTON_STYLE: CSSProperties = {
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 'inherit',
+  color: 'var(--dragonfly)',
+}
 
 export interface ConversationViewProps {
   transcriptId: number
@@ -23,25 +34,51 @@ export interface ConversationViewProps {
 // firstItemIndex with the same state update), and caching each scroll-driven page under its
 // own query key would buy nothing while complicating that atomicity.
 export function ConversationView({ transcriptId, initialAroundUuid }: ConversationViewProps) {
+  // "View from the beginning" recovery. When the around-target isn't in this transcript (a 404
+  // — e.g. a stale deep link), the reader drops the around-seed and re-fetches offset 0 WITHOUT
+  // a route change. Adjust-state-during-render (see ConversationSearch) clears the override the
+  // moment a fresh deep link arrives, so a later valid /m/ target still seeds correctly.
+  const [fromBeginning, setFromBeginning] = useState(false)
+  const [seenAround, setSeenAround] = useState(initialAroundUuid)
+  if (initialAroundUuid !== seenAround) {
+    setSeenAround(initialAroundUuid)
+    setFromBeginning(false)
+  }
+  const around = fromBeginning ? undefined : initialAroundUuid
+
   const initial = useMessages(
     transcriptId,
-    initialAroundUuid
-      ? { around: initialAroundUuid, limit: PAGE_SIZE }
-      : { offset: 0, limit: PAGE_SIZE },
+    around ? { around, limit: PAGE_SIZE } : { offset: 0, limit: PAGE_SIZE },
   )
 
   if (initial.isPending) return <Calm>…</Calm>
-  if (initial.isError) return <Calm>archive offline</Calm>
+  if (initial.isError) {
+    // A 404 on the around-fetch means the target message isn't in THIS transcript — a
+    // not-found, not the archive being offline. Offer a calm jump to the start instead (and
+    // useMessages' retry policy skips the react-query retry storm for these 404s).
+    if (around && initial.error instanceof ApiError && initial.error.status === 404) {
+      return (
+        <Calm>
+          message not found in this conversation{' '}
+          <button type="button" onClick={() => setFromBeginning(true)} style={LINK_BUTTON_STYLE}>
+            view from the beginning
+          </button>
+        </Calm>
+      )
+    }
+    return <Calm>archive offline</Calm>
+  }
   if (initial.data.total === 0) return <Calm>Nothing recorded in this transcript.</Calm>
 
   // The key resets the window state whenever the identity of the stream changes — a new
-  // transcript or a new around-target must re-seed rather than mutate the old window.
+  // transcript or a new around-target must re-seed rather than mutate the old window. Keying on
+  // the EFFECTIVE `around` also re-seeds cleanly when "view from the beginning" drops it.
   return (
     <MessageStream
-      key={`${transcriptId}:${initialAroundUuid ?? ''}`}
+      key={`${transcriptId}:${around ?? ''}`}
       transcriptId={transcriptId}
       seed={initial.data}
-      initialAroundUuid={initialAroundUuid}
+      initialAroundUuid={around}
     />
   )
 }

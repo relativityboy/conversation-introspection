@@ -198,7 +198,12 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     # (tests, future embedders) that construct it directly without going through this CLI.
     if _open_db_or_none(dbp) is None:
         return 2
-    uvicorn.run(create_app(db_path=dbp), host=args.host, port=args.port)
+    app = create_app(db_path=dbp)
+    if app.state.ui_dist is not None:
+        print("UI: serving web/dist")
+    else:
+        print("UI: not built (API only) — cd web && npm run build")
+    uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
 

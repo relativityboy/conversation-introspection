@@ -53,6 +53,7 @@ function makeHit(over: Partial<HitOut> = {}): HitOut {
     block_kind: 'text',
     snippet: 'a <mark>hit</mark> b',
     timestamp: null,
+    agent_hex_id: null,
     ...over,
   }
 }
@@ -161,6 +162,22 @@ describe('HitSnippet', () => {
     setup(<HitSnippet sessionUuid="uuid-1" hit={hit} q="foo" />, '/')
 
     expect(screen.getByRole('link').getAttribute('href')).toBe('/s/uuid-1?q=foo')
+  })
+
+  it('deep-links a subagent hit through the /a/{hex}/ drill-in, not the main path', () => {
+    const hit = makeHit({ agent_hex_id: 'deadbeef' })
+    setup(<HitSnippet sessionUuid="uuid-1" hit={hit} q="foo" />, '/')
+
+    expect(screen.getByRole('link').getAttribute('href')).toBe(
+      '/s/uuid-1/a/deadbeef/m/rec-1?q=foo',
+    )
+  })
+
+  it('degrades a record-less subagent hit to the subagent base path', () => {
+    const hit = makeHit({ agent_hex_id: 'deadbeef', record_uuid: null })
+    setup(<HitSnippet sessionUuid="uuid-1" hit={hit} q="foo" />, '/')
+
+    expect(screen.getByRole('link').getAttribute('href')).toBe('/s/uuid-1/a/deadbeef?q=foo')
   })
 })
 

@@ -46,7 +46,7 @@ from sqlalchemy.orm import Session
 from introspect.api.deps import get_db
 from introspect.api.models import _DEFAULT_LIMIT, _MAX_LIMIT, HitOut, Problem, SessionSummary
 from introspect.api.routes.sessions import _is_favorited, _main_message_count, _summary
-from introspect.models import ChatSession, Project
+from introspect.models import ChatSession, Project, Transcript
 from introspect.search import SearchHit, get_search_index
 
 router = APIRouter(prefix="/api/v1")
@@ -82,6 +82,37 @@ def _problem(detail: str) -> JSONResponse:
     return JSONResponse(status_code=422, content=problem.model_dump())
 
 
+def _agent_hex_by_transcript(db: Session, hits: list[SearchHit]) -> dict[int, str | None]:
+    """Map every hit's ``transcript_id`` to its subagent hex (``None`` for main transcripts).
+
+    ONE ``IN`` query per request, never per-hit: the search index returns bare transcript ids,
+    but the reader's deep-link seam routes a hit by whether its transcript is a subagent (so it
+    can open the ``/a/{hex}/`` drill-in instead of the main-conversation path). ``kind`` is the
+    discriminator -- a main transcript maps to ``None`` even though its ``agent_hex_id`` column
+    is likewise null, keeping the contract explicit rather than incidental.
+    """
+    ids = {hit.transcript_id for hit in hits}
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(Transcript.id, Transcript.kind, Transcript.agent_hex_id).where(
+            Transcript.id.in_(ids)
+        )
+    ).all()
+    return {tid: (agent_hex if kind == "subagent" else None) for tid, kind, agent_hex in rows}
+
+
+def _hit_out(hit: SearchHit, agent_hex_by_transcript: dict[int, str | None]) -> HitOut:
+    """Build a ``HitOut`` from a ``SearchHit``, injecting the transcript's subagent hex.
+
+    Keeps the ``model_validate`` pattern (see :class:`HitOut`); ``agent_hex_id`` is the only
+    field the index doesn't supply, so it is set from the per-request lookup via ``model_copy``.
+    """
+    return HitOut.model_validate(hit).model_copy(
+        update={"agent_hex_id": agent_hex_by_transcript.get(hit.transcript_id)}
+    )
+
+
 def _session_summary(db: Session, session_uuid: str) -> SessionSummary:
     """Build one SessionSummary via the same query shape ``sessions.get_session`` uses."""
     session, slug, count, fav = db.execute(
@@ -92,7 +123,9 @@ def _session_summary(db: Session, session_uuid: str) -> SessionSummary:
     return _summary(session, slug, count, fav)
 
 
-def _group_hits(db: Session, hits: list[SearchHit]) -> list[SearchGroup]:
+def _group_hits(
+    db: Session, hits: list[SearchHit], agent_hex_by_transcript: dict[int, str | None]
+) -> list[SearchGroup]:
     """Partition one rank-ordered hit page into per-session groups, best rank first.
 
     A session's first appearance while walking the (already bm25-ascending) hit list is
@@ -110,7 +143,10 @@ def _group_hits(db: Session, hits: list[SearchHit]) -> list[SearchGroup]:
     return [
         SearchGroup(
             session=_session_summary(db, session_uuid),
-            hits=[HitOut.model_validate(h) for h in by_session[session_uuid][:_GROUP_CAP]],
+            hits=[
+                _hit_out(h, agent_hex_by_transcript)
+                for h in by_session[session_uuid][:_GROUP_CAP]
+            ],
             has_more=len(by_session[session_uuid]) > _GROUP_CAP,
         )
         for session_uuid in order
@@ -141,7 +177,11 @@ def search(
 
     if scope == "session":
         hits, total = index.search(db, q, session_uuid=session, limit=limit, offset=offset)
-        return SessionSearchResult(items=[HitOut.model_validate(h) for h in hits], total=total)
+        agent_hex = _agent_hex_by_transcript(db, hits)
+        return SessionSearchResult(
+            items=[_hit_out(h, agent_hex) for h in hits], total=total
+        )
 
     hits, total = index.search(db, q, limit=limit, offset=offset)
-    return GlobalSearchResult(groups=_group_hits(db, hits), total=total)
+    agent_hex = _agent_hex_by_transcript(db, hits)
+    return GlobalSearchResult(groups=_group_hits(db, hits, agent_hex), total=total)
