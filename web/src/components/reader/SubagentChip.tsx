@@ -50,7 +50,7 @@ export function SubagentChip({ block }: { block: BlockOut }) {
         </span>
       )}
       {transcript.agent_hex_id && (
-        // The /a/ route lands in Task 8; the Link renders now and resolves then.
+        // Deep link into the /a/ subagent drill-in route (SubagentPage).
         <Link
           to={`/s/${sessionUuid}/a/${transcript.agent_hex_id}`}
           style={{ color: 'var(--dragonfly)', textDecoration: 'none' }}

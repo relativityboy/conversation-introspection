@@ -49,7 +49,10 @@ export function SessionPage() {
   function renderBody() {
     if (!main) return <p style={MIST_TEXT}>No transcript recorded for this session.</p>
     if (msgUuid) return <ConversationView transcriptId={main.id} initialAroundUuid={msgUuid} />
-    if (q) return <ConversationSearchResults sessionUuid={session.session_uuid} q={q} />
+    // trim(): useSearch gates on q.trim(), so a whitespace-only ?q= (e.g. ?q=%20) would mount
+    // the results panel with a query that never fires — an eternal pending "…". Fall through to
+    // the conversation instead.
+    if (q.trim()) return <ConversationSearchResults sessionUuid={session.session_uuid} q={q} />
     return <ConversationView transcriptId={main.id} />
   }
 

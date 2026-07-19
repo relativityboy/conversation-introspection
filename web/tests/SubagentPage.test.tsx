@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '../src/api/client'
 import type { MessageList, MessageOut, SessionDetail, TranscriptInfo } from '../src/api/types'
 import { SessionPage } from '../src/routes/SessionPage'
 import { SubagentPage } from '../src/routes/SubagentPage'
@@ -129,7 +130,11 @@ function makeDispatchMessage(): MessageOut {
 }
 
 function renderAt(path: string) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // retryDelay 0: useSession carries its own retry policy (skip 404s, else 3 tries), which
+  // overrides a harness-level `retry: false` — zero delay keeps the retrying cases instant.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, retryDelay: 0 } },
+  })
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
@@ -155,6 +160,28 @@ describe('unknown agentHex', () => {
     const link = screen.getByRole('link', { name: '← back to conversation' })
     expect(link.getAttribute('href')).toBe('/s/uuid-1')
     expect(fetchMessages).not.toHaveBeenCalled()
+  })
+})
+
+// --- session fetch errors (mirrors SessionPage's 404/offline split) --------------------------
+
+describe('session fetch errors', () => {
+  it('renders the not-found state (not "archive offline") when the session 404s', async () => {
+    fetchSession.mockRejectedValue(new ApiError(404, 'Not Found', 'session uuid-1 not found'))
+    renderAt('/s/uuid-1/a/deadbeef')
+
+    expect(await screen.findByText('This conversation isn’t in the archive.')).toBeDefined()
+    expect(screen.queryByText('archive offline')).toBeNull()
+    expect(screen.getByRole('link', { name: '← back to the archive' }).getAttribute('href')).toBe(
+      '/',
+    )
+  })
+
+  it('keeps the offline text for a non-404 error', async () => {
+    fetchSession.mockRejectedValue(new Error('network down'))
+    renderAt('/s/uuid-1/a/deadbeef')
+
+    expect(await screen.findByText('archive offline')).toBeDefined()
   })
 })
 
@@ -218,6 +245,32 @@ describe('lazy fetch contract', () => {
     await waitFor(() =>
       expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100 }),
     )
+  })
+})
+
+// --- whitespace-only ?q= falls through to the conversation ------------------------------------
+
+describe('SessionPage with whitespace-only ?q=', () => {
+  it('renders the conversation, not an eternally-pending results panel', async () => {
+    fetchSession.mockResolvedValue(makeSession())
+    fetchMessages.mockResolvedValue(pageOf(0, ['m1'], 1))
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/s/uuid-1?q=%20']}>
+          <Routes>
+            <Route path="/s/:uuid" element={<SessionPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    // The MAIN conversation loads (useSearch would never fire for a blank q, so mounting the
+    // results panel here would strand the body on a pending "…" forever).
+    expect(await screen.findByText('text for m1')).toBeDefined()
+    expect(fetchMessages).toHaveBeenCalledWith(MAIN_TRANSCRIPT.id, { offset: 0, limit: 100 })
+    expect(screen.queryByRole('button', { name: '← back to conversation' })).toBeNull()
   })
 })
 

@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { ApiError } from '../api/client'
 import { useSession } from '../api/hooks'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
@@ -23,7 +24,22 @@ export function SubagentPage() {
   const query = useSession(uuid)
 
   if (query.isPending) return <p style={MIST_TEXT}>…</p>
-  if (query.isError) return <p style={MIST_TEXT}>archive offline</p>
+
+  if (query.isError) {
+    // Mirrors SessionPage's error split: a 404 is a not-found (unknown session uuid), not the
+    // archive being unreachable — same text/back-link so both routes read identically.
+    if (query.error instanceof ApiError && query.error.status === 404) {
+      return (
+        <div style={MIST_TEXT}>
+          <p style={{ marginTop: 0 }}>This conversation isn&rsquo;t in the archive.</p>
+          <Link to="/" style={{ color: 'var(--dragonfly)' }}>
+            ← back to the archive
+          </Link>
+        </div>
+      )
+    }
+    return <p style={MIST_TEXT}>archive offline</p>
+  }
 
   const session = query.data
   const transcript = session.transcripts.find(

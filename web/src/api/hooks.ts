@@ -56,6 +56,10 @@ export function useSession(uuid: string) {
   return useQuery({
     queryKey: sessionKey(uuid),
     queryFn: () => fetchSession(uuid),
+    // Same policy as useMessages: an unknown session uuid is a 404 not-found, and retrying a
+    // not-found only delays the pages' not-found notice. Non-404s keep the default 3 retries.
+    retry: (failureCount, error) =>
+      !(error instanceof ApiError && error.status === 404) && failureCount < 3,
   })
 }
 
