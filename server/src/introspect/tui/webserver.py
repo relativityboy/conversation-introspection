@@ -45,13 +45,23 @@ class StartResult(enum.Enum):
 
 
 def port_in_use(host: str, port: int) -> bool:
-    """True if ``port`` on ``host`` is already bound by another process (probe before start).
+    """True if ``port`` on ``host`` is already bound by an actively-listening process.
 
-    Attempts a bind (no ``SO_REUSEADDR``) and reports failure as "in use". There is a small
-    TOCTOU window between this probe and uvicorn's own bind; the manager treats a bind that
-    fails despite a clear probe as :attr:`StartResult.FAILED` rather than crashing.
+    The probe MUST mirror uvicorn's bind semantics: uvicorn sets ``SO_REUSEADDR`` before it
+    binds, so a port that is merely in ``TIME_WAIT`` -- e.g. right after the user Ctrl-C'd a
+    previous server on :8765 -- is still bindable by uvicorn. A probe WITHOUT ``SO_REUSEADDR``
+    would fail on that ``TIME_WAIT`` socket and LIE that the port is taken, refusing
+    ``/start-web`` while nothing is actually listening (the browser then gets connection
+    refused). With ``SO_REUSEADDR`` the probe bind fails ONLY when another socket is actively
+    LISTENING (sharing an active listener needs ``SO_REUSEPORT``, which neither we nor uvicorn
+    set) -- exactly the outcome uvicorn's own bind would produce. ``host`` is the same interface
+    the start will use (127.0.0.1, or 0.0.0.0 for public), so the probe matches the real bind.
+
+    There is a small TOCTOU window between this probe and uvicorn's own bind; the manager treats
+    a bind that fails despite a clear probe as :attr:`StartResult.FAILED` rather than crashing.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind((host, port))
     except OSError:

@@ -175,6 +175,73 @@ def test_app_search_no_results_logs_notice(indexed_fixture: Session) -> None:
     assert any("no results" in line for line in recorded)
 
 
+# --- Command autocomplete acceptance (Tab / Right) ----------------------------------------
+
+
+async def _type_and_settle(pilot, inp, text: str) -> None:
+    inp.focus()
+    await pilot.pause()
+    for ch in text:
+        await pilot.press(ch)
+    # the suggester resolves asynchronously; pump until it lands (or give up)
+    for _ in range(8):
+        await pilot.pause()
+        if inp._suggestion:
+            break
+
+
+def test_app_tab_accepts_completion(tmp_path: Path) -> None:
+    result: dict[str, object] = {}
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test() as pilot:
+            inp = app.query_one("#cmd", Input)
+            await _type_and_settle(pilot, inp, "/start-")
+            await pilot.press("tab")
+            await pilot.pause()
+            result["value"] = inp.value
+            result["focused_is_input"] = app.focused is inp
+
+    asyncio.run(scenario())
+    assert result["value"] == "/start-web"
+    assert result["focused_is_input"] is True  # Tab accepted, did NOT move focus
+
+
+def test_app_right_accepts_completion_at_end(tmp_path: Path) -> None:
+    result: dict[str, object] = {}
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test() as pilot:
+            inp = app.query_one("#cmd", Input)
+            await _type_and_settle(pilot, inp, "/start-")
+            await pilot.press("right")
+            await pilot.pause()
+            result["value"] = inp.value
+
+    asyncio.run(scenario())
+    assert result["value"] == "/start-web"
+
+
+def test_app_tab_without_suggestion_moves_focus(tmp_path: Path) -> None:
+    result: dict[str, object] = {}
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test() as pilot:
+            inp = app.query_one("#cmd", Input)
+            await _type_and_settle(pilot, inp, "zzz")  # nothing completes "zzz"
+            result["suggestion"] = inp._suggestion
+            await pilot.press("tab")
+            await pilot.pause()
+            result["focused_is_input"] = app.focused is inp
+
+    asyncio.run(scenario())
+    assert not result["suggestion"]  # no completion showing
+    assert result["focused_is_input"] is False  # normal Tab focus behavior preserved
+
+
 # --- Web management through the running app ------------------------------------------------
 
 

@@ -85,6 +85,46 @@ def test_port_in_use_false_when_free() -> None:
     assert port_in_use(LOCAL_HOST, port) is False
 
 
+def test_probe_enables_so_reuseaddr(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The probe must mirror uvicorn's bind: SO_REUSEADDR set before bind, else a port merely in
+    # TIME_WAIT (post Ctrl-C) is falsely reported "in use". Assert the option is set.
+    calls: list[tuple[int, int, int]] = []
+    original = socket.socket.setsockopt
+
+    def spy(self, level, optname, value, *rest):  # noqa: ANN001, ANN202
+        calls.append((level, optname, value))
+        return original(self, level, optname, value, *rest)
+
+    monkeypatch.setattr(socket.socket, "setsockopt", spy)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind((LOCAL_HOST, 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    port_in_use(LOCAL_HOST, port)
+    assert (socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) in calls
+
+
+def test_start_refused_by_active_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A GENUINELY listening socket (not just TIME_WAIT) must still refuse the start -- SO_REUSEADDR
+    # does not let a second socket bind an actively-listening port.
+    monkeypatch.setattr(
+        WebServerManager, "_make_server", lambda self, host, port: _FakeServer()
+    )
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind((LOCAL_HOST, 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+    try:
+        mgr = WebServerManager(tmp_path / "archive.db", port=port)
+        assert mgr.start(LOCAL_HOST) is StartResult.PORT_IN_USE
+        assert mgr.is_running is False
+    finally:
+        listener.close()
+
+
 def test_start_stop_state_machine(manager: WebServerManager) -> None:
     assert manager.is_running is False
     assert manager.describe() == "web server: stopped"

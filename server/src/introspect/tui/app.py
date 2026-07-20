@@ -36,6 +36,27 @@ from introspect.tui.webserver import (
 )
 
 
+class CommandInput(Input):
+    """The command bar. Adds Tab = accept the autocomplete suggestion.
+
+    Textual's default Tab is a Screen-level ``app.focus_next`` binding, so without this a
+    showing inline hint could never be accepted with Tab -- focus would jump off the bar (the
+    exact "completion not acceptable" bug from hand-testing). A widget-level ``tab`` binding on
+    the focused Input intercepts that Screen binding. Right-arrow at end already accepts via
+    ``Input.action_cursor_right``; Tab now matches that convention. With NO suggestion showing,
+    Tab falls back to normal focus navigation.
+    """
+
+    BINDINGS = [Binding("tab", "accept_or_focus_next", "Accept completion", show=False)]
+
+    def action_accept_or_focus_next(self) -> None:
+        if self.cursor_at_end and self._suggestion:
+            self.value = self._suggestion
+            self.cursor_position = len(self.value)
+        else:
+            self.app.action_focus_next()
+
+
 class ResultsList(OptionList):
     """The search results list. Adds Right = open the highlighted hit's message deep-link.
 
@@ -103,7 +124,7 @@ class IntrospectApp(App):
     def compose(self) -> ComposeResult:
         yield ResultsList(id="results")
         yield RichLog(id="log", markup=False, wrap=True, highlight=False)
-        yield Input(
+        yield CommandInput(
             id="cmd",
             placeholder="type to search the archive, or /help for commands",
             suggester=SuggestFromList(self._command_registry.slash_names(), case_sensitive=False),
