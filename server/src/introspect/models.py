@@ -203,3 +203,14 @@ class Favorite(Base):
 
     session_uuid: Mapped[str] = mapped_column(ForeignKey("sessions.session_uuid"), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class UserTitle(Base):
+    # NOTE(claude): session_uuid is both PK and FK, existence-based like Favorite — a row
+    # present means the user has overridden the archive-derived title (ai_title/custom_title);
+    # absence means fall back to those. See migration 0003.
+    __tablename__ = "user_titles"
+
+    session_uuid: Mapped[str] = mapped_column(ForeignKey("sessions.session_uuid"), primary_key=True)
+    title: Mapped[str]
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)

@@ -20,7 +20,13 @@ from sqlalchemy import text
 from introspect.models import ContentBlock, Message
 from introspect.search import SearchHit, get_search_index, sanitize_query
 from introspect.search.fts5 import _TEXT_PREDICATE
-from tests.conftest import SESSION_UUID_1, SESSION_UUID_2
+from tests.conftest import (
+    PROJECT_SLUG_1,
+    PROJECT_SLUG_2,
+    SESSION_UUID_1,
+    SESSION_UUID_2,
+    SESSION_UUID_3,
+)
 
 idx = get_search_index()
 
@@ -249,3 +255,167 @@ def test_index_predicate_matches_migration_backfill(db_session, indexed_fixture)
     assert via_rebuild == via_migration
     assert via_rebuild["DRIFTGUARD_NONTEXT"] == []  # neither predicate indexes non-text
     assert via_rebuild["horizon"]  # both index the real text block
+
+
+# --- Phase 4 Task 2: sidebar content search + project filtering (§14.1/§14.2 core) --------
+#
+# Fixture geography these tests rely on (pinned in conftest):
+#   PROJECT_SLUG_1 "-Users-x-proj"  -> sessions 1 (main + subagent) and 2
+#   PROJECT_SLUG_2 "-Users-x-proj2" -> session 3
+#   "horizon"  : session 1 main only          "cormorant": session 1 subagent only
+#   "synthetic": sessions 1 (subagent), 2, 3   (the distinctness + project-scope probe)
+
+# Same evil inputs the search never-raise test uses; every new path must survive them too.
+_EVIL_INPUTS = ['"unbalanced', "a AND OR", "x NEAR/3 y", "(paren", "*star", "col:on", "-minus", "", "   "]
+
+
+def _message_id_for_phrase(db, phrase: str) -> int:
+    """Return the message_id of the (single) text block whose text contains ``phrase``."""
+    block = (
+        db.query(ContentBlock)
+        .filter(ContentBlock.block_kind == "text")
+        .filter(ContentBlock.text_content.contains(phrase))
+        .one()
+    )
+    return block.message_id
+
+
+# --- session_uuids_matching ---------------------------------------------------------------
+
+
+def test_session_uuids_matching_returns_only_matching_sessions(db_session, indexed_fixture):
+    result = idx.session_uuids_matching(db_session, "horizon", None)
+    assert result == [SESSION_UUID_1]  # "horizon" lives only in session 1's main transcript
+
+
+def test_session_uuids_matching_is_distinct(db_session, indexed_fixture):
+    # "synthetic" matches multiple blocks in EACH of sessions 1/2/3 — the result must
+    # carry every session exactly once (DISTINCT), never one row per matching block.
+    result = idx.session_uuids_matching(db_session, "synthetic", None)
+    assert sorted(result) == sorted([SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3])
+    assert len(result) == len(set(result))  # no duplicate session uuids
+
+
+def test_session_uuids_matching_project_constraint(db_session, indexed_fixture):
+    proj1 = idx.session_uuids_matching(db_session, "synthetic", [PROJECT_SLUG_1])
+    assert sorted(proj1) == sorted([SESSION_UUID_1, SESSION_UUID_2])  # session 3 excluded
+    proj2 = idx.session_uuids_matching(db_session, "synthetic", [PROJECT_SLUG_2])
+    assert proj2 == [SESSION_UUID_3]
+    both = idx.session_uuids_matching(db_session, "synthetic", [PROJECT_SLUG_1, PROJECT_SLUG_2])
+    assert sorted(both) == sorted([SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3])
+
+
+def test_session_uuids_matching_none_vs_empty_project_list(db_session, indexed_fixture):
+    # None == unfiltered (all matches); [] == matches nothing (documented semantic split).
+    assert sorted(idx.session_uuids_matching(db_session, "synthetic", None)) == sorted(
+        [SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3]
+    )
+    assert idx.session_uuids_matching(db_session, "synthetic", []) == []
+
+
+def test_session_uuids_matching_empty_query_returns_empty(db_session, indexed_fixture):
+    assert idx.session_uuids_matching(db_session, "", None) == []
+    assert idx.session_uuids_matching(db_session, "   ", None) == []
+
+
+@pytest.mark.parametrize("evil", _EVIL_INPUTS)
+def test_session_uuids_matching_never_raises(db_session, indexed_fixture, evil):
+    result = idx.session_uuids_matching(db_session, evil, None)  # must not raise
+    assert isinstance(result, list)
+    # ...on every path, including with a project constraint applied.
+    assert isinstance(idx.session_uuids_matching(db_session, evil, [PROJECT_SLUG_1]), list)
+
+
+# --- best_snippets (BATCHED — one query, per-session bm25-best) ----------------------------
+
+
+def test_best_snippets_picks_bm25_best_not_first_rowid(db_session, indexed_fixture):
+    """A session's snippet must be its bm25-BEST match, not its first-by-rowid match.
+
+    Two "quantum" blocks are attached to a session-1 message: a WEAK long one (inserted
+    first, lower rowid) and a STRONG short high-frequency one (inserted second, higher
+    rowid). A bare GROUP BY / first-rowid pick would surface ALPHAMARK; correct min-rank
+    selection surfaces BETAMARK.
+    """
+    msg_id = _message_id_for_phrase(db_session, "horizon")  # a session-1 message
+    weak = ContentBlock(
+        message_id=msg_id,
+        block_index=800,
+        block_kind="text",
+        text_content=(
+            "quantum ALPHAMARK amid a great many other unrelated filler words that dilute "
+            "the relevance of this single term very heavily indeed and on and on and on"
+        ),
+    )
+    strong = ContentBlock(
+        message_id=msg_id,
+        block_index=801,
+        block_kind="text",
+        text_content="quantum BETAMARK quantum",
+    )
+    db_session.add(weak)
+    db_session.flush()
+    db_session.add(strong)
+    db_session.flush()
+    assert weak.id < strong.id  # the weak match is the FIRST rowid — the trap
+    idx.index_blocks(db_session, [weak.id, strong.id])
+
+    snippets = idx.best_snippets(db_session, [SESSION_UUID_1], "quantum")
+    assert SESSION_UUID_1 in snippets
+    body = snippets[SESSION_UUID_1]
+    assert "BETAMARK" in body and "ALPHAMARK" not in body
+    assert "<mark>" in body  # marks are included
+
+
+def test_best_snippets_absent_for_no_match_sessions(db_session, indexed_fixture):
+    # "horizon" is in session 1 only; session 2 is listed but must be absent from the dict.
+    snippets = idx.best_snippets(db_session, [SESSION_UUID_1, SESSION_UUID_2], "horizon")
+    assert set(snippets) == {SESSION_UUID_1}
+    assert "horizon" in _strip_marks(snippets[SESSION_UUID_1]).lower()
+
+
+def test_best_snippets_empty_input_runs_zero_queries(db_session, indexed_fixture):
+    from unittest.mock import patch
+
+    with patch.object(db_session, "execute", wraps=db_session.execute) as spy:
+        result = idx.best_snippets(db_session, [], "horizon")
+    assert result == {}
+    spy.assert_not_called()  # empty input list -> empty dict, zero DB round trips
+
+
+def test_best_snippets_empty_query_returns_empty(db_session, indexed_fixture):
+    assert idx.best_snippets(db_session, [SESSION_UUID_1], "") == {}
+
+
+@pytest.mark.parametrize("evil", _EVIL_INPUTS)
+def test_best_snippets_never_raises(db_session, indexed_fixture, evil):
+    result = idx.best_snippets(db_session, [SESSION_UUID_1], evil)  # must not raise
+    assert isinstance(result, dict)
+
+
+# --- search(project_slugs=...) global-scope filtering -------------------------------------
+
+
+def test_search_project_slugs_scopes_hits(db_session, indexed_fixture):
+    hits, total = idx.search(db_session, "synthetic", project_slugs=[PROJECT_SLUG_2])
+    assert total == len(hits) and total >= 1
+    assert {h.session_uuid for h in hits} == {SESSION_UUID_3}
+
+
+def test_search_project_slugs_none_is_unfiltered(db_session, indexed_fixture):
+    base_hits, base_total = idx.search(db_session, "synthetic")
+    none_hits, none_total = idx.search(db_session, "synthetic", project_slugs=None)
+    assert none_total == base_total
+    assert {h.block_id for h in none_hits} == {h.block_id for h in base_hits}
+    assert {SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3} <= {h.session_uuid for h in none_hits}
+
+
+def test_search_project_slugs_empty_matches_nothing(db_session, indexed_fixture):
+    hits, total = idx.search(db_session, "synthetic", project_slugs=[])
+    assert hits == [] and total == 0  # [] == matches nothing (count filtered identically)
+
+
+@pytest.mark.parametrize("evil", _EVIL_INPUTS)
+def test_search_project_slugs_never_raises(db_session, indexed_fixture, evil):
+    hits, total = idx.search(db_session, evil, project_slugs=[PROJECT_SLUG_1])  # must not raise
+    assert isinstance(hits, list) and isinstance(total, int)

@@ -86,7 +86,7 @@ Four layers: identity → archive → interpretation → user data. Interpretati
 - `GET /sessions?q=&favorite=&projects=&limit=&offset=` — date desc; list-item shape includes titles, times, counts, favorite flag (§14: `q=` replaced `title=`; `projects=` comma-list replaced the single `project=` — zero-legacy ruling 2026-07-19)
 - `GET /sessions/{uuid}` — detail incl. transcript inventory (subagent metadata only — no messages)
 - `GET /transcripts/{id}/messages?offset=&limit=&around=<message_uuid>` — paged for virtualization; `around` centers a page on a deep-linked message; serves main and subagent transcripts uniformly (lazy drill-in)
-- `GET /search?q=&scope=global|session&session=&limit=&offset=`
+- `GET /search?q=&scope=global|session&session=&projects=&limit=&offset=` (§14.2: `projects=` comma-list filters global scope; session scope accepts-and-ignores it)
 - `PUT /sessions/{uuid}/favorite` · `DELETE /sessions/{uuid}/favorite`
 - `POST /import` → 202 + run id (409 if lock held) · `GET /import/runs?limit=` · `GET /import/runs/{id}`
 - `GET /sessions/{uuid}/export.jsonl` — reconstruction download (same bytes as CLI export)
@@ -176,7 +176,7 @@ Semantics:
 
 ### 14.4 Conversation-only toggle
 One sticky toggle ("conversation only") hiding non-chat material. **Scope (approved): full prose mode** — hides system-type message rows AND tool_use/tool_result blocks inside kept messages; keeps prose and thinking glyphs. **Attachments: IN — `type IN ('user','assistant','attachment')` (Donovan ruling 2026-07-19: pasted things are things a human said).**
-- Message-row filtering is **server-side** (windowing correctness: totals/offsets/around must be computed within the filtered set): `GET /transcripts/{id}/messages` gains `chat_only=1` → `type IN ('user','assistant')`.
+- Message-row filtering is **server-side** (windowing correctness: totals/offsets/around must be computed within the filtered set): `GET /transcripts/{id}/messages` gains `chat_only=1` → `type IN ('user','assistant','attachment')` (bullet aligned to the attachments-IN ruling, 2026-07-19 — was stale pre-ruling text; caught by the T5 reviewer).
 - Block-level hiding (tool blocks within assistant messages) is client-side presentation (no pagination impact).
 - Sticky via localStorage key `introspect.chatOnly.v1`; applies in main and subagent readers. Toggle lives in the conversation header, mist styling. Header keeps the unfiltered `message_count` and appends mist "· conversation only" while active (no second server count — critique #6 resolution).
 - **Client plumbing (critique #3 — the implementer trap, binding):** `chat_only` threads through ALL THREE fetch sites in ConversationView (the `useMessages` seed AND both direct `fetchMessages` edge loaders), into the react-query key, and into the `MessageStream` remount key (`${transcriptId}:${around}:${chatOnly}`) so toggling re-seeds the window cleanly. Unfiltered edge pages against a filtered window corrupt the offset math — the plan must name all three sites.

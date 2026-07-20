@@ -30,7 +30,13 @@ from tests.conftest import (
     SESSION_UUID_2,
     SESSION_UUID_3,
 )
-from tests.fixtures.records import make_assistant_line, make_session_file, make_user_line
+from tests.fixtures.records import (
+    make_assistant_line,
+    make_attachment_line,
+    make_session_file,
+    make_system_line,
+    make_user_line,
+)
 
 
 def _capture(db: Session, root: Path) -> None:
@@ -103,21 +109,175 @@ def test_sessions_list_orders_desc_nulls_last(db_session: Session, client: TestC
     assert first["project_slug"] == PROJECT_SLUG_1
 
 
-def test_sessions_title_filter_matches_ai_and_custom_case_insensitive(
+def test_sessions_q_matches_ai_and_custom_title_case_insensitive(
     db_session: Session, client: TestClient
 ) -> None:
+    # (Rewrite of the removed title= test against q=; coverage kept, param gone.)
     # Session 1 already carries ai_title "Synthetic Session Title"; give session 2 a matching
-    # custom_title so one case-insensitive substring must hit BOTH columns.
+    # custom_title so one case-insensitive substring must hit BOTH columns. "session" is a
+    # title-only token here -- it appears in no transcript CONTENT, so this exercises the LIKE
+    # disjunct in isolation from the FTS disjunct.
     db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_2).update(
-        {ChatSession.custom_title: "synthetic custom marker"}
+        {ChatSession.custom_title: "custom session marker"}
     )
     db_session.commit()
 
-    body = client.get("/api/v1/sessions", params={"title": "SYNTHETIC"}).json()
+    body = client.get("/api/v1/sessions", params={"q": "SESSION"}).json()
     assert set(_uuids(body["items"])) == {SESSION_UUID_1, SESSION_UUID_2}
     assert body["total"] == 2
-    # Session 3 (no matching title) is excluded.
+    # Session 3 (no matching title, no matching content) is excluded.
     assert SESSION_UUID_3 not in _uuids(body["items"])
+    # Title matches carry no snippet.
+    assert all(i["match_snippet"] is None for i in body["items"])
+
+
+def test_sessions_title_param_no_longer_filters(client: TestClient) -> None:
+    # Zero-legacy ruling: title= is REMOVED, not aliased. FastAPI ignores the now-unknown
+    # param, so the list comes back UNFILTERED (all three fixture sessions).
+    body = client.get("/api/v1/sessions", params={"title": "SYNTHETIC"}).json()
+    assert body["total"] == 3
+    assert set(_uuids(body["items"])) == {SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3}
+
+
+def test_sessions_q_empty_or_absent_is_unfiltered(client: TestClient) -> None:
+    absent = client.get("/api/v1/sessions").json()
+    empty = client.get("/api/v1/sessions", params={"q": ""}).json()
+    assert absent["total"] == empty["total"] == 3
+    assert set(_uuids(empty["items"])) == {SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3}
+
+
+def test_sessions_q_matches_uuid_substring_case_insensitive(
+    db_session: Session, client: TestClient
+) -> None:
+    # Insert a session whose uuid carries hex LETTERS so case-insensitivity is observable
+    # (the fixture uuids are all-numeric). No transcripts => it can only match by uuid.
+    alpha_uuid = "A1B2C3D4-DEAD-BEEF-CAFE-000000000000"
+    db_session.add(ChatSession(session_uuid=alpha_uuid, project_id=1))
+    db_session.commit()
+
+    # Mixed-case needle against the upper-case stored uuid.
+    body = client.get("/api/v1/sessions", params={"q": "a1b2C3d4"}).json()
+    assert _uuids(body["items"]) == [alpha_uuid]
+    assert body["total"] == 1
+    # A uuid match is not a content match -> no snippet.
+    assert body["items"][0]["match_snippet"] is None
+
+
+def test_sessions_q_matches_user_title(db_session: Session, client: TestClient) -> None:
+    from introspect.models import UserTitle
+
+    # A user-set title (LEFT JOIN column) with a token present in no archive title or content.
+    db_session.add(
+        UserTitle(
+            session_uuid=SESSION_UUID_3,
+            title="renamed adventure log",
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    body = client.get("/api/v1/sessions", params={"q": "ADVENTURE"}).json()
+    assert _uuids(body["items"]) == [SESSION_UUID_3]
+    assert body["total"] == 1
+    assert body["items"][0]["match_snippet"] is None
+
+
+def test_sessions_q_archive_title_not_shadowed_by_user_rename(
+    db_session: Session, client: TestClient
+) -> None:
+    # Critique #5: a user rename must NOT shadow an archive-title match. Session 1's ai_title
+    # is "Synthetic Session Title"; the user renames it to something that does NOT contain the
+    # query. The archive title must still match (OR across columns, never COALESCE).
+    from introspect.models import UserTitle
+
+    db_session.add(
+        UserTitle(
+            session_uuid=SESSION_UUID_1,
+            title="totally different name",
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    body = client.get("/api/v1/sessions", params={"q": "Session"}).json()
+    assert _uuids(body["items"]) == [SESSION_UUID_1]  # matched via ai_title, not shadowed
+    assert body["items"][0]["match_snippet"] is None
+
+
+def test_sessions_q_content_only_match_populates_snippet(client: TestClient) -> None:
+    # "horizon" lives only in session 1's MAIN content and in no title/uuid.
+    body = client.get("/api/v1/sessions", params={"q": "horizon"}).json()
+    assert _uuids(body["items"]) == [SESSION_UUID_1]
+    assert body["total"] == 1
+    snippet = body["items"][0]["match_snippet"]
+    assert snippet is not None and "<mark>" in snippet
+
+
+def test_sessions_q_title_match_snippet_null_even_when_content_matches(
+    db_session: Session, client: TestClient
+) -> None:
+    # Give session 1 a title containing "horizon" so it matches by BOTH title and content.
+    # Title attribution wins -> snippet null, and the row appears exactly ONCE (no OR-dup).
+    db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_1).update(
+        {ChatSession.custom_title: "horizon overview"}
+    )
+    db_session.commit()
+
+    body = client.get("/api/v1/sessions", params={"q": "horizon"}).json()
+    assert _uuids(body["items"]) == [SESSION_UUID_1]  # exactly one row
+    assert body["total"] == 1
+    assert body["items"][0]["match_snippet"] is None
+
+
+def test_sessions_q_wildcard_chars_treated_literally(
+    db_session: Session, client: TestClient
+) -> None:
+    # LIKE metacharacters in q must be literal, not wildcards. "a_c" must match "a_c" but NOT
+    # "abc" (where an unescaped '_' would match the 'b').
+    db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_1).update(
+        {ChatSession.custom_title: "alpha a_c omega"}
+    )
+    db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_2).update(
+        {ChatSession.custom_title: "alpha abc omega"}
+    )
+    db_session.commit()
+
+    body = client.get("/api/v1/sessions", params={"q": "a_c"}).json()
+    assert _uuids(body["items"]) == [SESSION_UUID_1]
+    assert SESSION_UUID_2 not in _uuids(body["items"])
+    assert body["total"] == 1
+
+
+def test_sessions_q_ordering_preserved_when_union_mixes_title_and_content(
+    db_session: Session, client: TestClient
+) -> None:
+    # Union of a content match (session 1, "horizon" in body) and a title match (session 3,
+    # custom_title). The three-key DESC-NULLS-LAST ordering must hold across the mixed union,
+    # and per-row attribution must still be correct (content -> snippet, title -> null).
+    db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_1).update(
+        {ChatSession.last_activity_at: datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    )
+    db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_3).update(
+        {
+            ChatSession.custom_title: "horizon report",
+            ChatSession.last_activity_at: datetime(2026, 1, 3, tzinfo=timezone.utc),
+        }
+    )
+    db_session.commit()
+
+    body = client.get("/api/v1/sessions", params={"q": "horizon", "limit": 1}).json()
+    # total counts the whole union BEFORE limit; page is clamped to 1.
+    assert body["total"] == 2
+    assert len(body["items"]) == 1
+    # Newest first: session 3 (2026-01-03) leads.
+    assert body["items"][0]["session_uuid"] == SESSION_UUID_3
+    assert body["items"][0]["match_snippet"] is None  # title match
+
+    full = client.get("/api/v1/sessions", params={"q": "horizon"}).json()
+    assert _uuids(full["items"]) == [SESSION_UUID_3, SESSION_UUID_1]
+    by_uuid = {i["session_uuid"]: i for i in full["items"]}
+    assert by_uuid[SESSION_UUID_3]["match_snippet"] is None
+    assert "<mark>" in by_uuid[SESSION_UUID_1]["match_snippet"]
 
 
 def test_sessions_favorite_filter(db_session: Session, client: TestClient) -> None:
@@ -138,13 +298,59 @@ def test_sessions_favorite_filter(db_session: Session, client: TestClient) -> No
     assert fav[SESSION_UUID_2] is False
 
 
-def test_sessions_project_filter(client: TestClient) -> None:
-    only_proj2 = client.get("/api/v1/sessions", params={"project": PROJECT_SLUG_2}).json()
+def test_sessions_projects_filter(client: TestClient) -> None:
+    """``projects=`` (comma list) is the ONLY project filter -- the single ``project=`` param
+    is removed (zero-legacy ruling, Task 4). Single-slug coverage carried over from the old
+    ``project=`` test, plus a two-slug case proving the comma-list unions projects."""
+    only_proj2 = client.get("/api/v1/sessions", params={"projects": PROJECT_SLUG_2}).json()
     assert _uuids(only_proj2["items"]) == [SESSION_UUID_3]
     assert only_proj2["total"] == 1
 
-    proj1 = client.get("/api/v1/sessions", params={"project": PROJECT_SLUG_1}).json()
+    proj1 = client.get("/api/v1/sessions", params={"projects": PROJECT_SLUG_1}).json()
     assert set(_uuids(proj1["items"])) == {SESSION_UUID_1, SESSION_UUID_2}
+
+    both = client.get(
+        "/api/v1/sessions", params={"projects": f"{PROJECT_SLUG_1},{PROJECT_SLUG_2}"}
+    ).json()
+    assert set(_uuids(both["items"])) == {SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3}
+    assert both["total"] == 3
+
+
+def test_sessions_projects_unknown_slug_matches_nothing(client: TestClient) -> None:
+    # No error, no validation -- an unrecognized slug simply matches zero sessions.
+    body = client.get("/api/v1/sessions", params={"projects": "no-such-slug"}).json()
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
+@pytest.mark.parametrize("projects_value", [None, ""])
+def test_sessions_projects_absent_or_empty_is_unfiltered(
+    client: TestClient, projects_value: str | None
+) -> None:
+    # Absent `projects=` and present-but-empty `?projects=` both mean "no chips selected" ->
+    # unfiltered, per the route-level mapping (empty comma-list is treated as absent, not as
+    # the SearchIndex protocol's `[]` == matches-nothing).
+    params = {} if projects_value is None else {"projects": projects_value}
+    body = client.get("/api/v1/sessions", params=params).json()
+    assert set(_uuids(body["items"])) == {SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3}
+    assert body["total"] == 3
+
+
+def test_sessions_projects_composes_with_q_narrows_content_pass(client: TestClient) -> None:
+    # "horizon" content-matches session 1 ONLY, which lives in PROJECT_SLUG_1. Filtering to
+    # PROJECT_SLUG_2 must exclude it -- both the outer SQL predicate and the
+    # session_uuids_matching() content pass must receive the projects= filter (Task 4
+    # composition rule with T3's content search).
+    excluded = client.get(
+        "/api/v1/sessions", params={"q": "horizon", "projects": PROJECT_SLUG_2}
+    ).json()
+    assert excluded["items"] == []
+    assert excluded["total"] == 0
+
+    included = client.get(
+        "/api/v1/sessions", params={"q": "horizon", "projects": PROJECT_SLUG_1}
+    ).json()
+    assert _uuids(included["items"]) == [SESSION_UUID_1]
 
 
 def test_sessions_limit_clamped_to_200_and_default_50(
@@ -310,3 +516,153 @@ def test_unknown_around_uuid_is_404_problem(
     body = resp.json()
     assert set(body) == {"status", "title", "detail"}
     assert body["status"] == 404
+
+
+# --- Transcript messages -- chat_only= filtering (Task P4-5) ----------------------------
+#
+# `chat_only=1` hides `system`-type rows from ALL FOUR query sites in `list_messages`
+# (total, around-target resolution, around ordinal count, page fetch) per spec S14.4 +
+# ledger #1: attachments stay IN (`type IN ('user','assistant','attachment')`) -- "pasted
+# things are things a human said" -- only `system` rows are hidden. A dedicated ad-hoc tree
+# (own TestClient, like `test_around_centers_mid_target_and_clamps_early_target` above) is
+# used rather than the pinned `fixture_tree`/`client` fixture, since none of its sessions
+# carry a system- or attachment-type MESSAGE row and `TOTAL_FIXTURE_LINES` is a pinned
+# contract other tasks hardcode.
+
+_CHAT_ONLY_SESSION_UUID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+
+# 14 records: 5 system (hidden under chat_only=1), 9 kept (4 user, 4 assistant, 1
+# attachment). Deliberately NOT a truncation of the raw order -- kept rows land at
+# non-contiguous raw indices so filtered total/paging/around-centering are exercised
+# against a real re-indexing, not just "drop a prefix/suffix".
+_CHAT_ONLY_TYPES = [
+    "system", "user", "assistant", "system", "user", "assistant",
+    "attachment", "system", "user", "assistant", "system", "user",
+    "assistant", "system",
+]
+
+
+def _chat_only_line(kind: str, index: int) -> bytes:
+    if kind == "system":
+        return make_system_line(
+            content=f"chat-only system note {index}", sessionId=_CHAT_ONLY_SESSION_UUID
+        )
+    if kind == "attachment":
+        return make_attachment_line(sessionId=_CHAT_ONLY_SESSION_UUID)
+    line_fn = make_user_line if kind == "user" else make_assistant_line
+    return line_fn(text=f"chat-only message {index}", sessionId=_CHAT_ONLY_SESSION_UUID)
+
+
+def _build_chat_only_tree(db: Session, tmp_path: Path) -> tuple[int, list[str], list[str]]:
+    """Capture ``_CHAT_ONLY_TYPES`` as a single main transcript under a fresh tree; return
+    ``(transcript_id, record_uuids_in_id_order, types_in_id_order)``."""
+    root = tmp_path / "chat_only_tree"
+    proj = root / "-Users-x-chatonly"
+    proj.mkdir(parents=True)
+    lines = [_chat_only_line(kind, i) for i, kind in enumerate(_CHAT_ONLY_TYPES)]
+    (proj / f"{_CHAT_ONLY_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
+    _capture(db, root)
+
+    tid = _main_transcript_id(db, _CHAT_ONLY_SESSION_UUID)
+    rows = (
+        db.query(Message.record_uuid, Message.type)
+        .filter(Message.transcript_id == tid)
+        .order_by(Message.id)
+        .all()
+    )
+    return tid, [u for (u, _t) in rows], [t for (_u, t) in rows]
+
+
+def test_messages_chat_only_filters_totals_and_paging(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, record_uuids, types = _build_chat_only_tree(db_session, tmp_path)
+    filtered_uuids = [u for u, t in zip(record_uuids, types) if t != "system"]
+    assert len(filtered_uuids) == 9  # 14 records minus 5 system rows
+
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    full = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"chat_only": 1, "limit": 100}
+    ).json()
+    assert full["total"] == len(filtered_uuids)
+    assert [m["record_uuid"] for m in full["items"]] == filtered_uuids
+    assert all(m["type"] != "system" for m in full["items"])
+    assert any(m["type"] == "attachment" for m in full["items"])  # attachments stay IN
+
+    page = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"chat_only": 1, "offset": 2, "limit": 3},
+    ).json()
+    assert page["total"] == len(filtered_uuids)
+    assert page["offset"] == 2  # echoes the effective offset within the FILTERED set
+    assert [m["record_uuid"] for m in page["items"]] == filtered_uuids[2:5]
+
+
+def test_chat_only_around_centers_within_filtered_set(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, record_uuids, types = _build_chat_only_tree(db_session, tmp_path)
+    filtered_uuids = [u for u, t in zip(record_uuids, types) if t != "system"]
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    # Mid target: the lone attachment row, ordinal 4 within the filtered set (0-indexed) --
+    # system rows sit on both sides of it in the raw order.
+    target = record_uuids[6]
+    assert types[6] == "attachment"
+    assert filtered_uuids.index(target) == 4
+
+    mid = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"chat_only": 1, "around": target, "limit": 4},
+    ).json()
+    assert mid["total"] == len(filtered_uuids)
+    assert mid["offset"] == 2  # max(0, 4 - 4 // 2), computed against the filtered ordinal
+    assert [m["record_uuid"] for m in mid["items"]] == filtered_uuids[2:6]
+    assert target in [m["record_uuid"] for m in mid["items"]]
+
+    # Early target: ordinal 0 within the filtered set -> offset clamps to 0.
+    early_target = filtered_uuids[0]
+    early = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"chat_only": 1, "around": early_target, "limit": 4},
+    ).json()
+    assert early["offset"] == 0
+    assert early_target in [m["record_uuid"] for m in early["items"]]
+
+
+def test_chat_only_around_system_target_404s_filtered_but_found_unfiltered(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, record_uuids, types = _build_chat_only_tree(db_session, tmp_path)
+    system_target = record_uuids[0]
+    assert types[0] == "system"
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    filtered_resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"chat_only": 1, "around": system_target},
+    )
+    assert filtered_resp.status_code == 404
+    body = filtered_resp.json()
+    assert set(body) == {"status", "title", "detail"}
+    assert body["status"] == 404
+
+    unfiltered_resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"around": system_target},
+    )
+    assert unfiltered_resp.status_code == 200
+    assert system_target in [m["record_uuid"] for m in unfiltered_resp.json()["items"]]
+
+
+def test_messages_chat_only_absent_defaults_to_unfiltered(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, record_uuids, types = _build_chat_only_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    body = client.get(f"/api/v1/transcripts/{tid}/messages", params={"limit": 100}).json()
+    assert body["total"] == len(record_uuids)
+    assert [m["record_uuid"] for m in body["items"]] == record_uuids
+    assert any(m["type"] == "system" for m in body["items"])

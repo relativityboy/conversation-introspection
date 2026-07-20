@@ -21,6 +21,12 @@ Two response shapes share one query path through
 for ``scope=session``) as returned by :meth:`SearchIndex.search` -- page-independent, pre-cap,
 and pre-grouping; identical in meaning to the ``total`` the sessions/messages endpoints report.
 
+``projects=`` (Task 4; parsed by :func:`introspect.api.routes.sessions._parse_projects_param`,
+shared with ``routes/sessions.py`` so the two routes can never drift on comma-parsing) narrows
+``scope=global`` to the given ``dir_slug``s. ``scope=session`` accepts-and-IGNORES it (critique
+#7): threading a project filter into a search that is already pinned to one session risks
+filtering out the very session being read.
+
 Empty/whitespace ``q`` and a missing ``session`` under ``scope=session`` are the only two
 request-shape errors this route rejects, both as inline 422 problem responses (see
 :func:`_problem`) rather than through ``RequestValidationError`` -- simpler than constructing
@@ -45,7 +51,13 @@ from sqlalchemy.orm import Session
 
 from introspect.api.deps import get_db
 from introspect.api.models import _DEFAULT_LIMIT, _MAX_LIMIT, HitOut, Problem, SessionSummary
-from introspect.api.routes.sessions import _is_favorited, _main_message_count, _summary
+from introspect.api.routes.sessions import (
+    _is_favorited,
+    _main_message_count,
+    _parse_projects_param,
+    _summary,
+    _user_title,
+)
 from introspect.models import ChatSession, Project, Transcript
 from introspect.search import SearchHit, get_search_index
 
@@ -115,12 +127,14 @@ def _hit_out(hit: SearchHit, agent_hex_by_transcript: dict[int, str | None]) -> 
 
 def _session_summary(db: Session, session_uuid: str) -> SessionSummary:
     """Build one SessionSummary via the same query shape ``sessions.get_session`` uses."""
-    session, slug, count, fav = db.execute(
-        select(ChatSession, Project.dir_slug, _main_message_count(), _is_favorited())
+    session, slug, count, fav, u_title = db.execute(
+        select(
+            ChatSession, Project.dir_slug, _main_message_count(), _is_favorited(), _user_title()
+        )
         .join(Project, ChatSession.project_id == Project.id)
         .where(ChatSession.session_uuid == session_uuid)
     ).one()
-    return _summary(session, slug, count, fav)
+    return _summary(session, slug, count, fav, u_title)
 
 
 def _group_hits(
@@ -162,6 +176,7 @@ def search(
     db: Session = Depends(get_db),
     scope: Literal["global", "session"] = "global",
     session: str | None = None,
+    projects: str | None = None,
     limit: int = _DEFAULT_LIMIT,
     offset: int = 0,
 ) -> GlobalSearchResult | SessionSearchResult | JSONResponse:
@@ -176,12 +191,16 @@ def search(
     index = get_search_index()
 
     if scope == "session":
+        # `projects=` is accepted and explicitly IGNORED here (spec critique #7): threading it
+        # into a session-scope search would risk filtering out the very session being read, so
+        # this scope never passes project_slugs to the index -- unlike global scope below.
         hits, total = index.search(db, q, session_uuid=session, limit=limit, offset=offset)
         agent_hex = _agent_hex_by_transcript(db, hits)
         return SessionSearchResult(
             items=[_hit_out(h, agent_hex) for h in hits], total=total
         )
 
-    hits, total = index.search(db, q, limit=limit, offset=offset)
+    project_slugs = _parse_projects_param(projects)
+    hits, total = index.search(db, q, project_slugs=project_slugs, limit=limit, offset=offset)
     agent_hex = _agent_hex_by_transcript(db, hits)
     return GlobalSearchResult(groups=_group_hits(db, hits, agent_hex), total=total)

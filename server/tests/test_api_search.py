@@ -142,6 +142,64 @@ def test_session_scope_flat_paged_and_filtered_to_one_session(
     assert ids_1 | ids_2 == {i["record_uuid"] for i in everything["items"]}
 
 
+# --- projects= filter (Task 4): global scope filters, session scope explicitly ignores ---
+
+PROJECTS_SESSION_ALPHA = "eeeeeeee-1111-4111-8111-111111111111"
+PROJECTS_SESSION_BETA = "eeeeeeee-2222-4111-8111-111111111111"
+
+
+def test_global_search_projects_filter(tmp_path: Path, db_session: Session) -> None:
+    root = tmp_path / "search_tree"
+    _write_session(root, "-Users-x-alpha", PROJECTS_SESSION_ALPHA, ["quokka sighting alpha"])
+    _write_session(root, "-Users-x-beta", PROJECTS_SESSION_BETA, ["quokka sighting beta"])
+    _capture_and_index(db_session, root)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    filtered = client.get(
+        "/api/v1/search", params={"q": "quokka", "projects": "-Users-x-alpha"}
+    ).json()
+    assert filtered["total"] == 1
+    assert [g["session"]["session_uuid"] for g in filtered["groups"]] == [
+        PROJECTS_SESSION_ALPHA
+    ]
+
+    both = client.get(
+        "/api/v1/search",
+        params={"q": "quokka", "projects": "-Users-x-alpha,-Users-x-beta"},
+    ).json()
+    assert both["total"] == 2
+
+    unknown = client.get(
+        "/api/v1/search", params={"q": "quokka", "projects": "no-such-slug"}
+    ).json()
+    assert unknown["total"] == 0
+    assert unknown["groups"] == []
+
+
+def test_session_scope_search_ignores_projects_param(
+    tmp_path: Path, db_session: Session
+) -> None:
+    root = tmp_path / "search_tree"
+    _write_session(root, "-Users-x-gamma", PROJECTS_SESSION_ALPHA, ["narwhal migration notes"])
+    _capture_and_index(db_session, root)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    # A session-scope search on a session OUTSIDE the projects= filter still returns its hits
+    # (spec critique #7): threading projects= into session scope would filter out the very
+    # session being read, so the route accepts-and-ignores it there.
+    body = client.get(
+        "/api/v1/search",
+        params={
+            "q": "narwhal",
+            "scope": "session",
+            "session": PROJECTS_SESSION_ALPHA,
+            "projects": "totally-different-slug",
+        },
+    ).json()
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
+
+
 # --- Error paths: both are 422 problem responses, never a 500 ----------------------------
 
 

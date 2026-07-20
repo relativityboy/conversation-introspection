@@ -1,6 +1,6 @@
 """FastAPI application factory for the conversation-introspection archive API -- mostly a read
-layer, but not read-only: ``POST /import`` triggers a background import and the favorites
-router writes favorite/unfavorite state.
+layer, but not read-only: ``POST /import`` triggers a background import, the favorites router
+writes favorite/unfavorite state, and the titles router writes user title state.
 
 ``create_app`` mirrors the CLI's DB lifecycle (:mod:`introspect.config` resolves paths,
 :mod:`introspect.db` opens + migrates the engine) so the same archive can be inspected via
@@ -11,7 +11,8 @@ engine per request.
 
 Task 5 registers the sessions/projects/messages read router (:mod:`introspect.api.routes.sessions`);
 Task 6 adds the search router (:mod:`introspect.api.routes.search`). Task 7 adds the favorites
-router (:mod:`introspect.api.routes.favorites`); Task 8 adds the import router on top.
+router (:mod:`introspect.api.routes.favorites`); Task 8 adds the import router on top. Task
+P4-1 adds the user title router (:mod:`introspect.api.routes.titles`).
 ``/api/v1/health`` and the problem-details error handlers (:mod:`introspect.api.errors`)
 round out the surface. Task 9 mounts the built React UI (``web/dist``) alongside the API so
 ``introspect serve`` is one process, one port -- see ``_resolve_ui_dist`` and the SPA-fallback
@@ -33,6 +34,7 @@ from introspect.api.routes.admin import router as admin_router
 from introspect.api.routes.favorites import router as favorites_router
 from introspect.api.routes.search import router as search_router
 from introspect.api.routes.sessions import router as sessions_router
+from introspect.api.routes.titles import router as titles_router
 from introspect.db import get_engine, session_factory, upgrade_to_head
 
 
@@ -73,6 +75,7 @@ def create_app(
     app.include_router(sessions_router)
     app.include_router(search_router)
     app.include_router(favorites_router)
+    app.include_router(titles_router)
     app.include_router(admin_router)
 
     @app.get("/api/v1/health")

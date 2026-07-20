@@ -29,10 +29,15 @@ class SessionSummary(BaseModel):
     project_slug: str
     ai_title: str | None
     custom_title: str | None
+    user_title: str | None = None
     started_at: datetime | None
     last_activity_at: datetime | None
     message_count: int
     favorite: bool
+    # Populated by GET /sessions?q= ONLY for rows matched by conversational content and NOT by
+    # uuid/title (a <mark>-wrapped best snippet); null on unfiltered lists, detail, and title/
+    # uuid matches. See routes/sessions.py `list_sessions` for the match-attribution rule.
+    match_snippet: str | None = None
 
 
 class TranscriptInfo(BaseModel):

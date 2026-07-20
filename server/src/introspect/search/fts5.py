@@ -78,9 +78,16 @@ class SearchIndex(Protocol):
         query: str,
         *,
         session_uuid: str | None = None,
+        project_slugs: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[SearchHit], int]: ...
+    def session_uuids_matching(
+        self, db: Session, q: str, project_slugs: list[str] | None
+    ) -> list[str]: ...
+    def best_snippets(
+        self, db: Session, session_uuids: list[str], q: str
+    ) -> dict[str, str]: ...
     def rebuild(self, db: Session) -> int: ...
 
 
@@ -135,15 +142,18 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-# The join from a matched FTS rowid back to its conversational location. ``{session_filter}``
-# is empty or an extra ``AND`` on the session — applied identically to search and count so the
-# total reflects the same filter as the page.
+# The join from a matched FTS rowid back to its conversational location. Three format slots,
+# all filled identically for search and count so the total reflects the same filter as the
+# page: ``{session_filter}`` (empty or an extra ``AND`` on the session), and the project pair
+# ``{project_join}`` + ``{project_filter}`` (both empty, or the sessions/projects join plus an
+# ``AND`` on ``projects.dir_slug`` — see :func:`_project_clauses`).
 _SEARCH_FROM = (
     " FROM content_fts"
     " JOIN content_blocks cb ON cb.id = content_fts.rowid"
     " JOIN messages m ON m.id = cb.message_id"
     " JOIN transcripts t ON t.id = m.transcript_id"
-    " WHERE content_fts MATCH :match{session_filter}"
+    "{project_join}"
+    " WHERE content_fts MATCH :match{session_filter}{project_filter}"
 )
 
 _SELECT_SQL = (
@@ -157,6 +167,54 @@ _SELECT_SQL = (
 )
 
 _COUNT_SQL = "SELECT COUNT(*)" + _SEARCH_FROM
+
+# The one corpus-wide pass (session_uuids_matching): DISTINCT because a session matches once
+# regardless of how many of its blocks hit. ``{session_filter}`` is always "" here (this pass
+# is never session-scoped); the project slots carry the optional constraint.
+_SESSION_UUIDS_SQL = "SELECT DISTINCT t.session_id AS session_uuid" + _SEARCH_FROM
+
+# best_snippets: ONE batched query returning each listed session's bm25-BEST snippet. The
+# layering is forced by FTS5 — snippet()/bm25() are legal ONLY as top-level result columns of
+# a query that carries the MATCH; SQLite rejects them inside an aggregate or a windowed/nested
+# ordering context ("unable to use function ... in the requested context"). So the innermost
+# SELECT materializes snippet + bm25 as PLAIN columns; the middle ranks each session's rows
+# over that plain ``rank`` with ROW_NUMBER (portable standard SQL — survives a Postgres swap,
+# unlike SQLite's min()-bare-column idiom); the outer keeps rn = 1. A session with no matching
+# block produces no row and is therefore absent from the result — exactly the dict contract.
+_BEST_SNIPPETS_SQL = (
+    "SELECT session_uuid, snippet FROM ("
+    " SELECT session_uuid, snippet,"
+    " ROW_NUMBER() OVER (PARTITION BY session_uuid ORDER BY rank ASC, block_id ASC) AS rn"
+    " FROM ("
+    " SELECT t.session_id AS session_uuid,"
+    " snippet(content_fts, 0, '<mark>', '</mark>', '…', 12) AS snippet,"
+    " bm25(content_fts) AS rank, content_fts.rowid AS block_id"
+    " FROM content_fts"
+    " JOIN content_blocks cb ON cb.id = content_fts.rowid"
+    " JOIN messages m ON m.id = cb.message_id"
+    " JOIN transcripts t ON t.id = m.transcript_id"
+    " WHERE content_fts MATCH :match AND t.session_id IN :session_uuids"
+    " )"
+    ") WHERE rn = 1"
+)
+
+
+def _project_clauses(project_slugs: list[str] | None) -> tuple[str, str]:
+    """The (join, filter) SQL fragments for an optional project constraint.
+
+    ``None`` -> unfiltered (``"", ""``). A list (even empty) -> the sessions/projects join
+    plus an expanding ``IN`` on ``projects.dir_slug``; an EMPTY list renders as a false ``IN``
+    and so matches nothing — the documented None-vs-``[]`` split. The join reaches projects via
+    ``transcripts.session_id -> sessions.session_uuid -> sessions.project_id -> projects.id``
+    and never touches ``content_fts``, so the external-content rowid join stays intact.
+    """
+    if project_slugs is None:
+        return "", ""
+    return (
+        " JOIN sessions s ON s.session_uuid = t.session_id"
+        " JOIN projects p ON p.id = s.project_id",
+        " AND p.dir_slug IN :project_slugs",
+    )
 
 
 class Fts5SearchIndex:
@@ -224,6 +282,7 @@ class Fts5SearchIndex:
         query: str,
         *,
         session_uuid: str | None = None,
+        project_slugs: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[SearchHit], int]:
@@ -232,22 +291,38 @@ class Fts5SearchIndex:
         ``query`` is sanitized (see :func:`sanitize_query`); an empty sanitized query returns
         ``([], 0)`` without touching the DB. Hits are ordered by ascending bm25 rank. The
         second element is the total number of matches for the same filter (not just this
-        page). No input can raise: the sanitizer guarantees a syntactically valid MATCH.
+        page). ``session_uuid`` scopes to one session; ``project_slugs`` scopes to a set of
+        projects (``None`` = every project, ``[]`` = no project => no results — both the page
+        and the total are filtered identically). No input can raise: the sanitizer guarantees
+        a syntactically valid MATCH.
         """
         match = sanitize_query(query)
         if not match:
             return [], 0
 
         session_filter = " AND t.session_id = :session_uuid" if session_uuid is not None else ""
+        project_join, project_filter = _project_clauses(project_slugs)
+        slots = {
+            "session_filter": session_filter,
+            "project_join": project_join,
+            "project_filter": project_filter,
+        }
         params: dict[str, object] = {"match": match, "limit": limit, "offset": offset}
         count_params: dict[str, object] = {"match": match}
         if session_uuid is not None:
             params["session_uuid"] = session_uuid
             count_params["session_uuid"] = session_uuid
+        if project_slugs is not None:
+            params["project_slugs"] = project_slugs
+            count_params["project_slugs"] = project_slugs
 
-        rows = db.execute(
-            text(_SELECT_SQL.format(session_filter=session_filter)), params
-        ).mappings().all()
+        select_stmt = text(_SELECT_SQL.format(**slots))
+        count_stmt = text(_COUNT_SQL.format(**slots))
+        if project_slugs is not None:
+            select_stmt = select_stmt.bindparams(bindparam("project_slugs", expanding=True))
+            count_stmt = count_stmt.bindparams(bindparam("project_slugs", expanding=True))
+
+        rows = db.execute(select_stmt, params).mappings().all()
         hits = [
             SearchHit(
                 session_uuid=row["session_uuid"],
@@ -263,10 +338,61 @@ class Fts5SearchIndex:
             )
             for row in rows
         ]
-        total = db.execute(
-            text(_COUNT_SQL.format(session_filter=session_filter)), count_params
-        ).scalar_one()
+        total = db.execute(count_stmt, count_params).scalar_one()
         return hits, int(total)
+
+    def session_uuids_matching(
+        self, db: Session, q: str, project_slugs: list[str] | None
+    ) -> list[str]:
+        """Distinct session uuids whose text content matches ``q``, optionally project-scoped.
+
+        The one corpus-wide FTS pass behind sidebar/list content search. ``q`` is sanitized;
+        an empty sanitized query returns ``[]`` without touching the DB. ``project_slugs``
+        follows the :func:`_project_clauses` contract (``None`` = unfiltered, ``[]`` = matches
+        nothing). No input can raise.
+        """
+        match = sanitize_query(q)
+        if not match:
+            return []
+        project_join, project_filter = _project_clauses(project_slugs)
+        stmt = text(
+            _SESSION_UUIDS_SQL.format(
+                session_filter="", project_join=project_join, project_filter=project_filter
+            )
+        )
+        params: dict[str, object] = {"match": match}
+        if project_slugs is not None:
+            stmt = stmt.bindparams(bindparam("project_slugs", expanding=True))
+            params["project_slugs"] = project_slugs
+        # NOTE(claude): this returns the FULL corpus-wide match set, materialized into a Python
+        # list. Callers feed it straight back into an expanding IN(...) — best_snippets below
+        # and the route's `session_uuid IN (...)`. On older SQLite builds that IN caps at 999
+        # bound variables (SQLITE_MAX_VARIABLE_NUMBER); fine at v1 scale, but the Postgres/scale
+        # pass should chunk the list or push the membership test into SQL (phase-4 plan F8).
+        return [row[0] for row in db.execute(stmt, params).all()]
+
+    def best_snippets(
+        self, db: Session, session_uuids: list[str], q: str
+    ) -> dict[str, str]:
+        """Each listed session's single bm25-best snippet (``<mark>``-wrapped), batched.
+
+        ONE query for the whole page (Donovan ruling 2026-07-19: keep the round-trip count at
+        one for the future Postgres backend). Sessions with no match for ``q`` are absent from
+        the returned dict. An empty ``session_uuids`` list (or an empty sanitized ``q``) short
+        -circuits to ``{}`` with zero DB queries. No input can raise.
+        """
+        if not session_uuids:
+            return {}
+        match = sanitize_query(q)
+        if not match:
+            return {}
+        # NOTE(claude): session_uuids expands into an IN(...) — the same 999-variable ceiling
+        # as session_uuids_matching (see its NOTE). This is deliberately ONE query; do NOT
+        # refactor into a per-session loop (Donovan ruling 2026-07-19: round-trip count stays
+        # at one so a Postgres backend can serve it identically).
+        stmt = text(_BEST_SNIPPETS_SQL).bindparams(bindparam("session_uuids", expanding=True))
+        rows = db.execute(stmt, {"match": match, "session_uuids": session_uuids}).all()
+        return {session_uuid: snippet for session_uuid, snippet in rows}
 
     def rebuild(self, db: Session) -> int:
         """Clear and re-index every text block from scratch. Returns the number indexed.
