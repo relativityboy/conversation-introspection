@@ -227,6 +227,19 @@ describe('favorite star', () => {
   })
 })
 
+// THE IMPORTANT (Phase 4 fixwave, half 2): the logo link must carry the active project filter
+// through App.tsx's catch-all redirect (readProjects/writeProjects), not shed it at the link.
+describe('logo link', () => {
+  it('carries the current ?projects= filter on the logo link href when chips are active', async () => {
+    fetchSessions.mockResolvedValue({ items: [], total: 0 })
+    renderSidebar(['/?projects=alpha,mid'])
+    await screen.findByText('Archive is empty — run introspect import')
+
+    const link = screen.getByRole('link', { name: 'conversation-introspection' })
+    expect(link.getAttribute('href')).toBe('/?projects=alpha%2Cmid')
+  })
+})
+
 describe('project filter plumbing (Task 9)', () => {
   beforeEach(() => {
     fetchSessions.mockResolvedValue({ items: [], total: 0 })

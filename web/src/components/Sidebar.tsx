@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useSessions } from '../api/hooks'
-import { readProjects, readSidebarParams, writeSidebarParams } from '../lib/urlState'
+import { readProjects, readSidebarParams, writeProjects, writeSidebarParams } from '../lib/urlState'
 import { SessionListItem } from './SessionListItem'
 
 const DEBOUNCE_MS = 250
@@ -68,7 +68,13 @@ export function Sidebar() {
   return (
     <>
       <Link
-        to="/"
+        // Phase 4 fixwave THE IMPORTANT (half 2): "/" is a direct link, not routed through
+        // App.tsx's catch-all redirect, so it must carry the project filter itself. Deliberately
+        // NOT filter/fav (TabBar's established precedent: switching surfaces resets search boxes).
+        to={{
+          pathname: '/',
+          search: writeProjects(new URLSearchParams(), readProjects(searchParams)).toString(),
+        }}
         style={{
           display: 'block',
           fontFamily: 'var(--serif)',

@@ -135,7 +135,9 @@ forward.
    URL (`?filter=`) so it's shareable. A project chip bar above the sidebar scopes the whole
    app — sidebar, both search tabs, and deep links — to the projects you choose
    (`?projects=slug1,slug2`); it's keyboard-driven: arrow-down opens the list, typing filters
-   it, Escape closes it, and a second quick Escape clears the selection. Click a session's
+   it, Escape closes the list or clears typed text, and a second quick Escape repeats that when
+   either was active — or, when the box was already empty and the list already closed, clears the
+   selected projects instead. Click a session's
    title to rename it inline — Enter commits, Escape cancels, and a second quick Escape
    reverts to the original archive title; a small dot next to a renamed title reveals that
    original on hover. A "conversation only" toggle in the reader's sticky header hides system

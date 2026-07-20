@@ -387,6 +387,18 @@ def test_best_snippets_empty_query_returns_empty(db_session, indexed_fixture):
     assert idx.best_snippets(db_session, [SESSION_UUID_1], "") == {}
 
 
+def test_best_snippets_empty_query_runs_zero_queries(db_session, indexed_fixture):
+    from unittest.mock import patch
+
+    # A non-empty session_uuids list, but a `q` that sanitizes down to "" (e.g. a lone dangling
+    # quote) -- mirrors test_best_snippets_empty_input_runs_zero_queries above, for the OTHER
+    # short-circuit branch (sanitized-empty q, not empty session_uuids).
+    with patch.object(db_session, "execute", wraps=db_session.execute) as spy:
+        result = idx.best_snippets(db_session, [SESSION_UUID_1], '"')
+    assert result == {}
+    spy.assert_not_called()
+
+
 @pytest.mark.parametrize("evil", _EVIL_INPUTS)
 def test_best_snippets_never_raises(db_session, indexed_fixture, evil):
     result = idx.best_snippets(db_session, [SESSION_UUID_1], evil)  # must not raise

@@ -25,10 +25,9 @@ const BREADCRUMB_STYLE: CSSProperties = {
 export function SubagentPage() {
   const { uuid = '', agentHex = '', msgUuid } = useParams()
   const [searchParams] = useSearchParams()
-  // Carried onto both "← back to conversation" breadcrumbs below (Task 9) — NOT onto the "← back
-  // to the archive" links a few lines down, which target "/" and are already stripped of every
-  // param (including this one) by App.tsx's catch-all redirect to "/search"; see the task report
-  // for why that's flagged rather than fixed here.
+  // Carried onto both "← back to conversation" breadcrumbs below (Task 9) AND the "← back to the
+  // archive" link a few lines down (Phase 4 fixwave THE IMPORTANT, half 2): "/" is a direct link,
+  // not routed through App.tsx's catch-all redirect, so it must carry the filter itself.
   const backSearch = writeProjects(new URLSearchParams(), readProjects(searchParams)).toString()
   const query = useSession(uuid)
   // The ONE owner of conversation-only state for this reader page (plan critique F4), same shape
@@ -44,7 +43,7 @@ export function SubagentPage() {
       return (
         <div style={MIST_TEXT}>
           <p style={{ marginTop: 0 }}>This conversation isn&rsquo;t in the archive.</p>
-          <Link to="/" style={{ color: 'var(--dragonfly)' }}>
+          <Link to={{ pathname: '/', search: backSearch }} style={{ color: 'var(--dragonfly)' }}>
             ← back to the archive
           </Link>
         </div>

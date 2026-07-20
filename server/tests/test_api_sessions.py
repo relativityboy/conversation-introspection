@@ -229,20 +229,35 @@ def test_sessions_q_title_match_snippet_null_even_when_content_matches(
     assert body["items"][0]["match_snippet"] is None
 
 
+@pytest.mark.parametrize(
+    "needle,literal_title,non_matching_title",
+    [
+        # "_" is LIKE's single-char wildcard -- an unescaped '_' would match the 'b' in "abc".
+        ("a_c", "alpha a_c omega", "alpha abc omega"),
+        # "%" is LIKE's multi-char wildcard -- an unescaped '%' would match "aXYZc" too.
+        ("a%c", "alpha a%c omega", "alpha aXYZc omega"),
+        # "\" is the ESCAPE char itself -- a literal backslash in q must not be interpreted as
+        # introducing an escape sequence for the char that follows it.
+        ("a\\c", "alpha a\\c omega", "alpha abc omega"),
+    ],
+)
 def test_sessions_q_wildcard_chars_treated_literally(
-    db_session: Session, client: TestClient
+    db_session: Session,
+    client: TestClient,
+    needle: str,
+    literal_title: str,
+    non_matching_title: str,
 ) -> None:
-    # LIKE metacharacters in q must be literal, not wildcards. "a_c" must match "a_c" but NOT
-    # "abc" (where an unescaped '_' would match the 'b').
+    # LIKE metacharacters in q must be literal, not wildcards, and must never crash the query.
     db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_1).update(
-        {ChatSession.custom_title: "alpha a_c omega"}
+        {ChatSession.custom_title: literal_title}
     )
     db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_2).update(
-        {ChatSession.custom_title: "alpha abc omega"}
+        {ChatSession.custom_title: non_matching_title}
     )
     db_session.commit()
 
-    body = client.get("/api/v1/sessions", params={"q": "a_c"}).json()
+    body = client.get("/api/v1/sessions", params={"q": needle}).json()
     assert _uuids(body["items"]) == [SESSION_UUID_1]
     assert SESSION_UUID_2 not in _uuids(body["items"])
     assert body["total"] == 1
@@ -315,6 +330,14 @@ def test_sessions_projects_filter(client: TestClient) -> None:
     assert set(_uuids(both["items"])) == {SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3}
     assert both["total"] == 3
 
+    # A trailing comma alongside a real slug drops the empty segment rather than erroring or
+    # matching nothing.
+    trailing_comma = client.get(
+        "/api/v1/sessions", params={"projects": f"{PROJECT_SLUG_2},"}
+    ).json()
+    assert _uuids(trailing_comma["items"]) == [SESSION_UUID_3]
+    assert trailing_comma["total"] == 1
+
 
 def test_sessions_projects_unknown_slug_matches_nothing(client: TestClient) -> None:
     # No error, no validation -- an unrecognized slug simply matches zero sessions.
@@ -323,13 +346,14 @@ def test_sessions_projects_unknown_slug_matches_nothing(client: TestClient) -> N
     assert body["total"] == 0
 
 
-@pytest.mark.parametrize("projects_value", [None, ""])
+@pytest.mark.parametrize("projects_value", [None, "", " , ,", ",,"])
 def test_sessions_projects_absent_or_empty_is_unfiltered(
     client: TestClient, projects_value: str | None
 ) -> None:
     # Absent `projects=` and present-but-empty `?projects=` both mean "no chips selected" ->
     # unfiltered, per the route-level mapping (empty comma-list is treated as absent, not as
-    # the SearchIndex protocol's `[]` == matches-nothing).
+    # the SearchIndex protocol's `[]` == matches-nothing). Whitespace-and-commas-only input
+    # (" , ," / ",,") strips and filters down to the same all-empty case.
     params = {} if projects_value is None else {"projects": projects_value}
     body = client.get("/api/v1/sessions", params=params).json()
     assert set(_uuids(body["items"])) == {SESSION_UUID_1, SESSION_UUID_2, SESSION_UUID_3}
@@ -535,7 +559,7 @@ _CHAT_ONLY_SESSION_UUID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 # attachment). Deliberately NOT a truncation of the raw order -- kept rows land at
 # non-contiguous raw indices so filtered total/paging/around-centering are exercised
 # against a real re-indexing, not just "drop a prefix/suffix".
-_CHAT_ONLY_TYPES = [
+_CHAT_ONLY_TREE_TYPES = [
     "system", "user", "assistant", "system", "user", "assistant",
     "attachment", "system", "user", "assistant", "system", "user",
     "assistant", "system",
@@ -554,12 +578,12 @@ def _chat_only_line(kind: str, index: int) -> bytes:
 
 
 def _build_chat_only_tree(db: Session, tmp_path: Path) -> tuple[int, list[str], list[str]]:
-    """Capture ``_CHAT_ONLY_TYPES`` as a single main transcript under a fresh tree; return
+    """Capture ``_CHAT_ONLY_TREE_TYPES`` as a single main transcript under a fresh tree; return
     ``(transcript_id, record_uuids_in_id_order, types_in_id_order)``."""
     root = tmp_path / "chat_only_tree"
     proj = root / "-Users-x-chatonly"
     proj.mkdir(parents=True)
-    lines = [_chat_only_line(kind, i) for i, kind in enumerate(_CHAT_ONLY_TYPES)]
+    lines = [_chat_only_line(kind, i) for i, kind in enumerate(_CHAT_ONLY_TREE_TYPES)]
     (proj / f"{_CHAT_ONLY_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
     _capture(db, root)
 

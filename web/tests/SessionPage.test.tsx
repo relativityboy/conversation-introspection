@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '../src/api/client'
 import type { MessageList, MessageOut, SessionDetail, TranscriptInfo } from '../src/api/types'
 import { SessionPage } from '../src/routes/SessionPage'
 
@@ -138,6 +139,21 @@ describe('SessionPage header wiring', () => {
 
     const input = screen.getByRole('textbox', { name: 'Session title' }) as HTMLInputElement
     expect(input.value).toBe('AI Title')
+  })
+})
+
+// --- 404 back-link (Phase 4 fixwave THE IMPORTANT, half 2): a genuine deep link back into the
+// app -- must carry the active project filter, mirroring SubagentPage's identical link. ---------
+
+describe('SessionPage session fetch errors', () => {
+  it('preserves ?projects= on the not-found back-to-archive link', async () => {
+    fetchSession.mockRejectedValue(new ApiError(404, 'Not Found', 'session x not found'))
+    renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee?projects=alpha,mid')
+
+    expect(await screen.findByText('This conversation isn’t in the archive.')).toBeDefined()
+    expect(screen.getByRole('link', { name: '← back to the archive' }).getAttribute('href')).toBe(
+      '/?projects=alpha%2Cmid',
+    )
   })
 })
 

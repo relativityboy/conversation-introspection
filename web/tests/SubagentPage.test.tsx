@@ -200,6 +200,19 @@ describe('session fetch errors', () => {
 
     expect(await screen.findByText('archive offline')).toBeDefined()
   })
+
+  // Phase 4 fixwave THE IMPORTANT, half 2: this back-link targets "/" directly (not through
+  // App.tsx's catch-all redirect), so it must carry ?projects= itself, mirroring the
+  // "back to conversation" breadcrumbs above.
+  it('preserves ?projects= on the back-to-archive link', async () => {
+    fetchSession.mockRejectedValue(new ApiError(404, 'Not Found', 'session uuid-1 not found'))
+    renderAt('/s/uuid-1/a/deadbeef?projects=alpha,mid')
+
+    await screen.findByText('This conversation isn’t in the archive.')
+    expect(screen.getByRole('link', { name: '← back to the archive' }).getAttribute('href')).toBe(
+      '/?projects=alpha%2Cmid',
+    )
+  })
 })
 
 // --- found agentHex ---------------------------------------------------------------------------

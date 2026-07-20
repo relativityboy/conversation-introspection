@@ -164,7 +164,7 @@ export function ProjectFilterBar() {
               role="searchbox"
               aria-label="Filter conversations by project"
               aria-expanded={open}
-              aria-controls={LISTBOX_ID}
+              aria-controls={open ? LISTBOX_ID : undefined}
               value={text}
               placeholder="Filter by project…"
               onChange={(event) => {
@@ -187,7 +187,7 @@ export function ProjectFilterBar() {
             {open && (
               <ul id={LISTBOX_ID} role="listbox" aria-label="Projects" style={listboxStyle}>
                 {options.length === 0 ? (
-                  <li aria-disabled="true" style={{ ...TEXT, padding: '6px 10px' }}>
+                  <li role="option" aria-disabled="true" style={{ ...TEXT, padding: '6px 10px' }}>
                     no projects
                   </li>
                 ) : (

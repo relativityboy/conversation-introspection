@@ -59,6 +59,13 @@ def test_put_title_reflected_in_sessions_list(client: TestClient) -> None:
     assert _user_title_of(body["items"], SESSION_UUID_2) is None
 
 
+def test_put_title_reflected_in_session_detail(client: TestClient) -> None:
+    client.put(f"/api/v1/sessions/{SESSION_UUID_1}/title", json={"title": "My Title"})
+
+    detail = client.get(f"/api/v1/sessions/{SESSION_UUID_1}").json()
+    assert detail["user_title"] == "My Title"
+
+
 def test_second_put_updates_title_and_updated_at_one_row(
     db_session: Session, client: TestClient
 ) -> None:

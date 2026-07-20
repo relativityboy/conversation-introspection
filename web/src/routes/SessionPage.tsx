@@ -12,6 +12,7 @@ import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
 import { TitleEditor } from '../components/TitleEditor'
 import { useChatOnly } from '../lib/chatOnly'
+import { readProjects, writeProjects } from '../lib/urlState'
 
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', fontSize: 13, padding: '18px 24px' }
 
@@ -22,6 +23,13 @@ export function SessionPage() {
   const { uuid = '', msgUuid } = useParams()
   const [searchParams] = useSearchParams()
   const q = searchParams.get('q') ?? ''
+  // Phase 4 fixwave THE IMPORTANT (half 2): "/" below is a direct link, not routed through
+  // App.tsx's catch-all redirect, so it must carry the project filter itself -- deliberately NOT
+  // q (TabBar's established precedent: switching surfaces resets search boxes).
+  const backToArchiveSearch = writeProjects(
+    new URLSearchParams(),
+    readProjects(searchParams),
+  ).toString()
   const query = useSession(uuid)
   // The ONE owner of conversation-only state for this reader page (plan critique F4): the header
   // toggle and the ConversationView body both read this same [chatOnly, setChatOnly].
@@ -34,7 +42,10 @@ export function SessionPage() {
       return (
         <div style={MIST_TEXT}>
           <p style={{ marginTop: 0 }}>This conversation isn&rsquo;t in the archive.</p>
-          <Link to="/" style={{ color: 'var(--dragonfly)' }}>
+          <Link
+            to={{ pathname: '/', search: backToArchiveSearch }}
+            style={{ color: 'var(--dragonfly)' }}
+          >
             ← back to the archive
           </Link>
         </div>
