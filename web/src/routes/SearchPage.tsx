@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useSearch } from '../api/hooks'
 import type { GlobalSearchResult } from '../api/types'
 import { GlobalSearchTab } from '../components/search/GlobalSearchTab'
+import { readProjects } from '../lib/urlState'
 
 const WRAP_STYLE: CSSProperties = { padding: '18px 24px 40px', maxWidth: 820 }
 
@@ -43,7 +44,10 @@ export function SearchPage() {
     setDraft(q)
   }
 
-  const query = useSearch(q, 'global')
+  // Read live, at fire time, same as `q` above — a chip add/remove changes the URL and this
+  // re-renders, so the next search fires with the current filter (Task 9).
+  const projects = readProjects(searchParams)
+  const query = useSearch(q, 'global', undefined, projects.length > 0 ? projects : undefined)
 
   function commit(event: FormEvent) {
     event.preventDefault()
@@ -81,7 +85,7 @@ export function SearchPage() {
         <div style={{ marginTop: 20 }}>
           {query.isPending && <p style={{ color: 'var(--mist)', fontSize: 13 }}>…</p>}
           {query.isError && <p style={{ color: 'var(--mist)', fontSize: 13 }}>archive offline</p>}
-          {result && <GlobalSearchTab result={result} q={q} />}
+          {result && <GlobalSearchTab result={result} q={q} projects={projects} />}
         </div>
       )}
     </div>

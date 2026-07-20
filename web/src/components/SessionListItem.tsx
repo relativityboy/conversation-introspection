@@ -2,11 +2,13 @@ import type { CSSProperties } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useFavorite } from '../api/hooks'
 import type { SessionSummary } from '../api/types'
+import { renderSnippet } from '../lib/snippet'
+import { displayTitle } from '../lib/titles'
 import { HorizonBand } from './HorizonBand'
 
 export interface SessionListItemProps {
   session: SessionSummary
-  /** Current sidebar query string (e.g. "?title=foo&fav=1", or ""), preserved when navigating
+  /** Current sidebar query string (e.g. "?filter=foo&fav=1", or ""), preserved when navigating
    * into the session so returning to the list lands back on the same filter. */
   search: string
 }
@@ -30,6 +32,20 @@ const LINK_ACTIVE_STYLE: CSSProperties = {
   borderLeft: '2px solid var(--dragonfly)',
 }
 
+// One-line, ellipsized hint shown only when the sidebar's content search matched this session's
+// conversation body rather than its title/uuid (`session.match_snippet` non-null — see
+// SessionSummary in api/types.ts). `<mark>` spans inside it render via the same shared splitter
+// as the search tab (lib/snippet.tsx), so a matched term reads identically in both places.
+const SNIPPET_HINT_STYLE: CSSProperties = {
+  fontFamily: 'var(--sans)',
+  fontSize: 12,
+  color: 'var(--mist)',
+  marginTop: 4,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+
 // NOTE(claude): the star is a SIBLING of the NavLink, absolutely positioned over its top-right
 // corner — NOT a child. An <a> must not contain a <button> (invalid interactive-inside-
 // interactive content model), and the sibling structure is also what guarantees a star click
@@ -39,7 +55,7 @@ const LINK_ACTIVE_STYLE: CSSProperties = {
 export function SessionListItem({ session, search }: SessionListItemProps) {
   const favoriteMutation = useFavorite()
 
-  const title = session.ai_title ?? session.custom_title ?? session.session_uuid.slice(0, 8)
+  const title = displayTitle(session)
   const dateLabel = formatDate(session.last_activity_at)
   const metaText = dateLabel
     ? `${dateLabel} · ${session.message_count} msgs`
@@ -63,6 +79,11 @@ export function SessionListItem({ session, search }: SessionListItemProps) {
         >
           {title}
         </div>
+        {session.match_snippet !== null && (
+          <div className="convo-snippet-hint" style={SNIPPET_HINT_STYLE}>
+            {renderSnippet(session.match_snippet)}
+          </div>
+        )}
         <div
           style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--mist)', marginTop: 5 }}
         >

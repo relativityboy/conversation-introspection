@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useSearch } from '../../api/hooks'
 import type { SessionSearchResult } from '../../api/types'
+import { readProjects } from '../../lib/urlState'
 import { HitSnippet } from './HitSnippet'
 
 const INPUT_STYLE: CSSProperties = {
@@ -76,7 +77,13 @@ export function ConversationSearch({ sessionUuid }: { sessionUuid: string }) {
  * affordance that clears `q` (replace — leaving is not its own history entry).
  */
 export function ConversationSearchResults({ sessionUuid, q }: { sessionUuid: string; q: string }) {
-  const [, setSearchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Session-scope search never passes projects to the server (see useSearch's call below — the
+  // 4th arg is simply omitted, per §14.2: filtering by project within a single already-scoped
+  // session is meaningless, and the server explicitly ignores it too). The URL's ?projects=,
+  // read here, is used ONLY to carry the filter onto each hit's deep link (a link-preservation
+  // concern, not a query one) — see the `projects` prop passed to HitSnippet below.
+  const projects = readProjects(searchParams)
   const query = useSearch(q, 'session', sessionUuid)
   const result = query.data as SessionSearchResult | undefined
 
@@ -124,6 +131,7 @@ export function ConversationSearchResults({ sessionUuid, q }: { sessionUuid: str
                 sessionUuid={sessionUuid}
                 hit={hit}
                 q={q}
+                projects={projects}
               />
             ))}
           </>

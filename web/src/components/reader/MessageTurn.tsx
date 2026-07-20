@@ -25,9 +25,12 @@ function roleOf(type: string): Role {
 
 export interface MessageTurnProps {
   message: MessageOut
+  /** Conversation-only mode: hide tool_use / tool_result blocks (and the subagent chips that ride
+   * tool_use) — see `Block`. Owned by the page via useChatOnly; false when omitted. */
+  chatOnly?: boolean
 }
 
-export function MessageTurn({ message }: MessageTurnProps) {
+export function MessageTurn({ message, chatOnly = false }: MessageTurnProps) {
   const role = roleOf(message.type)
   const time = localHHMM(message.timestamp)
   const blocks = [...message.blocks].sort((a, b) => a.block_index - b.block_index)
@@ -51,7 +54,7 @@ export function MessageTurn({ message }: MessageTurnProps) {
           {time ? `${SPEAKER[role]} · ${time}` : SPEAKER[role]}
         </div>
         {blocks.map((block) => (
-          <Block key={block.block_index} block={block} />
+          <Block key={block.block_index} block={block} chatOnly={chatOnly} />
         ))}
       </div>
     </article>
@@ -62,7 +65,12 @@ export function MessageTurn({ message }: MessageTurnProps) {
 // falls back to ToolBlock when the block is an ordinary tool call (not a subagent dispatch).
 // Unknown kinds render a mono chip rather than throwing — the archive may grow block kinds this
 // reader predates, and a forward-tolerant marker beats a crash.
-function Block({ block }: { block: BlockOut }) {
+//
+// Under `chatOnly`, tool_use and tool_result are dropped block-level (subagent chips disappear
+// WITH their tool_use — ledger #7, intended, not special-cased). text / thinking / image (and
+// forward-tolerant unknowns) still render — this is a per-block visual filter, distinct from the
+// server's message-level `chat_only` filter on the seed.
+function Block({ block, chatOnly }: { block: BlockOut; chatOnly: boolean }) {
   switch (block.block_kind) {
     case 'text':
       return block.text_content ? <MarkdownProse markdown={block.text_content} /> : null
@@ -71,9 +79,9 @@ function Block({ block }: { block: BlockOut }) {
     case 'image':
       return <ImageBlock />
     case 'tool_use':
-      return <SubagentChip block={block} />
+      return chatOnly ? null : <SubagentChip block={block} />
     case 'tool_result':
-      return <ToolBlock block={block} />
+      return chatOnly ? null : <ToolBlock block={block} />
     default:
       return <UnknownChip kind={block.block_kind} />
   }

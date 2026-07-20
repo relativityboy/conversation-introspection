@@ -89,21 +89,31 @@ function buildQuery(params: Record<string, string | number | boolean | undefined
   return qs ? `?${qs}` : ''
 }
 
+/**
+ * Comma-join a `projects` chip-list filter for the wire. Shared by `fetchSessions` and
+ * `fetchSearch` (global scope) so the two can never drift. An absent or empty list means "no
+ * filter" server-side (`_parse_projects_param` treats them identically), so we send nothing
+ * rather than an empty `projects=` param -- consistent with `buildQuery`'s undefined-omits rule.
+ */
+function projectsParam(projects: string[] | undefined): string | undefined {
+  return projects && projects.length > 0 ? projects.join(',') : undefined
+}
+
 // --- sessions -----------------------------------------------------------------------------
 
 export interface SessionFilters {
-  title?: string
+  q?: string
   favorite?: boolean
-  project?: string
+  projects?: string[]
   limit?: number
   offset?: number
 }
 
 export function fetchSessions(filters: SessionFilters = {}): Promise<SessionList> {
   const qs = buildQuery({
-    title: filters.title,
+    q: filters.q,
     favorite: filters.favorite,
-    project: filters.project,
+    projects: projectsParam(filters.projects),
     limit: filters.limit,
     offset: filters.offset,
   })
@@ -120,13 +130,21 @@ export interface MessagesOptions {
   offset?: number
   limit?: number
   around?: string
+  chat_only?: boolean
 }
 
 export function fetchMessages(
   transcriptId: number,
   opts: MessagesOptions = {},
 ): Promise<MessageList> {
-  const qs = buildQuery({ offset: opts.offset, limit: opts.limit, around: opts.around })
+  const qs = buildQuery({
+    offset: opts.offset,
+    limit: opts.limit,
+    around: opts.around,
+    // `1` when true, ABSENT (not `0`) when false -- the server default is false, so a false
+    // value sends no signal rather than noise (see routes/sessions.py `chat_only: bool = False`).
+    chat_only: opts.chat_only ? 1 : undefined,
+  })
   return apiFetch<MessageList>(`/transcripts/${transcriptId}/messages${qs}`)
 }
 
@@ -143,8 +161,18 @@ export function fetchSearch(
   sessionUuid?: string,
   limit?: number,
   offset?: number,
+  // Global-scope callers only -- the server explicitly IGNORES `projects=` under
+  // `scope=session` (spec critique #7), so session-scope callers must not pass this.
+  projects?: string[],
 ): Promise<GlobalSearchResult | SessionSearchResult> {
-  const qs = buildQuery({ q, scope, session: sessionUuid, limit, offset })
+  const qs = buildQuery({
+    q,
+    scope,
+    session: sessionUuid,
+    projects: projectsParam(projects),
+    limit,
+    offset,
+  })
   return apiFetch<GlobalSearchResult | SessionSearchResult>(`/search${qs}`)
 }
 
@@ -159,6 +187,24 @@ export function putFavorite(uuid: string): Promise<undefined> {
 export function deleteFavorite(uuid: string): Promise<undefined> {
   return apiFetch<undefined>(`/sessions/${encodeURIComponent(uuid)}/favorite`, {
     method: 'DELETE',
+  })
+}
+
+// --- titles ---------------------------------------------------------------------------------
+
+/**
+ * `PUT /sessions/{uuid}/title`. Resolves `undefined` on the bare 204 (see `apiFetch`).
+ *
+ * `title: ''` is the documented revert path -- sent verbatim, no client-side trimming or
+ * short-circuiting. The server owns the empty-means-delete semantics (see
+ * `server/src/introspect/api/routes/titles.py`): a blank/whitespace title deletes the user
+ * title row and the session falls back to its archive-derived title.
+ */
+export function putSessionTitle(uuid: string, title: string): Promise<undefined> {
+  return apiFetch<undefined>(`/sessions/${encodeURIComponent(uuid)}/title`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
   })
 }
 

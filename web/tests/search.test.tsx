@@ -37,10 +37,12 @@ function makeSession(over: Partial<SessionSummary> = {}): SessionSummary {
     project_slug: '-Users-x-proj',
     ai_title: 'My Session',
     custom_title: null,
+    user_title: null,
     started_at: null,
     last_activity_at: null,
     message_count: 3,
     favorite: false,
+    match_snippet: null,
     ...over,
   }
 }
@@ -109,7 +111,53 @@ describe('SearchPage', () => {
     await user.type(screen.getByRole('searchbox', { name: 'Search all conversations' }), 'hello{Enter}')
 
     await waitFor(() => expect(locationRef.current?.search).toBe('?q=hello'))
-    await waitFor(() => expect(fetchSearch).toHaveBeenCalledWith('hello', 'global', undefined))
+    // fetchSearch's full positional signature (q, scope, session, limit, offset, projects) — no
+    // ?projects= in the URL here, so the trailing arg is undefined (Task 9: useSearch threads it
+    // through as a real positional arg, not a re-parsed string, for every call).
+    await waitFor(() =>
+      expect(fetchSearch).toHaveBeenCalledWith(
+        'hello',
+        'global',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ),
+    )
+  })
+
+  // Task 9: the global search call must include the CURRENT ?projects= — read at fire time (the
+  // same render that reads ?q=), not a value captured once at mount.
+  it('includes the current ?projects= in the global search request', async () => {
+    fetchSearch.mockResolvedValue(globalResult())
+    setup(<SearchPage />, '/search?q=foo&projects=alpha,mid')
+
+    await waitFor(() =>
+      expect(fetchSearch).toHaveBeenCalledWith(
+        'foo',
+        'global',
+        undefined,
+        undefined,
+        undefined,
+        ['alpha', 'mid'],
+      ),
+    )
+  })
+
+  // Task 9: the q-commit path builds its next URLSearchParams from `prev` (the CURRENT params),
+  // so ?projects= should survive a fresh Enter-commit without any special-casing.
+  it('preserves ?projects= across the q-commit (Enter) round trip', async () => {
+    fetchSearch.mockResolvedValue(globalResult())
+    const user = userEvent.setup()
+    const { locationRef } = setup(<SearchPage />, '/search?projects=alpha')
+
+    await user.type(screen.getByRole('searchbox', { name: 'Search all conversations' }), 'hello{Enter}')
+
+    await waitFor(() => {
+      const params = new URLSearchParams(locationRef.current?.search)
+      expect(params.get('q')).toBe('hello')
+      expect(params.get('projects')).toBe('alpha')
+    })
   })
 
   it('renders grouped results — a serif session header link and hit snippets — with a total line', async () => {
@@ -123,6 +171,33 @@ describe('SearchPage', () => {
     expect(document.querySelector('mark')?.textContent).toBe('hit')
   })
 
+  // --- title precedence (§14.3 binding, enforced identically at every render site):
+  // user_title > ai_title > custom_title > uuid-prefix -------------------------------------
+
+  it('shows user_title over ai_title in the group header when the session has been renamed', async () => {
+    fetchSearch.mockResolvedValue(
+      globalResult({
+        groups: [
+          { session: makeSession({ user_title: 'Renamed' }), hits: [makeHit()], has_more: false },
+        ],
+      }),
+    )
+    setup(<SearchPage />, '/search?q=foo')
+
+    expect(await screen.findByRole('link', { name: 'Renamed' })).toBeDefined()
+    expect(screen.queryByText('My Session')).toBeNull()
+  })
+
+  it('falls through to the uuid-prefix in the group header when no title of any kind is set', async () => {
+    const session = makeSession({ ai_title: null, custom_title: null, user_title: null })
+    fetchSearch.mockResolvedValue(
+      globalResult({ groups: [{ session, hits: [makeHit()], has_more: false }] }),
+    )
+    setup(<SearchPage />, '/search?q=foo')
+
+    expect(await screen.findByRole('link', { name: session.session_uuid.slice(0, 8) })).toBeDefined()
+  })
+
   it('links a capped group to the in-conversation search view via has_more', async () => {
     fetchSearch.mockResolvedValue(
       globalResult({ groups: [{ session: makeSession(), hits: [makeHit()], has_more: true }] }),
@@ -131,6 +206,28 @@ describe('SearchPage', () => {
 
     const more = await screen.findByRole('link', { name: 'more in this conversation →' })
     expect(more.getAttribute('href')).toBe('/s/uuid-1?q=foo')
+  })
+
+  // --- Task 9: group-header + "more" links carry ?projects= ----------------------------------
+
+  it('carries ?projects= on the group header link (which otherwise has no search at all)', async () => {
+    fetchSearch.mockResolvedValue(globalResult())
+    setup(<SearchPage />, '/search?q=foo&projects=alpha,mid')
+
+    const header = await screen.findByRole('link', { name: 'My Session' })
+    // %2C: URLSearchParams.toString() percent-encodes commas on serialization (see
+    // Sidebar.test.tsx for the full note; consistent across every writeProjects-built link).
+    expect(header.getAttribute('href')).toBe('/s/uuid-1?projects=alpha%2Cmid')
+  })
+
+  it('carries ?projects= alongside ?q= on the "more in this conversation" link', async () => {
+    fetchSearch.mockResolvedValue(
+      globalResult({ groups: [{ session: makeSession(), hits: [makeHit()], has_more: true }] }),
+    )
+    setup(<SearchPage />, '/search?q=foo&projects=alpha,mid')
+
+    const more = await screen.findByRole('link', { name: 'more in this conversation →' })
+    expect(more.getAttribute('href')).toBe('/s/uuid-1?q=foo&projects=alpha%2Cmid')
   })
 })
 
@@ -179,6 +276,26 @@ describe('HitSnippet', () => {
 
     expect(screen.getByRole('link').getAttribute('href')).toBe('/s/uuid-1/a/deadbeef?q=foo')
   })
+
+  // --- Task 9: `projects` prop is appended onto the deep link (q always wins the position) ------
+
+  it('carries a `projects` prop onto the deep link alongside q', () => {
+    const hit = makeHit()
+    setup(<HitSnippet sessionUuid="uuid-1" hit={hit} q="foo" projects={['alpha', 'mid']} />, '/')
+
+    // %2C: URLSearchParams.toString() percent-encodes commas on serialization (see
+    // Sidebar.test.tsx for the full note; consistent across every writeProjects-built link).
+    expect(screen.getByRole('link').getAttribute('href')).toBe(
+      '/s/uuid-1/m/rec-1?q=foo&projects=alpha%2Cmid',
+    )
+  })
+
+  it('omits projects from the link when the prop is absent (unchanged from before Task 9)', () => {
+    const hit = makeHit()
+    setup(<HitSnippet sessionUuid="uuid-1" hit={hit} q="foo" />, '/')
+
+    expect(screen.getByRole('link').getAttribute('href')).toBe('/s/uuid-1/m/rec-1?q=foo')
+  })
 })
 
 // --- ConversationSearch: header input + scoped results ----------------------------------------
@@ -196,6 +313,25 @@ describe('ConversationSearch', () => {
     await waitFor(() => expect(locationRef.current?.pathname).toBe('/s/uuid-1'))
     expect(locationRef.current?.search).toBe('?q=needle')
   })
+
+  // Task 9: the commit path builds its next URLSearchParams from the CURRENT `searchParams` (not
+  // from scratch), so ?projects= should ride along with no code change needed here — this test
+  // proves that contract holds.
+  it('preserves ?projects= across the q-commit round trip', async () => {
+    const user = userEvent.setup()
+    const { locationRef } = setup(
+      <ConversationSearch sessionUuid="uuid-1" />,
+      '/s/uuid-1?projects=alpha',
+    )
+
+    await user.type(screen.getByRole('searchbox', { name: 'Search this conversation' }), 'needle{Enter}')
+
+    await waitFor(() => {
+      const params = new URLSearchParams(locationRef.current?.search)
+      expect(params.get('q')).toBe('needle')
+      expect(params.get('projects')).toBe('alpha')
+    })
+  })
 })
 
 describe('ConversationSearchResults', () => {
@@ -207,13 +343,78 @@ describe('ConversationSearchResults', () => {
       '/s/uuid-1?q=foo',
     )
 
-    await waitFor(() => expect(fetchSearch).toHaveBeenCalledWith('foo', 'session', 'uuid-1'))
+    // Full positional fetchSearch signature (Task 9 threads projects through as a real positional
+    // arg on every useSearch call) — session scope's trailing arg is undefined here since no
+    // ?projects= is present.
+    await waitFor(() =>
+      expect(fetchSearch).toHaveBeenCalledWith(
+        'foo',
+        'session',
+        'uuid-1',
+        undefined,
+        undefined,
+        undefined,
+      ),
+    )
     expect(await screen.findByText('1 match')).toBeDefined()
 
     await user.click(screen.getByRole('button', { name: '← back to conversation' }))
 
     await waitFor(() => expect(locationRef.current?.search).toBe(''))
     expect(locationRef.current?.pathname).toBe('/s/uuid-1')
+  })
+
+  // Task 9, named contract: session-scope search does NOT pass projects to the server (it would
+  // be meaningless — you're already scoped to one session) even though ?projects= is present in
+  // the URL. The client stays clean: no 6th positional arg reaches fetchSearch.
+  it('does NOT pass projects to fetchSearch even when ?projects= is present in the URL', async () => {
+    fetchSearch.mockResolvedValue({ items: [makeHit()], total: 1 } satisfies SessionSearchResult)
+    setup(
+      <ConversationSearchResults sessionUuid="uuid-1" q="foo" />,
+      '/s/uuid-1?q=foo&projects=alpha,mid',
+    )
+
+    await waitFor(() =>
+      expect(fetchSearch).toHaveBeenCalledWith(
+        'foo',
+        'session',
+        'uuid-1',
+        undefined,
+        undefined,
+        undefined,
+      ),
+    )
+  })
+
+  // Distinct from the query above: ?projects= is still a deep-link concern even in session scope
+  // (it's app-level UI state, not a search filter) — the hit's own link must still carry it.
+  it('still carries ?projects= on the rendered hit link (a link-preservation concern, not a query one)', async () => {
+    fetchSearch.mockResolvedValue({ items: [makeHit()], total: 1 } satisfies SessionSearchResult)
+    setup(
+      <ConversationSearchResults sessionUuid="uuid-1" q="foo" />,
+      '/s/uuid-1?q=foo&projects=alpha,mid',
+    )
+
+    const link = await screen.findByRole('link')
+    // %2C: URLSearchParams.toString() percent-encodes commas on serialization (see
+    // Sidebar.test.tsx for the full note; consistent across every writeProjects-built link).
+    expect(link.getAttribute('href')).toBe('/s/uuid-1/m/rec-1?q=foo&projects=alpha%2Cmid')
+  })
+
+  // The back-link's setSearchParams updater builds from `prev` (current params) too — projects
+  // should survive clearing q.
+  it('preserves ?projects= when the back-link clears q', async () => {
+    fetchSearch.mockResolvedValue({ items: [makeHit()], total: 1 } satisfies SessionSearchResult)
+    const user = userEvent.setup()
+    const { locationRef } = setup(
+      <ConversationSearchResults sessionUuid="uuid-1" q="foo" />,
+      '/s/uuid-1?q=foo&projects=alpha',
+    )
+    await screen.findByText('1 match')
+
+    await user.click(screen.getByRole('button', { name: '← back to conversation' }))
+
+    await waitFor(() => expect(locationRef.current?.search).toBe('?projects=alpha'))
   })
 })
 
@@ -237,6 +438,25 @@ describe('TabBar', () => {
     expect(convo.getAttribute('aria-selected')).toBe('true')
     expect(convo.getAttribute('href')).toBe('/s/uuid-1')
     expect(screen.getByRole('tab', { name: 'Search all conversations' }).getAttribute('aria-selected')).toBe('false')
+  })
+
+  // Task 9, §14.2 binding: "Both search tabs ... inherit the filter context."
+  it('preserves ?projects= on the "Search all conversations" tab link', () => {
+    setup(<TabBar />, '/s/uuid-1?projects=alpha,mid')
+
+    const search = screen.getByRole('tab', { name: 'Search all conversations' })
+    // %2C: URLSearchParams.toString() percent-encodes commas on serialization (see
+    // Sidebar.test.tsx for the full note; consistent across every writeProjects-built link).
+    expect(search.getAttribute('href')).toBe('/search?projects=alpha%2Cmid')
+  })
+
+  it('preserves ?projects= on the "Current conversation" tab link', () => {
+    setup(<TabBar />, '/s/uuid-1/m/rec-2?projects=alpha,mid')
+
+    const convo = screen.getByRole('tab', { name: 'Current conversation' })
+    // %2C: URLSearchParams.toString() percent-encodes commas on serialization (see
+    // Sidebar.test.tsx for the full note; consistent across every writeProjects-built link).
+    expect(convo.getAttribute('href')).toBe('/s/uuid-1?projects=alpha%2Cmid')
   })
 })
 

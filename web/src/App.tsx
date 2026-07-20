@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import './App.css'
 import { makeQueryClient } from './api/hooks'
+import { ProjectFilterBar } from './components/ProjectFilterBar'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TabBar } from './components/TabBar'
@@ -21,6 +22,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <div className="app">
+          <ProjectFilterBar />
           <nav aria-label="Conversation archive">
             <Sidebar />
           </nav>

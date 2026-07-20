@@ -39,6 +39,8 @@ vi.mock('react-virtuoso', () => ({
 }))
 
 beforeEach(() => {
+  // useChatOnly seeds from this key; clear it so the toggle starts OFF in every test.
+  window.localStorage.clear()
   fetchSession.mockReset()
   fetchMessages.mockReset()
 })
@@ -73,10 +75,12 @@ function makeSession(over: Partial<SessionDetail> = {}): SessionDetail {
     project_slug: '-Users-x-proj',
     ai_title: 'My Session',
     custom_title: null,
+    user_title: null,
     started_at: null,
     last_activity_at: null,
     message_count: 10,
     favorite: false,
+    match_snippet: null,
     transcripts: [MAIN_TRANSCRIPT, makeSubagentTranscript()],
     ...over,
   }
@@ -161,6 +165,19 @@ describe('unknown agentHex', () => {
     expect(link.getAttribute('href')).toBe('/s/uuid-1')
     expect(fetchMessages).not.toHaveBeenCalled()
   })
+
+  // Task 9: this breadcrumb is a genuine deep link back into the app (`/s/{uuid}`) — it must
+  // carry the current project filter, same as every other internal link.
+  it('preserves ?projects= on the not-found breadcrumb link', async () => {
+    fetchSession.mockResolvedValueOnce(makeSession())
+    renderAt('/s/uuid-1/a/zzzzzzzz?projects=alpha,mid')
+
+    await screen.findByText('This subagent transcript isn’t in the archive.')
+    const link = screen.getByRole('link', { name: '← back to conversation' })
+    // %2C: URLSearchParams.toString() percent-encodes commas on serialization (see
+    // Sidebar.test.tsx for the full note; consistent across every writeProjects-built link).
+    expect(link.getAttribute('href')).toBe('/s/uuid-1?projects=alpha%2Cmid')
+  })
 })
 
 // --- session fetch errors (mirrors SessionPage's 404/offline split) --------------------------
@@ -201,6 +218,17 @@ describe('found agentHex', () => {
     ).toBeDefined()
     expect(screen.getByRole('link', { name: '← back to conversation' }).getAttribute('href')).toBe(
       '/s/uuid-1',
+    )
+  })
+
+  it('preserves ?projects= on the header breadcrumb link', async () => {
+    fetchSession.mockResolvedValueOnce(makeSession())
+    fetchMessages.mockResolvedValueOnce(pageOf(0, ['m1'], 1))
+    renderAt('/s/uuid-1/a/deadbeef?projects=alpha,mid')
+
+    await screen.findByText('⑂ Explore')
+    expect(screen.getByRole('link', { name: '← back to conversation' }).getAttribute('href')).toBe(
+      '/s/uuid-1?projects=alpha%2Cmid',
     )
   })
 })
@@ -285,5 +313,29 @@ describe('deep link', () => {
     await waitFor(() =>
       expect(fetchMessages).toHaveBeenCalledWith(42, { around: 'msg-5', limit: 100 }),
     )
+  })
+})
+
+// --- conversation-only toggle parity (ledger #6) ---------------------------------------------
+// SubagentPage owns its own useChatOnly (one owner per reader page) exactly like SessionPage;
+// toggling from its header must re-seed the subagent transcript body.
+
+describe('SubagentPage conversation-only toggle parity', () => {
+  it('renders the toggle in the header and threads chat_only into the transcript fetch', async () => {
+    fetchSession.mockResolvedValue(makeSession())
+    fetchMessages.mockImplementation((_id: number, opts?: { chat_only?: boolean }) =>
+      Promise.resolve(pageOf(0, [opts?.chat_only ? 'sub-filtered' : 'sub-full'], 1)),
+    )
+    renderAt('/s/uuid-1/a/deadbeef')
+
+    expect(await screen.findByText('text for sub-full')).toBeDefined()
+    const toggle = screen.getByRole('button', { name: 'conversation only' })
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+
+    await userEvent.click(toggle)
+
+    expect(await screen.findByText('text for sub-filtered')).toBeDefined()
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100, chat_only: true })
   })
 })

@@ -7,8 +7,11 @@ import {
   ConversationSearch,
   ConversationSearchResults,
 } from '../components/search/ConversationSearch'
+import { ChatOnlyToggle } from '../components/reader/ChatOnlyToggle'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
+import { TitleEditor } from '../components/TitleEditor'
+import { useChatOnly } from '../lib/chatOnly'
 
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', fontSize: 13, padding: '18px 24px' }
 
@@ -20,6 +23,9 @@ export function SessionPage() {
   const [searchParams] = useSearchParams()
   const q = searchParams.get('q') ?? ''
   const query = useSession(uuid)
+  // The ONE owner of conversation-only state for this reader page (plan critique F4): the header
+  // toggle and the ConversationView body both read this same [chatOnly, setChatOnly].
+  const [chatOnly, setChatOnly] = useChatOnly()
 
   if (query.isPending) return <p style={MIST_TEXT}>…</p>
 
@@ -38,8 +44,6 @@ export function SessionPage() {
   }
 
   const session = query.data
-  // Title fallback chain mirrors the sidebar's (SessionListItem): ai → custom → uuid short.
-  const title = session.ai_title ?? session.custom_title ?? session.session_uuid.slice(0, 8)
   const main = session.transcripts.find((t) => t.kind === 'main')
 
   // Body precedence: a `/m/` deep link ALWAYS wins — clicking a search hit must open the
@@ -48,12 +52,22 @@ export function SessionPage() {
   // link, `?q=` switches the body to the conversation-scoped results panel.
   function renderBody() {
     if (!main) return <p style={MIST_TEXT}>No transcript recorded for this session.</p>
-    if (msgUuid) return <ConversationView transcriptId={main.id} initialAroundUuid={msgUuid} />
+    if (msgUuid)
+      return (
+        <ConversationView
+          transcriptId={main.id}
+          initialAroundUuid={msgUuid}
+          chatOnly={chatOnly}
+          setChatOnly={setChatOnly}
+        />
+      )
     // trim(): useSearch gates on q.trim(), so a whitespace-only ?q= (e.g. ?q=%20) would mount
     // the results panel with a query that never fires — an eternal pending "…". Fall through to
     // the conversation instead.
     if (q.trim()) return <ConversationSearchResults sessionUuid={session.session_uuid} q={q} />
-    return <ConversationView transcriptId={main.id} />
+    return (
+      <ConversationView transcriptId={main.id} chatOnly={chatOnly} setChatOnly={setChatOnly} />
+    )
   }
 
   // Publish the transcript inventory (and the session uuid the subagent links need) for the
@@ -65,18 +79,7 @@ export function SessionPage() {
     >
       <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
         <header style={{ padding: '18px 24px 0' }}>
-          <h1
-            style={{
-              margin: 0,
-              fontFamily: 'var(--serif)',
-              fontSize: 22,
-              fontWeight: 600,
-              lineHeight: 1.25,
-              color: 'var(--moonpaper)',
-            }}
-          >
-            {title}
-          </h1>
+          <TitleEditor session={session} />
           <div
             className="session-meta mono"
             style={{
@@ -89,7 +92,11 @@ export function SessionPage() {
             }}
           >
             <span>{session.session_uuid.slice(0, 8)}</span>
-            <span>{session.message_count} msgs</span>
+            {/* Always the UNFILTERED archive count — never a second server count for the filtered
+              set (critique #6). While conversation-only is active, a mist suffix marks it. */}
+            <span>
+              {session.message_count} msgs{chatOnly ? ' · conversation only' : ''}
+            </span>
             {/* The archive's headline capability, one glance from every conversation: the raw
               records back out as JSONL. Plain <a> (not router Link) — it's an API endpoint. */}
             <a
@@ -98,6 +105,7 @@ export function SessionPage() {
             >
               ↓ .jsonl
             </a>
+            <ChatOnlyToggle chatOnly={chatOnly} setChatOnly={setChatOnly} />
           </div>
           <div style={{ margin: '14px 0 6px' }}>
             <HorizonBand start={session.started_at} end={session.last_activity_at} variant="full" />

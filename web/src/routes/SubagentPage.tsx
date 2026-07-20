@@ -1,9 +1,12 @@
 import type { CSSProperties } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { useSession } from '../api/hooks'
+import { ChatOnlyToggle } from '../components/reader/ChatOnlyToggle'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
+import { useChatOnly } from '../lib/chatOnly'
+import { readProjects, writeProjects } from '../lib/urlState'
 
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', fontSize: 13, padding: '18px 24px' }
 const BREADCRUMB_STYLE: CSSProperties = {
@@ -21,7 +24,16 @@ const BREADCRUMB_STYLE: CSSProperties = {
 // makes that a no-op when arriving from within the session) and finds the matching row itself.
 export function SubagentPage() {
   const { uuid = '', agentHex = '', msgUuid } = useParams()
+  const [searchParams] = useSearchParams()
+  // Carried onto both "← back to conversation" breadcrumbs below (Task 9) — NOT onto the "← back
+  // to the archive" links a few lines down, which target "/" and are already stripped of every
+  // param (including this one) by App.tsx's catch-all redirect to "/search"; see the task report
+  // for why that's flagged rather than fixed here.
+  const backSearch = writeProjects(new URLSearchParams(), readProjects(searchParams)).toString()
   const query = useSession(uuid)
+  // The ONE owner of conversation-only state for this reader page (plan critique F4), same shape
+  // as SessionPage — the header toggle and the ConversationView body share this single state.
+  const [chatOnly, setChatOnly] = useChatOnly()
 
   if (query.isPending) return <p style={MIST_TEXT}>…</p>
 
@@ -46,14 +58,15 @@ export function SubagentPage() {
     (t) => t.kind === 'subagent' && t.agent_hex_id === agentHex,
   )
 
-  // Plain breadcrumb — no param carry: unlike SessionPage's `/m/` deep links, a not-found
-  // subagent has nothing worth preserving in the back-link (no q, no msgUuid — the target
-  // conversation is the parent session's MAIN transcript, not this one).
+  // Otherwise a plain breadcrumb — no q/msgUuid carry: unlike SessionPage's `/m/` deep links, a
+  // not-found subagent has nothing worth preserving there (the target conversation is the parent
+  // session's MAIN transcript, not this one). `projects=` still carries (Task 9; it's app-level
+  // filter state, not something specific to this failed lookup).
   if (!transcript) {
     return (
       <div style={MIST_TEXT}>
         <p style={{ marginTop: 0 }}>This subagent transcript isn&rsquo;t in the archive.</p>
-        <Link to={`/s/${uuid}`} style={{ color: 'var(--dragonfly)' }}>
+        <Link to={{ pathname: `/s/${uuid}`, search: backSearch }} style={{ color: 'var(--dragonfly)' }}>
           ← back to conversation
         </Link>
       </div>
@@ -71,7 +84,7 @@ export function SubagentPage() {
     >
       <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
         <header style={{ padding: '18px 24px 0' }}>
-          <Link to={`/s/${uuid}`} style={BREADCRUMB_STYLE}>
+          <Link to={{ pathname: `/s/${uuid}`, search: backSearch }} style={BREADCRUMB_STYLE}>
             ← back to conversation
           </Link>
           <h1
@@ -103,6 +116,9 @@ export function SubagentPage() {
           <div
             className="mono"
             style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 14,
               fontFamily: 'var(--mono)',
               fontSize: 11,
               color: 'var(--mist)',
@@ -110,13 +126,23 @@ export function SubagentPage() {
               marginBottom: 14,
             }}
           >
-            {transcript.agent_hex_id?.slice(0, 8)}
+            {/* Mist suffix while conversation-only is active, mirroring SessionPage (critique #6). */}
+            <span>
+              {transcript.agent_hex_id?.slice(0, 8)}
+              {chatOnly ? ' · conversation only' : ''}
+            </span>
+            <ChatOnlyToggle chatOnly={chatOnly} setChatOnly={setChatOnly} />
           </div>
         </header>
         <div style={{ flex: 1, minHeight: 0 }}>
           {/* The lazy contract: this is the ONLY place this transcript's messages are fetched —
               nothing about it loads until this route mounts. */}
-          <ConversationView transcriptId={transcript.id} initialAroundUuid={msgUuid} />
+          <ConversationView
+            transcriptId={transcript.id}
+            initialAroundUuid={msgUuid}
+            chatOnly={chatOnly}
+            setChatOnly={setChatOnly}
+          />
         </div>
       </div>
     </TranscriptsProvider>

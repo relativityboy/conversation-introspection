@@ -1,6 +1,8 @@
-import type { CSSProperties, ReactNode } from 'react'
+import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import type { HitOut } from '../../api/types'
+import { writeProjects } from '../../lib/urlState'
+import { renderSnippet } from '../../lib/snippet'
 
 export interface HitSnippetProps {
   /** The session this hit belongs to — the deep link needs it (global results supply it from
@@ -9,6 +11,10 @@ export interface HitSnippetProps {
   hit: HitOut
   /** Current query, carried onto the deep link so the arrival view can offer "back to results". */
   q: string
+  /** Current app-level project filter (Task 9), carried onto the deep link alongside q. Optional
+   * (defaults to none) — this is a link-preservation concern independent of whether the caller's
+   * own search query used projects (session-scope search never does; the link still should). */
+  projects?: string[]
 }
 
 const ROW_STYLE: CSSProperties = {
@@ -39,34 +45,6 @@ const SNIPPET_STYLE: CSSProperties = {
   margin: '6px 0 0',
 }
 
-// NOTE(claude): the API snippet is FTS5 output (server .../search/fts5.py) — plain text with
-// only literal <mark>/</mark> tokens marking the matched terms; the surrounding text is raw
-// message content and may contain ANY characters, including angle brackets (e.g. a code snippet
-// containing "<script>"). So we never feed the snippet into a raw-HTML sink. Instead we split the
-// string on the literal mark tags and hand the pieces to React as text/elements: React escapes
-// every text segment, so "<script>" renders as the four visible characters, never a DOM node.
-const MARK_RE = /<mark>([\s\S]*?)<\/mark>/g
-
-function renderSnippet(snippet: string): ReactNode[] {
-  const parts: ReactNode[] = []
-  let lastIndex = 0
-  let key = 0
-  let match: RegExpExecArray | null
-  while ((match = MARK_RE.exec(snippet)) !== null) {
-    if (match.index > lastIndex) parts.push(snippet.slice(lastIndex, match.index))
-    parts.push(
-      <mark key={key++} className="search-mark" style={{ background: 'transparent', color: 'var(--dawn)', fontWeight: 600 }}>
-        {match[1]}
-      </mark>,
-    )
-    lastIndex = MARK_RE.lastIndex
-  }
-  // exec() leaves lastIndex stateful across calls; reset so the shared regex is reusable.
-  MARK_RE.lastIndex = 0
-  if (lastIndex < snippet.length) parts.push(snippet.slice(lastIndex))
-  return parts
-}
-
 /** Short local time (e.g. "Jul 11, 14:12"); empty when the timestamp is absent/unparsable. */
 function shortLocal(iso: string | null): string {
   if (!iso) return ''
@@ -80,8 +58,8 @@ function shortLocal(iso: string | null): string {
   })
 }
 
-export function HitSnippet({ sessionUuid, hit, q }: HitSnippetProps) {
-  const search = `?q=${encodeURIComponent(q)}`
+export function HitSnippet({ sessionUuid, hit, q, projects = [] }: HitSnippetProps) {
+  const search = `?${writeProjects(new URLSearchParams({ q }), projects).toString()}`
   // A hit in a SUBAGENT transcript must deep-link through the /a/{hex}/ drill-in, not the
   // main-conversation path: linking it to /s/{uuid}/m/{uuid} makes SessionPage fetch the MAIN
   // transcript with a foreign record uuid, which 404s. agent_hex_id is the server's per-hit

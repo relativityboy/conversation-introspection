@@ -1,7 +1,9 @@
-import { render } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import type { BlockOut, MessageOut } from '../src/api/types'
+import type { BlockOut, MessageOut, TranscriptInfo } from '../src/api/types'
 import { MessageTurn } from '../src/components/reader/MessageTurn'
+import { TranscriptsProvider } from '../src/components/reader/transcripts-context'
 
 // MessageTurn is deliberately tested UN-virtualized (plain render, no Virtuoso) — jsdom has no
 // layout engine, so these assertions stay honest: class names, DOM order, and markdown output
@@ -119,10 +121,98 @@ describe('block ordering and dispatch', () => {
       ],
     })
     // No TranscriptsProvider here, so the unmatched tool_use degrades to a plain ToolBlock.
-    const { container } = render(<MessageTurn message={toolMsg} />)
+    // MemoryRouter is still required, though: SubagentChip (Task 9) reads the current
+    // ?projects= via useSearchParams() unconditionally, before the no-match check runs.
+    const { container } = render(
+      <MemoryRouter>
+        <MessageTurn message={toolMsg} />
+      </MemoryRouter>,
+    )
     expect(container.querySelector('.tool-block')).not.toBeNull()
     expect(container.querySelector('.block-stub')).toBeNull()
     expect(container.querySelector('.thinking-glyph')).not.toBeNull()
+  })
+})
+
+describe('conversation-only block hiding (chatOnly prop)', () => {
+  function toolBlock(index: number, over: Partial<BlockOut> = {}): BlockOut {
+    return {
+      block_index: index,
+      block_kind: 'tool_use',
+      text_content: null,
+      tool_name: 'Task',
+      tool_use_id: 'tu-1',
+      is_error: null,
+      ...over,
+    }
+  }
+
+  it('hides tool_use and tool_result blocks but keeps text/thinking/image', () => {
+    const msg = message({
+      blocks: [
+        textBlock(0, 'kept text'),
+        toolBlock(1, { block_kind: 'tool_use', tool_name: 'Bash', tool_use_id: 'no-match' }),
+        toolBlock(2, { block_kind: 'tool_result', text_content: 'tool output' }),
+        {
+          block_index: 3,
+          block_kind: 'thinking',
+          text_content: 'private',
+          tool_name: null,
+          tool_use_id: null,
+          is_error: null,
+        },
+        {
+          block_index: 4,
+          block_kind: 'image',
+          text_content: null,
+          tool_name: null,
+          tool_use_id: null,
+          is_error: null,
+        },
+      ],
+    })
+    const { container } = render(
+      <MemoryRouter>
+        <MessageTurn message={msg} chatOnly />
+      </MemoryRouter>,
+    )
+    // tool_use (as ToolBlock, no transcript match) and tool_result both vanish.
+    expect(container.querySelector('.tool-block')).toBeNull()
+    // conversational blocks remain.
+    expect(container.textContent).toContain('kept text')
+    expect(container.querySelector('.thinking-glyph')).not.toBeNull()
+    expect(container.textContent).toContain('[image]')
+  })
+
+  it('makes the subagent chip disappear with its tool_use block (ledger #7, intended)', () => {
+    const dispatch: TranscriptInfo = {
+      id: 2,
+      kind: 'subagent',
+      agent_hex_id: 'a1b2c3',
+      agent_type: 'Explore',
+      agent_description: null,
+      parent_tool_use_id: 'tu-1',
+    }
+    const msg = message({ blocks: [toolBlock(0)] })
+    render(
+      <MemoryRouter>
+        <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
+          <MessageTurn message={msg} chatOnly />
+        </TranscriptsProvider>
+      </MemoryRouter>,
+    )
+    expect(screen.queryByRole('link', { name: /view transcript/ })).toBeNull()
+    expect(screen.queryByText(/subagent/)).toBeNull()
+  })
+
+  it('renders tool blocks normally when chatOnly is off (default, no prop)', () => {
+    const msg = message({ blocks: [toolBlock(0, { block_kind: 'tool_result', text_content: 'x' })] })
+    const { container } = render(
+      <MemoryRouter>
+        <MessageTurn message={msg} />
+      </MemoryRouter>,
+    )
+    expect(container.querySelector('.tool-block')).not.toBeNull()
   })
 })
 

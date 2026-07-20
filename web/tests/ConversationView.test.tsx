@@ -2,8 +2,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
+import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError } from '../src/api/client'
+import { ApiError, type MessagesOptions } from '../src/api/client'
 import type { MessageList, MessageOut } from '../src/api/types'
 import { ConversationView } from '../src/components/reader/ConversationView'
 
@@ -81,14 +82,23 @@ function pageOf(offset: number, count: number, total: number): MessageList {
   }
 }
 
-function renderView(initialAroundUuid?: string) {
+function renderView(
+  initialAroundUuid?: string,
+  chatOnly = false,
+  setChatOnly: (value: boolean) => void = () => {},
+) {
   // We deliberately DON'T disable retry here: useMessages owns the retry policy (skip 404s,
   // else the default 3), and the 404/offline cases below exist to exercise exactly that.
   // retryDelay 0 keeps the retrying (non-404) case instant instead of backing off for seconds.
   const queryClient = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ConversationView transcriptId={TRANSCRIPT_ID} initialAroundUuid={initialAroundUuid} />
+      <ConversationView
+        transcriptId={TRANSCRIPT_ID}
+        initialAroundUuid={initialAroundUuid}
+        chatOnly={chatOnly}
+        setChatOnly={setChatOnly}
+      />
     </QueryClientProvider>,
   )
 }
@@ -233,5 +243,134 @@ describe('around-target not found (404)', () => {
     fetchMessages.mockRejectedValue(new ApiError(503, 'Service Unavailable', 'down'))
     renderView('uuid-x')
     expect(await screen.findByText('archive offline')).toBeDefined()
+  })
+})
+
+// §14.4: chat_only must ride ALL THREE fetch sites — the seed, loadBefore, and loadAfter — so an
+// unfiltered edge page can never splice into a filtered window and corrupt the offset math.
+describe('chat_only threads through every fetch site', () => {
+  it('seeds offset 0 with chat_only when active', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    renderView(undefined, true)
+
+    await screen.findAllByTestId('row')
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
+      offset: 0,
+      limit: 100,
+      chat_only: true,
+    })
+  })
+
+  it('seeds the around page with chat_only when active', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
+    renderView('uuid-90', true)
+
+    await screen.findAllByTestId('row')
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
+      around: 'uuid-90',
+      limit: 100,
+      chat_only: true,
+    })
+  })
+
+  it('carries chat_only into loadBefore (startReached) and loadAfter (endReached)', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
+    renderView('uuid-90', true)
+    await screen.findAllByTestId('row')
+
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 40, 250))
+    fireEvent.click(screen.getByText('reach-start'))
+    await waitFor(() => expect(virtuosoProps.current?.firstItemIndex).toBe(0))
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+      offset: 0,
+      limit: 40,
+      chat_only: true,
+    })
+
+    fetchMessages.mockResolvedValueOnce(pageOf(140, 100, 250))
+    fireEvent.click(screen.getByText('reach-end'))
+    await waitFor(() =>
+      expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+        offset: 140,
+        limit: 100,
+        chat_only: true,
+      }),
+    )
+  })
+
+  it('omits chat_only entirely from the opts object when inactive', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    renderView(undefined, false)
+
+    await screen.findAllByTestId('row')
+    // Exactly the legacy opts shape — no chat_only key at all (server default is false).
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+  })
+})
+
+// Critique #12: the around-404 notice gains a SECOND action under chat_only — "show all message
+// types" clears the toggle while KEEPING the same around= seed, so the target re-resolves in the
+// unfiltered set (distinct from "view from the beginning", which drops the around seed).
+describe('around-404 recovery under chat_only (critique #12)', () => {
+  it('offers "show all message types" only when chatOnly is active', async () => {
+    fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'filtered out'))
+    renderView('uuid-x', true)
+
+    expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
+    expect(screen.getByRole('button', { name: 'view from the beginning' })).toBeDefined()
+    expect(screen.getByRole('button', { name: 'show all message types' })).toBeDefined()
+  })
+
+  it('hides "show all message types" when chatOnly is off (meaningless there)', async () => {
+    fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'nope'))
+    renderView('uuid-x', false)
+
+    expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
+    expect(screen.queryByRole('button', { name: 'show all message types' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'view from the beginning' })).toBeDefined()
+  })
+
+  it('"show all message types" calls setChatOnly(false)', async () => {
+    const setChatOnly = vi.fn()
+    fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'filtered out'))
+    renderView('uuid-x', true, setChatOnly)
+
+    await screen.findByText(/message not found in this conversation/)
+    await userEvent.click(screen.getByRole('button', { name: 'show all message types' }))
+    expect(setChatOnly).toHaveBeenCalledWith(false)
+  })
+
+  it('full recovery: clearing the toggle re-resolves the SAME around target unfiltered', async () => {
+    // The trap-proof sequence: 404 under chat_only, 200 without — and the around seed is KEPT.
+    fetchMessages.mockImplementation((_id: number, opts: MessagesOptions) =>
+      opts.chat_only
+        ? Promise.reject(new ApiError(404, 'Not Found', 'filtered out'))
+        : Promise.resolve(pageOf(40, 100, 250)),
+    )
+
+    function Harness() {
+      const [chatOnly, setChatOnly] = useState(true)
+      return (
+        <ConversationView
+          transcriptId={TRANSCRIPT_ID}
+          initialAroundUuid="uuid-90"
+          chatOnly={chatOnly}
+          setChatOnly={setChatOnly}
+        />
+      )
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Harness />
+      </QueryClientProvider>,
+    )
+
+    await screen.findByText(/message not found in this conversation/)
+    await userEvent.click(screen.getByRole('button', { name: 'show all message types' }))
+
+    expect(await screen.findAllByTestId('row')).toHaveLength(100)
+    // Same around seed, chat_only dropped — the target is found in the unfiltered set.
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { around: 'uuid-90', limit: 100 })
   })
 })

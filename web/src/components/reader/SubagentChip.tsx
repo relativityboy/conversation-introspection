@@ -1,5 +1,6 @@
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import type { BlockOut } from '../../api/types'
+import { readProjects, writeProjects } from '../../lib/urlState'
 import { ToolBlock } from './ToolBlock'
 import { useTranscripts } from './transcripts-context'
 
@@ -11,6 +12,13 @@ const DESC_MAX = 60
 // whose transcript was never captured has no match and degrades gracefully to a plain ToolBlock.
 export function SubagentChip({ block }: { block: BlockOut }) {
   const { sessionUuid, transcripts } = useTranscripts()
+  // Read directly off the URL (Task 9) rather than prop-drilling `projects` down through
+  // MessageTurn's block dispatch: SubagentChip is a leaf several layers deep in the virtualized
+  // reader tree, and it's always rendered within a Router (real app tree or MemoryRouter in
+  // tests) — same rationale TranscriptsContext used for sessionUuid, but projects is route state,
+  // not transcript state, so it doesn't belong in that context.
+  const [searchParams] = useSearchParams()
+  const projects = readProjects(searchParams)
 
   const transcript = block.tool_use_id
     ? transcripts.find((t) => t.parent_tool_use_id === block.tool_use_id)
@@ -50,9 +58,14 @@ export function SubagentChip({ block }: { block: BlockOut }) {
         </span>
       )}
       {transcript.agent_hex_id && (
-        // Deep link into the /a/ subagent drill-in route (SubagentPage).
+        // Deep link into the /a/ subagent drill-in route (SubagentPage). Carries ?projects=
+        // (Task 9) — writeProjects deletes the param when empty, so the bare-path case is
+        // byte-identical to before this task.
         <Link
-          to={`/s/${sessionUuid}/a/${transcript.agent_hex_id}`}
+          to={{
+            pathname: `/s/${sessionUuid}/a/${transcript.agent_hex_id}`,
+            search: writeProjects(new URLSearchParams(), projects).toString(),
+          }}
           style={{ color: 'var(--dragonfly)', textDecoration: 'none' }}
         >
           view transcript →

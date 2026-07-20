@@ -14,10 +14,15 @@ export interface SessionSummary {
   project_slug: string
   ai_title: string | null
   custom_title: string | null
+  user_title: string | null
   started_at: string | null
   last_activity_at: string | null
   message_count: number
   favorite: boolean
+  // Populated by GET /sessions?q= ONLY for rows matched by conversational content and NOT by
+  // uuid/title (a <mark>-wrapped best snippet); null on unfiltered lists, detail, and title/
+  // uuid matches. See server routes/sessions.py `list_sessions` for the match-attribution rule.
+  match_snippet: string | null
 }
 
 export interface TranscriptInfo {

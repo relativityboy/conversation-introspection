@@ -154,9 +154,9 @@ describe('ImageBlock', () => {
 })
 
 describe('SubagentChip', () => {
-  function renderChip(block: BlockOut, transcripts: TranscriptInfo[]) {
+  function renderChip(block: BlockOut, transcripts: TranscriptInfo[], initialEntry = '/') {
     return render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <TranscriptsProvider value={{ sessionUuid: 'sess-uuid', transcripts }}>
           <SubagentChip block={block} />
         </TranscriptsProvider>
@@ -169,6 +169,16 @@ describe('SubagentChip', () => {
     expect(screen.getByText('⑂ subagent · Explore')).not.toBeNull()
     const link = screen.getByRole('link', { name: /view transcript/ })
     expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3')
+  })
+
+  // Task 9: the "view transcript →" drill-in is a deep link — it must carry the current project
+  // filter, read live from the URL (SubagentChip has no other route context available to it).
+  it('preserves ?projects= on the "view transcript" link', () => {
+    renderChip(toolUse({ tool_use_id: 'tu-1' }), [transcript()], '/s/sess-uuid?projects=alpha,mid')
+    const link = screen.getByRole('link', { name: /view transcript/ })
+    // %2C: URLSearchParams.toString() percent-encodes commas on serialization (same as every
+    // other writeProjects-built link in this app — see Sidebar.test.tsx for the full note).
+    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?projects=alpha%2Cmid')
   })
 
   it('truncates a long agent description to 60 chars', () => {

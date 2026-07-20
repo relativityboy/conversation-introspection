@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useSessions } from '../api/hooks'
-import { readSidebarParams, writeSidebarParams } from '../lib/urlState'
+import { readProjects, readSidebarParams, writeSidebarParams } from '../lib/urlState'
 import { SessionListItem } from './SessionListItem'
 
 const DEBOUNCE_MS = 250
@@ -14,46 +14,56 @@ const MIST_TEXT: CSSProperties = { color: 'var(--mist)', padding: '10px 6px', fo
 
 export function Sidebar() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const { title: urlTitle, fav } = readSidebarParams(searchParams)
+  const { filter: urlFilter, fav } = readSidebarParams(searchParams)
 
   // The input's visible value is local state, synced to the URL and to the sessions query only
   // after DEBOUNCE_MS of no typing (below). Both are seeded from the URL so a reload/deep-link
   // restores the filter immediately, with no debounce wait on mount.
-  const [titleInput, setTitleInput] = useState(urlTitle)
-  const [debouncedTitle, setDebouncedTitle] = useState(urlTitle)
+  const [filterInput, setFilterInput] = useState(urlFilter)
+  const [debouncedFilter, setDebouncedFilter] = useState(urlFilter)
 
   // Guards the debounced URL write. `setSearchParams` is referentially UNSTABLE (react-router
   // hands out a new function whenever the URL changes), so it can't be trusted as an inert dep:
   // without this guard the effect re-runs after its own write (and after every fav-chip click)
-  // and writes the same title AGAIN 250ms later. Tracking the last title actually written (seeded
-  // with the mount-time URL value) collapses that echo — and the redundant write-on-mount — to
-  // exactly one write per settled input.
-  const lastWrittenTitle = useRef(urlTitle)
+  // and writes the same filter AGAIN 250ms later. Tracking the last filter actually written
+  // (seeded with the mount-time URL value) collapses that echo — and the redundant write-on-mount
+  // — to exactly one write per settled input.
+  const lastWrittenFilter = useRef(urlFilter)
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      setDebouncedTitle(titleInput)
-      if (titleInput !== lastWrittenTitle.current) {
-        lastWrittenTitle.current = titleInput
-        setSearchParams((prev) => writeSidebarParams(prev, { title: titleInput }), {
+      setDebouncedFilter(filterInput)
+      if (filterInput !== lastWrittenFilter.current) {
+        lastWrittenFilter.current = filterInput
+        setSearchParams((prev) => writeSidebarParams(prev, { filter: filterInput }), {
           replace: true,
         })
       }
     }, DEBOUNCE_MS)
     return () => clearTimeout(timer)
-  }, [titleInput, setSearchParams])
+  }, [filterInput, setSearchParams])
 
   function setFavorite(value: boolean) {
     setSearchParams((prev) => writeSidebarParams(prev, { fav: value }), { replace: true })
   }
 
+  // Read live (not memoized) so a chip add/remove — which only changes the URL, not this
+  // component's own state — re-queries immediately: readProjects always returns a fresh array,
+  // and react-query's key hashing is structural (JSON.stringify), so a same-valued fresh array
+  // doesn't cause a spurious refetch, while an actually-changed one does (Task 9).
+  const projects = readProjects(searchParams)
+
   const { data, isLoading, isError, isSuccess } = useSessions({
-    title: debouncedTitle || undefined,
+    q: debouncedFilter || undefined,
     favorite: fav || undefined,
+    // Only present when non-empty — an empty `projects: []` key would still hash identically to
+    // omitting it, but omitting keeps the filters object (and the wire call) honest: "no filter"
+    // reads as "no projects key" rather than "an empty list of projects".
+    ...(projects.length > 0 ? { projects } : {}),
   })
 
   const search = searchParams.toString()
-  const hasFilter = debouncedTitle.length > 0 || fav
+  const hasFilter = debouncedFilter.length > 0 || fav
 
   return (
     <>
@@ -75,10 +85,10 @@ export function Sidebar() {
 
       <input
         type="search"
-        placeholder="Filter by title…"
-        aria-label="Filter conversations by title"
-        value={titleInput}
-        onChange={(event) => setTitleInput(event.target.value)}
+        placeholder="Filter by title or content…"
+        aria-label="Filter conversations by title or content"
+        value={filterInput}
+        onChange={(event) => setFilterInput(event.target.value)}
         style={{
           width: '100%',
           background: 'var(--surface)',

@@ -25,6 +25,19 @@ export interface ConversationViewProps {
   /** Seed the window around this record and start scrolled to it. Accepted now so the
    * windowing model is complete; the route plumbing that supplies it lands in Task 7. */
   initialAroundUuid?: string
+  /** Conversation-only mode, OWNED by the page (useChatOnly) and passed in — never sourced
+   * locally, so header and body can't desync (plan critique F4). Threads through all three fetch
+   * sites and down to MessageTurn's block-level hiding. */
+  chatOnly: boolean
+  /** Passed only so the around-404 notice can offer "show all message types" (critique #12). */
+  setChatOnly: (value: boolean) => void
+}
+
+// chat_only must ride EVERY fetch site (seed + both edge loaders): an unfiltered edge page spliced
+// into a filtered window would corrupt the offset math (§14.4). Absent (not `false`) when off, so
+// the opts object — and therefore the react-query key — stays identical to the pre-toggle shape.
+function withChatOnly<T extends object>(opts: T, chatOnly: boolean): T & { chat_only?: true } {
+  return chatOnly ? { ...opts, chat_only: true } : opts
 }
 
 // NOTE(claude): fetch strategy — the INITIAL page goes through the useMessages react-query
@@ -33,7 +46,12 @@ export interface ConversationViewProps {
 // pages accumulate imperatively into one window (a prepend must atomically decrement
 // firstItemIndex with the same state update), and caching each scroll-driven page under its
 // own query key would buy nothing while complicating that atomicity.
-export function ConversationView({ transcriptId, initialAroundUuid }: ConversationViewProps) {
+export function ConversationView({
+  transcriptId,
+  initialAroundUuid,
+  chatOnly,
+  setChatOnly,
+}: ConversationViewProps) {
   // "View from the beginning" recovery. When the around-target isn't in this transcript (a 404
   // — e.g. a stale deep link), the reader drops the around-seed and re-fetches offset 0 WITHOUT
   // a route change. Adjust-state-during-render (see ConversationSearch) clears the override the
@@ -48,7 +66,10 @@ export function ConversationView({ transcriptId, initialAroundUuid }: Conversati
 
   const initial = useMessages(
     transcriptId,
-    around ? { around, limit: PAGE_SIZE } : { offset: 0, limit: PAGE_SIZE },
+    withChatOnly(
+      around ? { around, limit: PAGE_SIZE } : { offset: 0, limit: PAGE_SIZE },
+      chatOnly,
+    ),
   )
 
   if (initial.isPending) return <Calm>…</Calm>
@@ -57,12 +78,28 @@ export function ConversationView({ transcriptId, initialAroundUuid }: Conversati
     // not-found, not the archive being offline. Offer a calm jump to the start instead (and
     // useMessages' retry policy skips the react-query retry storm for these 404s).
     if (around && initial.error instanceof ApiError && initial.error.status === 404) {
+      // Under chat_only the 404 may mean "the target is a tool/system record filtered OUT of this
+      // set", not "not in this transcript at all" — so offer a second recovery that KEEPS the same
+      // around seed and just drops the filter (critique #12), distinct from "view from the
+      // beginning" which drops the around seed. Shown only when chatOnly (meaningless otherwise).
       return (
         <Calm>
           message not found in this conversation{' '}
           <button type="button" onClick={() => setFromBeginning(true)} style={LINK_BUTTON_STYLE}>
             view from the beginning
           </button>
+          {chatOnly && (
+            <>
+              {' · '}
+              <button
+                type="button"
+                onClick={() => setChatOnly(false)}
+                style={LINK_BUTTON_STYLE}
+              >
+                show all message types
+              </button>
+            </>
+          )}
         </Calm>
       )
     }
@@ -72,13 +109,17 @@ export function ConversationView({ transcriptId, initialAroundUuid }: Conversati
 
   // The key resets the window state whenever the identity of the stream changes — a new
   // transcript or a new around-target must re-seed rather than mutate the old window. Keying on
-  // the EFFECTIVE `around` also re-seeds cleanly when "view from the beginning" drops it.
+  // the EFFECTIVE `around` also re-seeds cleanly when "view from the beginning" drops it, and on
+  // `chatOnly` so toggling remounts the window: an unfiltered edge page mixed into a filtered
+  // window would corrupt the offset math (§14.4). The remount is also the isolation boundary for
+  // an in-flight edge fetch — see MessageStream's pendingRef note.
   return (
     <MessageStream
-      key={`${transcriptId}:${around ?? ''}`}
+      key={`${transcriptId}:${around ?? ''}:${chatOnly ? 1 : 0}`}
       transcriptId={transcriptId}
       seed={initial.data}
       initialAroundUuid={around}
+      chatOnly={chatOnly}
     />
   )
 }
@@ -100,9 +141,10 @@ interface MessageStreamProps {
   transcriptId: number
   seed: MessageList
   initialAroundUuid?: string
+  chatOnly: boolean
 }
 
-function MessageStream({ transcriptId, seed, initialAroundUuid }: MessageStreamProps) {
+function MessageStream({ transcriptId, seed, initialAroundUuid, chatOnly }: MessageStreamProps) {
   const [stream, setStream] = useState<StreamWindow>(() => ({
     firstItemIndex: seed.offset,
     items: seed.items,
@@ -110,6 +152,12 @@ function MessageStream({ transcriptId, seed, initialAroundUuid }: MessageStreamP
   }))
   // One edge fetch at a time — virtuoso can fire startReached/endReached repeatedly while a
   // page is still in flight; without the guard the same page would prepend/append twice.
+  //
+  // pendingRef is per-INSTANCE (a fresh useRef per MessageStream), and so is `stream`. Toggling
+  // chatOnly changes ConversationView's key, unmounting THIS instance and mounting a new one: any
+  // edge fetch still in flight here resolves into a setStream on the unmounted instance (a React
+  // no-op) — it can never splice a stale unfiltered page into the new filtered window. The new
+  // instance starts with pendingRef=false and re-seeds from the fresh (filtered) `seed`.
   const pendingRef = useRef(false)
 
   // Array index (virtuoso interprets initialTopMostItemIndex in list space, not absolute
@@ -141,10 +189,10 @@ function MessageStream({ transcriptId, seed, initialAroundUuid }: MessageStreamP
       // limit is the exact gap (≤ PAGE_SIZE), not a flat 100: an around-seeded
       // firstItemIndex is rarely page-aligned, and over-fetching past the window's start
       // would prepend duplicates.
-      const page = await fetchMessages(transcriptId, {
-        offset,
-        limit: firstItemIndex - offset,
-      })
+      const page = await fetchMessages(
+        transcriptId,
+        withChatOnly({ offset, limit: firstItemIndex - offset }, chatOnly),
+      )
       setStream((prev) => ({
         firstItemIndex: prev.firstItemIndex - page.items.length,
         items: [...page.items, ...prev.items],
@@ -155,14 +203,17 @@ function MessageStream({ transcriptId, seed, initialAroundUuid }: MessageStreamP
     } finally {
       pendingRef.current = false
     }
-  }, [stream, transcriptId])
+  }, [stream, transcriptId, chatOnly])
 
   const loadAfter = useCallback(async () => {
     const offset = stream.firstItemIndex + stream.items.length
     if (pendingRef.current || offset >= stream.total) return
     pendingRef.current = true
     try {
-      const page = await fetchMessages(transcriptId, { offset, limit: PAGE_SIZE })
+      const page = await fetchMessages(
+        transcriptId,
+        withChatOnly({ offset, limit: PAGE_SIZE }, chatOnly),
+      )
       setStream((prev) => ({
         ...prev,
         items: [...prev.items, ...page.items],
@@ -173,7 +224,7 @@ function MessageStream({ transcriptId, seed, initialAroundUuid }: MessageStreamP
     } finally {
       pendingRef.current = false
     }
-  }, [stream, transcriptId])
+  }, [stream, transcriptId, chatOnly])
 
   // NOTE(claude): totalCount is the WINDOW length, not the archive total — deliberate
   // deviation from the plan's literal "totalCount=response.total". With firstItemIndex set,
@@ -200,7 +251,7 @@ function MessageStream({ transcriptId, seed, initialAroundUuid }: MessageStreamP
             ref={isTarget ? glowTarget : undefined}
             style={{ padding: '0 24px' }}
           >
-            <MessageTurn message={message} />
+            <MessageTurn message={message} chatOnly={chatOnly} />
           </div>
         )
       }}

@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
-import { Link, matchPath, useLocation } from 'react-router-dom'
+import { Link, matchPath, useLocation, useSearchParams } from 'react-router-dom'
+import { readProjects, writeProjects } from '../lib/urlState'
 
 // The two reading-room views, presented as tabs. State is derived ENTIRELY from the route (no
 // local state): `/search*` selects tab 1, any `/s/*` selects tab 2. Tab 2 has no target when no
@@ -25,11 +26,15 @@ function tabStyle(active: boolean, disabled = false): CSSProperties {
 
 export function TabBar() {
   const location = useLocation()
+  const [searchParams] = useSearchParams()
   // end:false → prefix match, so `/s/abc` and `/s/abc/m/xyz` both yield the session uuid.
   const sessionMatch = matchPath({ path: '/s/:uuid', end: false }, location.pathname)
   const sessionUuid = sessionMatch?.params.uuid
   const searchActive = matchPath({ path: '/search', end: false }, location.pathname) !== null
   const sessionActive = Boolean(sessionUuid)
+  // §14.2, binding: "Both search tabs ... inherit the filter context." Neither tab carries `q`
+  // (switching tabs is a deliberate reset of the OTHER surface's search box) — only `projects=`.
+  const filterSearch = writeProjects(new URLSearchParams(), readProjects(searchParams)).toString()
 
   return (
     <div
@@ -45,7 +50,7 @@ export function TabBar() {
       <Link
         role="tab"
         aria-selected={searchActive}
-        to="/search"
+        to={{ pathname: '/search', search: filterSearch }}
         style={tabStyle(searchActive)}
       >
         Search all conversations
@@ -55,7 +60,7 @@ export function TabBar() {
         <Link
           role="tab"
           aria-selected={sessionActive}
-          to={`/s/${sessionUuid}`}
+          to={{ pathname: `/s/${sessionUuid}`, search: filterSearch }}
           style={tabStyle(sessionActive)}
         >
           Current conversation

@@ -10,11 +10,13 @@ import {
   deleteFavorite,
   fetchImportRun,
   fetchMessages,
+  fetchProjects,
   fetchSearch,
   fetchSession,
   fetchSessions,
   fetchStatus,
   putFavorite,
+  putSessionTitle,
   triggerImport,
   type MessagesOptions,
   type SessionFilters,
@@ -38,10 +40,15 @@ const sessionsKey = (filters: SessionFilters) => ['sessions', filters] as const
 const sessionKey = (uuid: string) => ['sessions', uuid] as const
 const messagesKey = (transcriptId: number, opts: MessagesOptions) =>
   ['messages', transcriptId, opts] as const
-const searchKey = (q: string, scope: SearchScope, sessionUuid: string | undefined) =>
-  ['search', q, scope, sessionUuid] as const
+const searchKey = (
+  q: string,
+  scope: SearchScope,
+  sessionUuid: string | undefined,
+  projects: string[] | undefined,
+) => ['search', q, scope, sessionUuid, projects] as const
 const statusKey = ['status'] as const
 const importRunKey = (id: number) => ['importRuns', id] as const
+const projectsKey = ['projects'] as const
 
 // --- reads ------------------------------------------------------------------------------
 
@@ -75,10 +82,16 @@ export function useMessages(transcriptId: number, opts: MessagesOptions = {}) {
   })
 }
 
-export function useSearch(q: string, scope: SearchScope, sessionUuid?: string) {
+// `projects` is threaded through as a real positional arg on every call, including session scope
+// (where it's simply `undefined` — see ConversationSearchResults, which never passes it: the
+// server explicitly ignores `projects=` under scope=session, so there's nothing to filter, per
+// §14.2's binding note). Passing it through uniformly (rather than branching on scope here) keeps
+// this hook a plain, unconditional plumb — the "don't pass projects for session scope" rule lives
+// entirely at the CALL SITE (ConversationSearchResults just never supplies the 4th arg).
+export function useSearch(q: string, scope: SearchScope, sessionUuid?: string, projects?: string[]) {
   return useQuery({
-    queryKey: searchKey(q, scope, sessionUuid),
-    queryFn: () => fetchSearch(q, scope, sessionUuid),
+    queryKey: searchKey(q, scope, sessionUuid, projects),
+    queryFn: () => fetchSearch(q, scope, sessionUuid, undefined, undefined, projects),
     enabled: q.trim().length > 0,
   })
 }
@@ -91,6 +104,19 @@ export function useStatus() {
   })
 }
 
+// Projects change only on explicit import/reparse, never mid-session, so a long staleTime
+// avoids refetching the list on every mount. There is no invalidation hookup from the import
+// pipeline yet (StatusBar's import-run success handler invalidates ['status'] and ['sessions']
+// only) -- a newly-imported project won't appear here until the QueryClient is recreated (i.e.
+// a page reload). Acceptable for now per the task contract; revisit if it matters in practice.
+export function useProjects() {
+  return useQuery({
+    queryKey: projectsKey,
+    queryFn: fetchProjects,
+    staleTime: Infinity,
+  })
+}
+
 // --- mutations --------------------------------------------------------------------------
 
 export function useFavorite() {
@@ -100,6 +126,24 @@ export function useFavorite() {
       favorite ? putFavorite(uuid) : deleteFavorite(uuid),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
+    },
+  })
+}
+
+export function useSessionTitle() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ uuid, title }: { uuid: string; title: string }) =>
+      putSessionTitle(uuid, title),
+    onSuccess: () => {
+      // ['sessions'] is a PREFIX match: it covers both the list key (['sessions', filters]) AND
+      // the detail key (sessionKey above is ['sessions', uuid], not a separate ['session', uuid]
+      // -- see the query-keys section). ['search'] covers searchKey groups, which embed a
+      // SessionSummary (and therefore a possibly-stale title) per group -- without invalidating
+      // it a renamed session would show its old title in search results until staleTime lapses
+      // (plan critique F2/F6).
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      queryClient.invalidateQueries({ queryKey: ['search'] })
     },
   })
 }
