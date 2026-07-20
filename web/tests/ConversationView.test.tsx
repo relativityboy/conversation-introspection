@@ -124,15 +124,16 @@ describe('initial load without around', () => {
 })
 
 describe('around-seeded load', () => {
-  it('seeds firstItemIndex from the response offset and starts atop the target uuid', async () => {
+  it('seeds firstItemIndex from the response offset and starts centered on the target uuid', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
     renderView('uuid-90')
 
     expect(await screen.findAllByTestId('row')).toHaveLength(100)
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { around: 'uuid-90', limit: 100 })
     expect(virtuosoProps.current?.firstItemIndex).toBe(40)
-    // uuid-90 sits at array index 50 within the seeded page (items are uuid-40..uuid-139).
-    expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(50)
+    // uuid-90 sits at array index 50 within the seeded page (items are uuid-40..uuid-139);
+    // centered per the 2026-07-20 walk ruling (top-edge landing hid the context above).
+    expect(virtuosoProps.current?.initialTopMostItemIndex).toEqual({ index: 50, align: 'center' })
   })
 })
 

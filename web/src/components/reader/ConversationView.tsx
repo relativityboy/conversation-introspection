@@ -169,10 +169,12 @@ function MessageStream({ transcriptId, seed, initialAroundUuid, chatOnly }: Mess
 
   // Array index (virtuoso interprets initialTopMostItemIndex in list space, not absolute
   // space) of the around-target within the seeded page; top of the stream when absent.
-  const [initialTopMostItemIndex] = useState(() => {
+  // NOTE(claude): the target is CENTERED (2026-07-20 walk finding — top-edge landing hid the
+  // context above the highlighted message and read as "not what I hoped for").
+  const [initialTopMostItemIndex] = useState<number | { index: number; align: 'center' }>(() => {
     if (!initialAroundUuid) return 0
     const index = seed.items.findIndex((m) => m.record_uuid === initialAroundUuid)
-    return index === -1 ? 0 : index
+    return index === -1 ? 0 : { index, align: 'center' }
   })
 
   // Deep-link arrival glow. A ref callback (not a post-render querySelector) fires exactly when
@@ -247,6 +249,16 @@ function MessageStream({ transcriptId, seed, initialAroundUuid, chatOnly }: Mess
         totalCount={stream.items.length}
         firstItemIndex={stream.firstItemIndex}
         initialTopMostItemIndex={initialTopMostItemIndex}
+        // NOTE(claude): 1200px of pre-rendered runway above the viewport (2026-07-20 walk
+        // finding): startReached then fires while the join is still off-screen, so the
+        // prepend's scrollTop correction can't fight an in-flight user scroll — that fight
+        // was the scrollbar-teleport + stutter Donovan felt when scrolling up from a
+        // deep-linked message. Bottom kept modest; appends don't correct scrollTop.
+        // NOTE(claude): 1200 measured better than 2400 (2026-07-20 Playwright runs: 1 vs 3
+        // scroll-corrections per 12-step sweep) — a larger runway triggers MORE prepends per
+        // distance during sustained scrolling. Occasional scrollbar re-anchoring at page joins
+        // is inherent windowed-list physics; don't chase zero by inflating this number.
+        increaseViewportBy={{ top: 1200, bottom: 400 }}
         startReached={loadBefore}
         endReached={loadAfter}
         itemContent={(absoluteIndex) => {
