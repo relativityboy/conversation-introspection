@@ -7,9 +7,9 @@ independently unit-tested. The CLI imports :func:`run_tui` lazily so cron never 
 Surface: a bottom command :class:`~textual.widgets.Input` with as-you-type slash-command
 autocomplete; a results :class:`OptionList` (default, non-slash input runs an archive search);
 and a :class:`~textual.widgets.RichLog` log area where command output and progress stream. Enter
-opens the highlighted result's session in the browser; Right opens its best-matching message;
-both auto-start the local web server if it is stopped. Esc clears; Ctrl-C / ``/quit`` exit,
-stopping any web server the TUI started.
+and Right both open the highlighted result's best-matching message in the browser (§16 amendment
+2026-07-20: "one destination, two keys"), auto-starting the local web server if it is stopped.
+Esc clears; Ctrl-C / ``/quit`` exit, stopping any web server the TUI started.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from introspect.tui.search import SearchResultRow, search_sessions
 from introspect.tui.webserver import (
     WebServerManager,
     right_arrow_url,
-    session_url,
 )
 
 
@@ -60,8 +59,9 @@ class CommandInput(Input):
 class ResultsList(OptionList):
     """The search results list. Adds Right = open the highlighted hit's message deep-link.
 
-    Up/Down/Enter come from :class:`OptionList` (Enter -> ``OptionSelected``, handled by the
-    app as "open session"); Right is the extra §16 gesture for the message-level deep link.
+    Up/Down/Enter come from :class:`OptionList` (Enter -> ``OptionSelected``, handled by the app
+    as "open the best-hit message" -- the same destination as Right per the §16 amendment); Right
+    is the explicit §16 gesture for that message-level deep link.
     """
 
     BINDINGS = [Binding("right", "open_message", "Open message", show=False)]
@@ -194,7 +194,7 @@ class IntrospectApp(App):
         results_list.highlighted = 0
         results_list.focus()
         self._append_log(f'{len(self._results)} result(s) for "{query}" -- '
-                         "Enter opens the session, Right the best message")
+                         "Enter or Right opens the best-hit message")
 
     def _format_row(self, row: SearchResultRow) -> Text:
         # Build with Text.append (never markup parsing) so untrusted archive content -- titles,
@@ -215,30 +215,28 @@ class IntrospectApp(App):
 
     @on(OptionList.OptionSelected, "#results")
     def _on_option_selected(self, event: OptionList.OptionSelected) -> None:
-        # Enter (or click) on a result opens the session.
-        self._open_session(event.option_index)
+        # Enter (or click) on a result opens the best-hit message deep-link -- the same
+        # destination as Right (§16 amendment 2026-07-20: "one destination, two keys").
+        self._open_message(event.option_index)
 
     def open_selected_message(self) -> None:
-        """Right gesture: open the highlighted result's best-matching message.
+        """Right gesture: open the highlighted result's best-matching message."""
+        self._open_message(self.query_one("#results", ResultsList).highlighted)
+
+    def _open_message(self, index: int | None) -> None:
+        """Open the result at ``index`` at its best-matching message.
 
         The URL is routed by the hit's transcript identity -- a subagent hit opens the
         /a/{hex}/m/ drill-in, never the main-transcript /m/ that would 404 (see
-        :func:`introspect.tui.webserver.right_arrow_url`).
+        :func:`introspect.tui.webserver.right_arrow_url`). Shared by Enter and Right.
         """
-        row = self._row_at(self.query_one("#results", ResultsList).highlighted)
+        row = self._row_at(index)
         if row is None:
             return
         base = self._ensure_web_for_open()
         self._open_url(
             right_arrow_url(base, row.session_uuid, row.agent_hex_id, row.record_uuid)
         )
-
-    def _open_session(self, index: int | None) -> None:
-        row = self._row_at(index)
-        if row is None:
-            return
-        base = self._ensure_web_for_open()
-        self._open_url(session_url(base, row.session_uuid))
 
     def _row_at(self, index: int | None) -> SearchResultRow | None:
         if index is None or not (0 <= index < len(self._results)):

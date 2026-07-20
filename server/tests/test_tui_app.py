@@ -94,9 +94,11 @@ def test_app_search_populates_results(indexed_fixture: Session) -> None:
     assert counts["n"] == 1
 
 
-def test_app_enter_opens_session_url(
+def test_app_enter_opens_message_url(
     indexed_fixture: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # §16 amendment 2026-07-20: Enter now opens the SAME best-hit message deep-link as Right
+    # (one destination, two keys) -- no longer the bare session URL.
     dbp = _db_path_of(indexed_fixture)
     opened: list[str] = []
     monkeypatch.setattr(webbrowser, "open", lambda url, *a, **k: opened.append(url))
@@ -111,7 +113,8 @@ def test_app_enter_opens_session_url(
             await pilot.pause()
 
     asyncio.run(scenario())
-    assert opened == [f"http://127.0.0.1:8765/s/{SESSION_UUID_1}"]
+    assert len(opened) == 1
+    assert opened[0].startswith(f"http://127.0.0.1:8765/s/{SESSION_UUID_1}/m/")
 
 
 def test_app_right_opens_message_url(

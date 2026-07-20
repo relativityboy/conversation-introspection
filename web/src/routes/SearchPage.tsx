@@ -8,11 +8,10 @@ import { readProjects } from '../lib/urlState'
 
 const WRAP_STYLE: CSSProperties = { padding: '18px 24px 40px', maxWidth: 820 }
 
+// Layout only; the contrast treatment (background, border, text, placeholder) is the shared
+// `.sw-input` class in theme.css (§9 amendment 2026-07-20).
 const INPUT_STYLE: CSSProperties = {
   width: '100%',
-  background: 'var(--surface)',
-  border: '1px solid var(--shore)',
-  color: 'var(--moonpaper)',
   fontFamily: 'var(--sans)',
   fontSize: 15,
   padding: '10px 12px',
@@ -70,6 +69,7 @@ export function SearchPage() {
     <div style={WRAP_STYLE}>
       <form onSubmit={commit} role="search">
         <input
+          className="sw-input"
           type="search"
           aria-label="Search all conversations"
           placeholder="Search every archived conversation…"

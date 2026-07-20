@@ -5,6 +5,7 @@
   --depth:#0B1220;      /* app bg, sidebar — deepest water */
   --surface:#111B2E;    /* reading pane, cards — lifted toward surface */
   --shore:#1A2740;      /* borders, dividers, hover fills */
+  --input-border:#3A4E74; /* brightened shore — visible text-input borders (§9 amendment 2026-07-20) */
   --moonpaper:#E7ECF4;  /* primary text */
   --mist:#8A99B0;       /* secondary text, labels, timestamps */
   --dawn:#E5A54B;       /* Donovan's voice, favorite stars, highlights */
@@ -46,6 +47,20 @@ a:focus-visible,button:focus-visible,input:focus-visible{
 
 /* ===== base utility classes (used across reader components) ===== */
 
+/* Shared text-input contrast treatment (§9 amendment 2026-07-20 — "contrast is repair, not
+   variety"). The five Still Water inputs (sidebar filter, both search boxes, project-filter box,
+   title editor) carry `.sw-input` for their visible border, moonpaper text, and full-strength
+   placeholder; each keeps its own layout inline (width, font-size, padding, border-radius). Mirrors
+   the mockup's `.search` rule. opacity:1 on the placeholder defeats the browser default (Firefox
+   dims placeholders to .54) so mist reads at full strength. Focus ring (dragonfly) is unchanged —
+   it comes from the global input:focus-visible rule above. */
+.sw-input{
+  background:var(--surface);
+  border:1px solid var(--input-border);
+  color:var(--moonpaper);
+}
+.sw-input::placeholder{color:var(--mist);opacity:1;}
+
 /* serif reading prose (message bodies, conversation text) */
 .prose{
   font-family:var(--serif);
@@ -80,6 +95,20 @@ a:focus-visible,button:focus-visible,input:focus-visible{
 }
 @media (prefers-reduced-motion:reduce){
   .deep-link-glow{animation:none;background:transparent;box-shadow:none;}
+}
+
+/* ===== persistent deep-link marker (§9 amendment 2026-07-20) ===== */
+/* After the arrival glow fades, the /m/{uuid} target row keeps a subtle, PERMANENT marker so
+   "you landed here" survives the transient wash: a 2px dawn left accent + a faint dawn wash.
+   Applied by ConversationView on the OUTER data-record-uuid wrapper (never inside MessageTurn),
+   so the inner voice-accent borders are untouched. The left accent is an INSET box-shadow, not a
+   real border, so it adds the marker without shifting the row's content by 2px. Fully static —
+   nothing animates — so reduced-motion is satisfied trivially, with no @media needed. During the
+   glow the animated background/box-shadow win; when .deep-link-glow is removed the row settles
+   onto this marker. */
+.deep-link-target{
+  background:rgba(229,165,75,.06);            /* --dawn at very low alpha */
+  box-shadow:inset 2px 0 0 var(--dawn);
 }
 
 /* ===== raw-record inspector overlay (components/reader/RawRecordInspector.tsx) ===== */

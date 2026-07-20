@@ -90,6 +90,7 @@ export function Sidebar() {
       </Link>
 
       <input
+        className="sw-input"
         type="search"
         placeholder="Filter by title or content…"
         aria-label="Filter conversations by title or content"
@@ -97,9 +98,6 @@ export function Sidebar() {
         onChange={(event) => setFilterInput(event.target.value)}
         style={{
           width: '100%',
-          background: 'var(--surface)',
-          border: '1px solid var(--shore)',
-          color: 'var(--moonpaper)',
           fontFamily: 'var(--sans)',
           fontSize: 13,
           padding: '8px 10px',

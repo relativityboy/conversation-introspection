@@ -248,6 +248,43 @@ describe('around-target not found (404)', () => {
   })
 })
 
+// §9 amendment 2026-07-20: the /m/{uuid} deep-link target keeps a PERSISTENT marker (dawn accent +
+// faint wash — class `deep-link-target`) on its data-record-uuid wrapper after the transient glow
+// fades. Only the target carries it; "view from the beginning" (around dropped) clears it.
+describe('persistent deep-link marker', () => {
+  it('marks the around-target row and no others', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
+    const { container } = renderView('uuid-90')
+    await screen.findAllByTestId('row')
+
+    const target = container.querySelector('[data-record-uuid="uuid-90"]')
+    expect(target?.classList.contains('deep-link-target')).toBe(true)
+
+    const other = container.querySelector('[data-record-uuid="uuid-89"]')
+    expect(other?.classList.contains('deep-link-target')).toBe(false)
+  })
+
+  it('carries no marker when there is no around target', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    const { container } = renderView()
+    await screen.findAllByTestId('row')
+
+    expect(container.querySelector('.deep-link-target')).toBeNull()
+  })
+
+  it('drops the marker after "view from the beginning" recovery (around dropped)', async () => {
+    fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'record uuid-x not found'))
+    const { container } = renderView('uuid-x')
+    await screen.findByText(/message not found in this conversation/)
+
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    await userEvent.click(screen.getByRole('button', { name: 'view from the beginning' }))
+
+    await screen.findAllByTestId('row')
+    expect(container.querySelector('.deep-link-target')).toBeNull()
+  })
+})
+
 // §14.4: chat_only must ride ALL THREE fetch sites — the seed, loadBefore, and loadAfter — so an
 // unfiltered edge page can never splice into a filtered window and corrupt the offset math.
 describe('chat_only threads through every fetch site', () => {

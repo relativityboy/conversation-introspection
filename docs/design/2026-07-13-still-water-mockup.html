@@ -10,6 +10,7 @@
     --depth:#0B1220;      /* app bg, sidebar — deepest water */
     --surface:#111B2E;    /* reading pane, cards — lifted toward surface */
     --shore:#1A2740;      /* borders, dividers, hover fills */
+    --input-border:#3A4E74; /* brightened shore — visible text-input borders (§9 amendment 2026-07-20) */
     --moonpaper:#E7ECF4;  /* primary text */
     --mist:#8A99B0;       /* secondary text, labels, timestamps */
     --dawn:#E5A54B;       /* Donovan's voice, favorite stars, highlights */
@@ -97,14 +98,16 @@
   .search{
     width:100%;
     background:var(--surface);
-    border:1px solid var(--shore);
+    border:1px solid var(--input-border);
     color:var(--moonpaper);
     font-family:var(--sans);
     font-size:13px;
     padding:8px 10px;
     border-radius:6px;
   }
-  .search::placeholder{color:var(--mist);}
+  /* opacity:1 defeats the browser default (Firefox dims placeholders to .54), so the placeholder
+     reads at full-strength mist — the higher-contrast treatment of the §9 amendment. */
+  .search::placeholder{color:var(--mist);opacity:1;}
 
   .chips{display:flex;gap:8px;margin:12px 6px 8px;}
   .chip{

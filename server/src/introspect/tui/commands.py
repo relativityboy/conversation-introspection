@@ -123,9 +123,9 @@ def _cmd_help(ctx: CommandContext, args: list[str]) -> None:
         ctx.emit(f"  /{command.name:<11}{command.summary}")
     ctx.emit("")
     ctx.emit("search: type text with NO leading '/' to search the archive.")
-    ctx.emit("  Up/Down navigate results; Enter opens the session in your browser;")
-    ctx.emit("  Right opens the best-matching message. Either auto-starts the web")
-    ctx.emit("  server on 127.0.0.1 if it is stopped (a browser launch needs a server).")
+    ctx.emit("  Up/Down navigate results; Enter or Right opens the best-matching message")
+    ctx.emit("  in your browser. Either auto-starts the web server on 127.0.0.1 if it is")
+    ctx.emit("  stopped (a browser launch needs a server).")
     ctx.emit("/help <command> for a command's details, examples, and caveats.")
 
 

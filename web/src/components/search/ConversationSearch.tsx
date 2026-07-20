@@ -6,12 +6,11 @@ import type { SessionSearchResult } from '../../api/types'
 import { readProjects } from '../../lib/urlState'
 import { HitSnippet } from './HitSnippet'
 
+// Layout only; contrast (background, border, text, placeholder) comes from the shared `.sw-input`
+// class in theme.css (§9 amendment 2026-07-20).
 const INPUT_STYLE: CSSProperties = {
   width: '100%',
   maxWidth: 360,
-  background: 'var(--surface)',
-  border: '1px solid var(--shore)',
-  color: 'var(--moonpaper)',
   fontFamily: 'var(--sans)',
   fontSize: 13,
   padding: '7px 10px',
@@ -60,6 +59,7 @@ export function ConversationSearch({ sessionUuid }: { sessionUuid: string }) {
   return (
     <form onSubmit={commit} role="search">
       <input
+        className="sw-input"
         type="search"
         aria-label="Search this conversation"
         placeholder="Search this conversation…"

@@ -51,10 +51,11 @@ const TITLE_BUTTON_STYLE: CSSProperties = {
   textAlign: 'left',
 }
 
+// Background/border/text come from the shared `.sw-input` class (§9 amendment 2026-07-20); the
+// serif TITLE_TEXT_STYLE spread supplies the title typography (and re-states the same moonpaper
+// text color the class sets). Layout (radius, padding, width bounds) stays here.
 const TITLE_INPUT_STYLE: CSSProperties = {
   ...TITLE_TEXT_STYLE,
-  background: 'var(--surface)',
-  border: '1px solid var(--shore)',
   borderRadius: 6,
   padding: '2px 8px',
   minWidth: 280,
@@ -205,6 +206,7 @@ export function TitleEditor({ session }: TitleEditorProps) {
       <h1 style={H1_STYLE}>
         <input
           ref={inputRef}
+          className="sw-input"
           aria-label="Session title"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}

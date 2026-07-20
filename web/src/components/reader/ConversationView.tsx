@@ -256,6 +256,10 @@ function MessageStream({ transcriptId, seed, initialAroundUuid, chatOnly }: Mess
           return (
             <div
               data-record-uuid={message.record_uuid}
+              // The deep-link target keeps a persistent marker (dawn accent + faint wash) after
+              // the transient glow fades (§9 amendment 2026-07-20). `isTarget` is false once
+              // "view from the beginning" drops the around seed, so recovery clears the marker.
+              className={isTarget ? 'deep-link-target' : undefined}
               ref={isTarget ? glowTarget : undefined}
               style={{ padding: '0 24px' }}
             >

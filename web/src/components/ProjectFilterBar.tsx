@@ -164,6 +164,7 @@ export function ProjectFilterBar() {
           <div className="pfb-combo" style={{ position: 'relative' }}>
             <input
               ref={inputRef}
+              className="sw-input"
               role="searchbox"
               aria-label="Filter conversations by project"
               aria-expanded={open}
@@ -186,9 +187,6 @@ export function ProjectFilterBar() {
               onBlur={() => setOpen(false)}
               style={{
                 width: 200,
-                background: 'var(--surface)',
-                border: '1px solid var(--shore)',
-                color: 'var(--moonpaper)',
                 fontFamily: 'var(--sans)',
                 fontSize: 12,
                 padding: '5px 9px',
