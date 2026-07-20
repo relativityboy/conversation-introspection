@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { BlockOut, MessageOut, TranscriptInfo } from '../src/api/types'
 import { MessageTurn } from '../src/components/reader/MessageTurn'
 import { TranscriptsProvider } from '../src/components/reader/transcripts-context'
@@ -256,6 +257,24 @@ describe('attachment voice (rescued queued commands)', () => {
     expect(container.querySelector('.message-turn')).not.toBeNull()
     expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM \(YOU\) · /)
     expect(container.textContent).toContain('still a human turn')
+  })
+})
+
+// §15.2: a quiet `{}` in the eyebrow opens the raw-record inspector. Gated on `onInspect` so the
+// un-virtualized unit renders (which never supply it) keep a text-only eyebrow.
+describe('raw-record inspect affordance', () => {
+  it('renders a {} button that calls onInspect with the record uuid when supplied', async () => {
+    const onInspect = vi.fn()
+    render(<MessageTurn message={message({ record_uuid: 'rec-42' })} onInspect={onInspect} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Inspect raw record' }))
+    expect(onInspect).toHaveBeenCalledWith('rec-42')
+  })
+
+  it('omits the affordance and keeps the eyebrow text-only when no onInspect is supplied', () => {
+    const { container } = render(<MessageTurn message={message({ timestamp: null })} />)
+    expect(screen.queryByRole('button', { name: 'Inspect raw record' })).toBeNull()
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toBe('YOU')
   })
 })
 

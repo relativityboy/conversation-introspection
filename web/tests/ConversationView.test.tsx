@@ -23,14 +23,15 @@ interface VirtuosoMockProps {
   itemContent: (index: number) => ReactNode
 }
 
-const { fetchMessages, virtuosoProps } = vi.hoisted(() => ({
+const { fetchMessages, fetchRawRecord, virtuosoProps } = vi.hoisted(() => ({
   fetchMessages: vi.fn(),
+  fetchRawRecord: vi.fn(),
   virtuosoProps: { current: null as VirtuosoMockProps | null },
 }))
 
 vi.mock('../src/api/client', async () => {
   const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client')
-  return { ...actual, fetchMessages }
+  return { ...actual, fetchMessages, fetchRawRecord }
 })
 
 vi.mock('react-virtuoso', () => ({
@@ -105,6 +106,7 @@ function renderView(
 
 beforeEach(() => {
   fetchMessages.mockReset()
+  fetchRawRecord.mockReset()
   virtuosoProps.current = null
 })
 
@@ -305,6 +307,24 @@ describe('chat_only threads through every fetch site', () => {
     await screen.findAllByTestId('row')
     // Exactly the legacy opts shape — no chat_only key at all (server default is false).
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+  })
+})
+
+// §15.2: each row's `{}` opens the reader-level raw-record inspector, seeded on that row's uuid and
+// reading the loaded window as its traversal order. This is the wiring check; the modal's own
+// behavior matrix lives in RawRecordInspector.test.tsx.
+describe('raw-record inspector wiring', () => {
+  it('opens the inspector on the clicked row, seeded with that row’s uuid', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 3, 3))
+    fetchRawRecord.mockResolvedValue('{"hello":"world"}')
+    renderView()
+    await screen.findAllByTestId('row')
+
+    const inspectButtons = screen.getAllByRole('button', { name: 'Inspect raw record' })
+    await userEvent.click(inspectButtons[0])
+
+    expect(await screen.findByRole('dialog')).toBeDefined()
+    await waitFor(() => expect(fetchRawRecord).toHaveBeenCalledWith('uuid-0'))
   })
 })
 

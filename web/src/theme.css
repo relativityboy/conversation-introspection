@@ -81,3 +81,12 @@ a:focus-visible,button:focus-visible,input:focus-visible{
 @media (prefers-reduced-motion:reduce){
   .deep-link-glow{animation:none;background:transparent;box-shadow:none;}
 }
+
+/* ===== raw-record inspector overlay (components/reader/RawRecordInspector.tsx) ===== */
+/* A soft fade as the depth backdrop settles over the reader. Reduced motion drops it to an
+   instant appearance — the modal is otherwise a static panel, so there's nothing else to still. */
+@keyframes raw-record-overlay-in{from{opacity:0;}to{opacity:1;}}
+.raw-record-overlay{animation:raw-record-overlay-in 160ms ease-out;}
+@media (prefers-reduced-motion:reduce){
+  .raw-record-overlay{animation:none;}
+}

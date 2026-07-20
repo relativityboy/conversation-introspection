@@ -11,10 +11,12 @@ import {
   fetchImportRun,
   fetchMessages,
   fetchProjects,
+  fetchRawRecord,
   fetchSearch,
   fetchSession,
   fetchSessions,
   fetchStatus,
+  putArchive,
   putFavorite,
   putSessionTitle,
   triggerImport,
@@ -46,6 +48,7 @@ const searchKey = (
   sessionUuid: string | undefined,
   projects: string[] | undefined,
 ) => ['search', q, scope, sessionUuid, projects] as const
+const rawRecordKey = (uuid: string) => ['rawRecord', uuid] as const
 const statusKey = ['status'] as const
 const importRunKey = (id: number) => ['importRuns', id] as const
 const projectsKey = ['projects'] as const
@@ -96,6 +99,20 @@ export function useSearch(q: string, scope: SearchScope, sessionUuid?: string, p
   })
 }
 
+// The raw-record inspector's fetch (§15.2). `uuid` is null while the modal is closed, so the query
+// is disabled and no request fires — the hotkeys/fetch must not run when nothing is open. A 404
+// (record gone, or its session archived) is a not-found, not a connectivity failure: skip the
+// retry storm the same way useMessages/useSession do, so the modal shows its calm notice at once.
+export function useRawRecord(uuid: string | null) {
+  return useQuery({
+    queryKey: rawRecordKey(uuid ?? ''),
+    queryFn: () => fetchRawRecord(uuid as string),
+    enabled: uuid !== null,
+    retry: (failureCount, error) =>
+      !(error instanceof ApiError && error.status === 404) && failureCount < 3,
+  })
+}
+
 export function useStatus() {
   return useQuery({
     queryKey: statusKey,
@@ -142,6 +159,22 @@ export function useSessionTitle() {
       // SessionSummary (and therefore a possibly-stale title) per group -- without invalidating
       // it a renamed session would show its old title in search results until staleTime lapses
       // (plan critique F2/F6).
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      queryClient.invalidateQueries({ queryKey: ['search'] })
+    },
+  })
+}
+
+// Archiving hides a session from every read surface (§15.1). Invalidate the SAME two prefixes
+// useSessionTitle does: ['sessions'] covers the list (the archived row must drop out) AND the
+// detail key; ['search'] covers searchKey groups, which embed a SessionSummary per group that
+// must no longer surface the archived session. Navigation ('/') is the caller's job (ArchiveButton
+// via useNavigate) -- a mutation hook has no router, and only the caller knows where "away" is.
+export function useArchiveSession() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (uuid: string) => putArchive(uuid),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
       queryClient.invalidateQueries({ queryKey: ['search'] })
     },

@@ -1,4 +1,6 @@
+import type { CSSProperties } from 'react'
 import type { BlockOut, MessageOut } from '../../api/types'
+import { isChatOnlyVisible } from '../../lib/chatOnly'
 import { ImageBlock } from './ImageBlock'
 import { MarkdownProse } from './MarkdownProse'
 import { SubagentChip } from './SubagentChip'
@@ -38,20 +40,38 @@ function voiceOf(message: MessageOut): Voice {
   return 'system'
 }
 
+// A quiet mono `{}` in the eyebrow that opens the raw-record inspector (§15.2). Mist-toned, no
+// chrome — the calmest possible affordance, one per row, wired only when the reader supplies an
+// onInspect (SubagentPage/SessionPage readers do; the un-virtualized MessageTurn unit tests don't).
+const INSPECT_BUTTON_STYLE: CSSProperties = {
+  fontFamily: 'var(--mono)',
+  fontSize: 10,
+  lineHeight: 1.2,
+  letterSpacing: '.06em',
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  cursor: 'pointer',
+  color: 'var(--mist)',
+}
+
 export interface MessageTurnProps {
   message: MessageOut
   /** Conversation-only mode: hide tool_use / tool_result blocks (and the subagent chips that ride
    * tool_use) — see `Block`. Owned by the page via useChatOnly; false when omitted. */
   chatOnly?: boolean
+  /** Opens the raw-record inspector for this row (§15.2). Supplied by the reader (MessageStream);
+   * absent in the un-virtualized unit tests, where the `{}` affordance simply isn't rendered. */
+  onInspect?: (recordUuid: string) => void
 }
 
-export function MessageTurn({ message, chatOnly = false }: MessageTurnProps) {
+export function MessageTurn({ message, chatOnly = false, onInspect }: MessageTurnProps) {
   // Conversation-only mode hides harness-furniture attachment stubs (Task P4-F1): the ~800
   // zero-block deferred_tools_delta / skill_listing / task_reminder rows collapse to nothing,
-  // while a block-bearing attachment (a rescued human queued prompt) stays. This is the row-level
-  // twin of the block-level chatOnly filter below; the server predicate still returns attachments
-  // (they CAN be conversation), so the furniture is filtered out here on the client.
-  if (chatOnly && message.type === 'attachment' && message.blocks.length === 0) return null
+  // while a block-bearing attachment (a rescued human queued prompt) stays. `isChatOnlyVisible` is
+  // the SAME predicate the raw inspector's prev/next uses (lib/chatOnly), so the rows this reader
+  // hides and the rows that navigation skips can never drift.
+  if (chatOnly && !isChatOnlyVisible(message)) return null
 
   const voice = voiceOf(message)
   const time = localHHMM(message.timestamp)
@@ -64,16 +84,37 @@ export function MessageTurn({ message, chatOnly = false }: MessageTurnProps) {
     <article className={`message-turn turn-${voice}`} style={{ paddingBottom: 28 }}>
       <div style={{ borderLeft: `2px solid ${ACCENT[voice]}`, paddingLeft: 16 }}>
         <div
-          className="turn-eyebrow mono"
+          className="turn-eyebrow-row"
           style={{
-            fontFamily: 'var(--mono)',
-            fontSize: 10,
-            letterSpacing: '.14em',
-            color: 'var(--mist)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
             marginBottom: 8,
           }}
         >
-          {time ? `${SPEAKER[voice]} · ${time}` : SPEAKER[voice]}
+          <span
+            className="turn-eyebrow mono"
+            style={{
+              fontFamily: 'var(--mono)',
+              fontSize: 10,
+              letterSpacing: '.14em',
+              color: 'var(--mist)',
+            }}
+          >
+            {time ? `${SPEAKER[voice]} · ${time}` : SPEAKER[voice]}
+          </span>
+          {onInspect && (
+            <button
+              type="button"
+              className="raw-record-open mono"
+              aria-label="Inspect raw record"
+              onClick={() => onInspect(message.record_uuid)}
+              style={INSPECT_BUTTON_STYLE}
+            >
+              {'{}'}
+            </button>
+          )}
         </div>
         {blocks.map((block) => (
           <Block key={block.block_index} block={block} chatOnly={chatOnly} />

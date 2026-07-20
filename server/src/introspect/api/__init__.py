@@ -31,7 +31,9 @@ from fastapi.staticfiles import StaticFiles
 from introspect import config
 from introspect.api.errors import register_error_handlers
 from introspect.api.routes.admin import router as admin_router
+from introspect.api.routes.archive import router as archive_router
 from introspect.api.routes.favorites import router as favorites_router
+from introspect.api.routes.records import router as records_router
 from introspect.api.routes.search import router as search_router
 from introspect.api.routes.sessions import router as sessions_router
 from introspect.api.routes.titles import router as titles_router
@@ -76,6 +78,8 @@ def create_app(
     app.include_router(search_router)
     app.include_router(favorites_router)
     app.include_router(titles_router)
+    app.include_router(archive_router)
+    app.include_router(records_router)
     app.include_router(admin_router)
 
     @app.get("/api/v1/health")

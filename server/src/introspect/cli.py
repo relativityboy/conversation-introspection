@@ -1,4 +1,4 @@
-"""Command-line entry point: ``introspect import|reparse|export|status|serve``.
+"""Command-line entry point: ``introspect import|reparse|export|unarchive|status|serve``.
 
 Thin layer — every subcommand resolves config, opens/migrates the DB, and delegates to the
 module that owns the logic (:mod:`introspect.ingest.run`, :mod:`introspect.ingest.reparse`,
@@ -41,7 +41,14 @@ from introspect.ingest.reparse import reparse_all
 # import/reparse pair can never race). Reusing them here is a smaller diff than lifting them
 # to a shared module.
 from introspect.ingest.run import DbOpenError, _acquire_lock, _release_lock, run_import
-from introspect.models import ChatSession, ImportRun, ParseAnomaly, RawRecord, SourceFile
+from introspect.models import (
+    ArchivedSession,
+    ChatSession,
+    ImportRun,
+    ParseAnomaly,
+    RawRecord,
+    SourceFile,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,6 +74,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("-o", "--output", help="output path (default: <uuid>.jsonl in cwd)")
     p_export.add_argument("--db", help="path to the archive DB")
     p_export.set_defaults(handler=_cmd_export)
+
+    p_unarchive = subparsers.add_parser(
+        "unarchive", help="restore an archived session (by uuid; CLI-only)"
+    )
+    p_unarchive.add_argument("session_uuid")
+    p_unarchive.add_argument("--db", help="path to the archive DB")
+    p_unarchive.set_defaults(handler=_cmd_unarchive)
 
     p_status = subparsers.add_parser("status", help="archive counts + last import run")
     p_status.add_argument("--db", help="path to the archive DB")
@@ -157,6 +171,28 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_unarchive(args: argparse.Namespace) -> int:
+    """Restore an archived session by uuid (§15.1: the ONLY unarchive path -- no API/UI reveals
+    or removes archived sessions). A uuid that isn't currently archived (unknown session, or a
+    known-but-not-archived one) is exit 1 with a stderr message; there is no list command, so the
+    user supplies the uuid out-of-band via a direct DB query."""
+    dbp = _resolve_db_path_or_none(args.db)
+    if dbp is None:
+        return 2
+    engine = _open_db_or_none(dbp)
+    if engine is None:
+        return 2
+    with session_factory(engine)() as db:
+        row = db.get(ArchivedSession, args.session_uuid)
+        if row is None:
+            print(f"unarchive: no archived session {args.session_uuid}", file=sys.stderr)
+            return 1
+        db.delete(row)
+        db.commit()
+    print(f"unarchived {args.session_uuid}")
+    return 0
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     dbp = _resolve_db_path_or_none(args.db)
     if dbp is None:
@@ -166,6 +202,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         return 2
     with session_factory(engine)() as db:
         sessions = db.query(ChatSession).count()
+        archived = db.query(ArchivedSession).count()
         files = db.query(SourceFile).count()
         records = db.query(RawRecord).count()
         anomalies = db.query(ParseAnomaly).count()
@@ -174,8 +211,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
         infos = db.query(ParseAnomaly).filter_by(severity="info").count()
         last_run = db.query(ImportRun).order_by(ImportRun.id.desc()).first()
 
+    # `archived` is an aggregate count only (§15.1: "n only, no identities") -- status never
+    # enumerates which sessions are archived.
     print(
-        f"sessions={sessions} files={files} records={records} "
+        f"sessions={sessions} archived={archived} files={files} records={records} "
         f"anomalies={anomalies} (error={errors} warn={warns} info={infos})"
     )
     if last_run is None:

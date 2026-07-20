@@ -6,6 +6,7 @@ import { useMessages } from '../../api/hooks'
 import type { MessageList, MessageOut } from '../../api/types'
 import { applyGlow } from '../../lib/glow'
 import { MessageTurn } from './MessageTurn'
+import { RawRecordInspector } from './RawRecordInspector'
 
 const PAGE_SIZE = 100
 
@@ -160,6 +161,12 @@ function MessageStream({ transcriptId, seed, initialAroundUuid, chatOnly }: Mess
   // instance starts with pendingRef=false and re-seeds from the fresh (filtered) `seed`.
   const pendingRef = useRef(false)
 
+  // The raw-record inspector (§15.2) is a single reader-level instance, NOT one-per-row: a row's
+  // `{}` sets the current record uuid here, the modal reads `stream.items` as its traversal order,
+  // and closing clears it. Hosted here (not in ConversationView) because this is where the loaded
+  // window lives — navigation stays inside `stream.items`, never re-fetching from the modal.
+  const [inspectUuid, setInspectUuid] = useState<string | null>(null)
+
   // Array index (virtuoso interprets initialTopMostItemIndex in list space, not absolute
   // space) of the around-target within the seeded page; top of the stream when absent.
   const [initialTopMostItemIndex] = useState(() => {
@@ -234,28 +241,38 @@ function MessageStream({ transcriptId, seed, initialAroundUuid, chatOnly }: Mess
   // appending. The archive total lives in stream.total and is what stops loadAfter at the
   // boundary.
   return (
-    <Virtuoso
-      style={{ height: '100%' }}
-      totalCount={stream.items.length}
-      firstItemIndex={stream.firstItemIndex}
-      initialTopMostItemIndex={initialTopMostItemIndex}
-      startReached={loadBefore}
-      endReached={loadAfter}
-      itemContent={(absoluteIndex) => {
-        const message = stream.items[absoluteIndex - stream.firstItemIndex]
-        if (!message) return null
-        const isTarget = message.record_uuid === initialAroundUuid
-        return (
-          <div
-            data-record-uuid={message.record_uuid}
-            ref={isTarget ? glowTarget : undefined}
-            style={{ padding: '0 24px' }}
-          >
-            <MessageTurn message={message} chatOnly={chatOnly} />
-          </div>
-        )
-      }}
-    />
+    <>
+      <Virtuoso
+        style={{ height: '100%' }}
+        totalCount={stream.items.length}
+        firstItemIndex={stream.firstItemIndex}
+        initialTopMostItemIndex={initialTopMostItemIndex}
+        startReached={loadBefore}
+        endReached={loadAfter}
+        itemContent={(absoluteIndex) => {
+          const message = stream.items[absoluteIndex - stream.firstItemIndex]
+          if (!message) return null
+          const isTarget = message.record_uuid === initialAroundUuid
+          return (
+            <div
+              data-record-uuid={message.record_uuid}
+              ref={isTarget ? glowTarget : undefined}
+              style={{ padding: '0 24px' }}
+            >
+              <MessageTurn message={message} chatOnly={chatOnly} onInspect={setInspectUuid} />
+            </div>
+          )
+        }}
+      />
+      {inspectUuid !== null && (
+        <RawRecordInspector
+          items={stream.items}
+          initialUuid={inspectUuid}
+          parentChatOnly={chatOnly}
+          onClose={() => setInspectUuid(null)}
+        />
+      )}
+    </>
   )
 }
 

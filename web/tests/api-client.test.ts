@@ -7,10 +7,17 @@ import {
   fetchMessages,
   fetchSearch,
   fetchSessions,
+  putArchive,
   putFavorite,
   putSessionTitle,
 } from '../src/api/client'
-import { useMessages, useProjects, useSearch, useSessionTitle } from '../src/api/hooks'
+import {
+  useArchiveSession,
+  useMessages,
+  useProjects,
+  useSearch,
+  useSessionTitle,
+} from '../src/api/hooks'
 
 function mockFetchJson(status: number, body: unknown, statusText = '') {
   const json = JSON.stringify(body)
@@ -172,6 +179,21 @@ describe('putSessionTitle', () => {
   })
 })
 
+describe('putArchive', () => {
+  it('PUTs to the archive endpoint and resolves undefined on the bare 204', async () => {
+    mockFetchEmpty(204, 'No Content')
+
+    await expect(putArchive('abc-123')).resolves.toBeUndefined()
+
+    const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ]
+    expect(url).toBe('/api/v1/sessions/abc-123/archive')
+    expect(init.method).toBe('PUT')
+  })
+})
+
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return createElement(QueryClientProvider, { client: queryClient }, children)
@@ -230,6 +252,24 @@ describe('useSessionTitle', () => {
       wrapper: wrapperWithClient(queryClient),
     })
     result.current.mutate({ uuid: 'abc-123', title: 'New Title' })
+
+    await vi.waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['search'] })
+  })
+})
+
+describe('useArchiveSession', () => {
+  it('invalidates both the sessions prefix and search on success', async () => {
+    mockFetchEmpty(204, 'No Content')
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    const { result } = renderHook(() => useArchiveSession(), {
+      wrapper: wrapperWithClient(queryClient),
+    })
+    result.current.mutate('abc-123')
 
     await vi.waitFor(() => expect(result.current.isSuccess).toBe(true))
 

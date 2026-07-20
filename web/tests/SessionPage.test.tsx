@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../src/api/client'
 import type { MessageList, MessageOut, SessionDetail, TranscriptInfo } from '../src/api/types'
@@ -10,14 +10,15 @@ import { SessionPage } from '../src/routes/SessionPage'
 
 // Same convention as SubagentPage.test.tsx / Sidebar.test.tsx: mock the api client module
 // (hooks.ts imports these functions directly) rather than global fetch.
-const { fetchSession, fetchMessages } = vi.hoisted(() => ({
+const { fetchSession, fetchMessages, putArchive } = vi.hoisted(() => ({
   fetchSession: vi.fn(),
   fetchMessages: vi.fn(),
+  putArchive: vi.fn(),
 }))
 
 vi.mock('../src/api/client', async () => {
   const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client')
-  return { ...actual, fetchSession, fetchMessages }
+  return { ...actual, fetchSession, fetchMessages, putArchive }
 })
 
 vi.mock('react-virtuoso', () => ({
@@ -90,7 +91,14 @@ beforeEach(() => {
   fetchSession.mockReset()
   fetchMessages.mockReset()
   fetchMessages.mockResolvedValue({ items: [], total: 0, offset: 0 })
+  putArchive.mockReset()
+  putArchive.mockResolvedValue(undefined)
 })
+
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="loc">{`${loc.pathname}${loc.search}`}</div>
+}
 
 function renderAt(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -140,6 +148,13 @@ describe('SessionPage header wiring', () => {
     const input = screen.getByRole('textbox', { name: 'Session title' }) as HTMLInputElement
     expect(input.value).toBe('AI Title')
   })
+
+  it('renders the archive affordance in the header meta row (§15.1)', async () => {
+    fetchSession.mockResolvedValue(makeSession())
+    renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+    expect(await screen.findByRole('button', { name: 'archive' })).toBeDefined()
+  })
 })
 
 // --- 404 back-link (Phase 4 fixwave THE IMPORTANT, half 2): a genuine deep link back into the
@@ -153,6 +168,36 @@ describe('SessionPage session fetch errors', () => {
     expect(await screen.findByText('This conversation isn’t in the archive.')).toBeDefined()
     expect(screen.getByRole('link', { name: '← back to the archive' }).getAttribute('href')).toBe(
       '/?projects=alpha%2Cmid',
+    )
+  })
+})
+
+// --- archive-success navigation (F3 blemish): home is a DIRECT link, so it must carry the active
+// ?projects= filter, mirroring the not-found back-link above. ---------------------------------
+
+describe('SessionPage archive navigation', () => {
+  it('preserves ?projects= when archiving navigates home on success', async () => {
+    fetchSession.mockResolvedValue(makeSession())
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter
+          initialEntries={['/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee?projects=alpha,mid']}
+        >
+          <LocationProbe />
+          <Routes>
+            <Route path="/s/:uuid" element={<SessionPage />} />
+            <Route path="/" element={<div>home</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await userEvent.click(await screen.findByRole('button', { name: 'archive' }))
+
+    expect(putArchive).toHaveBeenCalledWith('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+    await waitFor(() =>
+      expect(screen.getByTestId('loc').textContent).toBe('/?projects=alpha%2Cmid'),
     )
   })
 })

@@ -58,7 +58,7 @@ from introspect.api.routes.sessions import (
     _summary,
     _user_title,
 )
-from introspect.models import ChatSession, Project, Transcript
+from introspect.models import ArchivedSession, ChatSession, Project, Transcript
 from introspect.search import SearchHit, get_search_index
 
 router = APIRouter(prefix="/api/v1")
@@ -92,6 +92,33 @@ def _problem(detail: str) -> JSONResponse:
     """A 422 problem response for the two request-shape errors this route rejects inline."""
     problem = Problem(status=422, title=HTTPStatus.UNPROCESSABLE_ENTITY.phrase, detail=detail)
     return JSONResponse(status_code=422, content=problem.model_dump())
+
+
+def _drop_archived_hits(db: Session, hits: list[SearchHit]) -> list[SearchHit]:
+    """Filter out hits whose owning session is archived (§15.1), post-index, at the route.
+
+    The spec keeps all FTS SQL behind the ``SearchIndex`` boundary (critique #1 -- protects the
+    Postgres promise), so archived-exclusion for search is a route-level post-filter over the
+    returned hits rather than a predicate pushed into ``content_fts MATCH``: ONE ``IN`` query
+    resolves which of the page's distinct session uuids are archived, then those hits are dropped.
+    ``total`` (from ``SearchIndex.search``) is left as the index reported it -- it counts pre-page
+    matches for the query and is not re-derived per page; archived sessions are rare and expected
+    to be hidden, so the small over-count on a page that happened to include archived hits is the
+    accepted cost of not threading archive state through the index (brief: post-filter at route).
+    """
+    if not hits:
+        return hits
+    session_uuids = {hit.session_uuid for hit in hits}
+    archived = set(
+        db.execute(
+            select(ArchivedSession.session_uuid).where(
+                ArchivedSession.session_uuid.in_(session_uuids)
+            )
+        ).scalars()
+    )
+    if not archived:
+        return hits
+    return [hit for hit in hits if hit.session_uuid not in archived]
 
 
 def _agent_hex_by_transcript(db: Session, hits: list[SearchHit]) -> dict[int, str | None]:
@@ -195,6 +222,7 @@ def search(
         # into a session-scope search would risk filtering out the very session being read, so
         # this scope never passes project_slugs to the index -- unlike global scope below.
         hits, total = index.search(db, q, session_uuid=session, limit=limit, offset=offset)
+        hits = _drop_archived_hits(db, hits)
         agent_hex = _agent_hex_by_transcript(db, hits)
         return SessionSearchResult(
             items=[_hit_out(h, agent_hex) for h in hits], total=total
@@ -202,5 +230,6 @@ def search(
 
     project_slugs = _parse_projects_param(projects)
     hits, total = index.search(db, q, project_slugs=project_slugs, limit=limit, offset=offset)
+    hits = _drop_archived_hits(db, hits)
     agent_hex = _agent_hex_by_transcript(db, hits)
     return GlobalSearchResult(groups=_group_hits(db, hits, agent_hex), total=total)

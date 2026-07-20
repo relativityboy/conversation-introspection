@@ -7,6 +7,7 @@ import {
   ConversationSearch,
   ConversationSearchResults,
 } from '../components/search/ConversationSearch'
+import { ArchiveButton } from '../components/ArchiveButton'
 import { ChatOnlyToggle } from '../components/reader/ChatOnlyToggle'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
@@ -117,6 +118,9 @@ export function SessionPage() {
               ↓ .jsonl
             </a>
             <ChatOnlyToggle chatOnly={chatOnly} setChatOnly={setChatOnly} />
+            {/* §15.1: a quiet archive affordance. On success the session vanishes from every
+              read surface and the reader navigates home. No confirm dialog -- CLI restores. */}
+            <ArchiveButton sessionUuid={session.session_uuid} backSearch={backToArchiveSearch} />
           </div>
           <div style={{ margin: '14px 0 6px' }}>
             <HorizonBand start={session.started_at} end={session.last_activity_at} variant="full" />

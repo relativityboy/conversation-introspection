@@ -142,7 +142,9 @@ forward.
    reverts to the original archive title; a small dot next to a renamed title reveals that
    original on hover. A "conversation only" toggle in the reader's sticky header hides system
    messages and tool-call/tool-result blocks while keeping anything you actually typed or
-   pasted — pasted content is still something a human said.
+   pasted — pasted content is still something a human said. Every message row carries a small
+   mono `{}` that opens a raw-record inspector: the exact stored transcript line, pretty-printed
+   with a raw-bytes toggle, and ◀/▶ (or the arrow keys) to step through neighbouring records.
 
 ## Keep it running (cron, ELI5)
 

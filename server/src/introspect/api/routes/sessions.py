@@ -31,6 +31,7 @@ from introspect.api.models import (
     TranscriptInfo,
 )
 from introspect.models import (
+    ArchivedSession,
     ChatSession,
     ContentBlock,
     Favorite,
@@ -149,6 +150,24 @@ def _user_title():
     )
 
 
+def _not_archived() -> ColumnElement:
+    """Predicate excluding archived sessions from any query selecting ``ChatSession`` (§15.1).
+
+    A correlated ``NOT EXISTS`` over ``archived_sessions`` -- the single exclusion applied to the
+    list AND the detail read paths so an archived session vanishes uniformly (list: absent;
+    detail: ``row is None`` -> 404). It sits OUTSIDE ``list_sessions``' ``q=`` OR-predicate, so a
+    session matched only by conversational content (§14.1) is still hidden. The messages/export
+    read paths can't use this correlated form (they don't select ``ChatSession``) and instead
+    probe ``archived_sessions`` directly -- see ``list_messages`` and the admin export route.
+    """
+    return ~(
+        select(ArchivedSession.session_uuid)
+        .where(ArchivedSession.session_uuid == ChatSession.session_uuid)
+        .correlate(ChatSession)
+        .exists()
+    )
+
+
 def _parse_projects_param(projects: str | None) -> list[str] | None:
     """Parse the ``projects=`` comma-list query param into a ``SearchIndex``-shaped filter.
 
@@ -229,9 +248,14 @@ def list_sessions(
     favorited = _is_favorited()
     user_title = _user_title()
 
-    stmt = select(
-        ChatSession, Project.dir_slug, message_count, favorited, user_title
-    ).join(Project, ChatSession.project_id == Project.id)
+    stmt = (
+        select(ChatSession, Project.dir_slug, message_count, favorited, user_title)
+        .join(Project, ChatSession.project_id == Project.id)
+        # Archived sessions are hidden from the list (§15.1). Applied to the base statement so it
+        # flows into both `total` (via stmt.subquery()) and the page, and stays OUTSIDE the `q=`
+        # OR-predicate below so a content-only match to an archived session is still excluded.
+        .where(_not_archived())
+    )
 
     # `q=` unites three match kinds in ONE OR-predicate (no re-rank, so the three-key ordering
     # below carries through unchanged): (a) case-insensitive uuid substring, (b) LIKE over the
@@ -301,7 +325,9 @@ def get_session(session_uuid: str, db: Session = Depends(get_db)) -> SessionDeta
     row = db.execute(
         select(ChatSession, Project.dir_slug, _main_message_count(), _is_favorited(), _user_title())
         .join(Project, ChatSession.project_id == Project.id)
-        .where(ChatSession.session_uuid == session_uuid)
+        # `_not_archived()` folds "archived" into the same 404 as "unknown session" (§15.1) --
+        # an archived session must be indistinguishable from a missing one on the read path.
+        .where(ChatSession.session_uuid == session_uuid, _not_archived())
     ).one_or_none()
     if row is None:
         raise LookupError(f"session {session_uuid} not found")
@@ -336,7 +362,13 @@ def list_messages(
     around: str | None = None,
     chat_only: bool = False,
 ) -> MessageList:
-    if db.get(Transcript, transcript_id) is None:
+    transcript = db.get(Transcript, transcript_id)
+    if transcript is None:
+        raise LookupError(f"transcript {transcript_id} not found")
+    # An archived session hides ALL its transcripts (main + subagents), so a request for one is
+    # the same 404 as an unknown transcript (§15.1). `session_id` on a subagent transcript is the
+    # PARENT session's uuid, so this one check covers the drill-in reader too.
+    if db.get(ArchivedSession, transcript.session_id) is not None:
         raise LookupError(f"transcript {transcript_id} not found")
 
     limit = min(max(limit, 1), _MAX_LIMIT)

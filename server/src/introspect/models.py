@@ -214,3 +214,15 @@ class UserTitle(Base):
     session_uuid: Mapped[str] = mapped_column(ForeignKey("sessions.session_uuid"), primary_key=True)
     title: Mapped[str]
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class ArchivedSession(Base):
+    # NOTE(claude): session_uuid is both PK and FK, existence-based like Favorite/UserTitle — a
+    # row present means the session is HIDDEN from every API read path (list, detail, search,
+    # messages, export) while capture/reparse keep syncing it untouched (§15.1 "only read is
+    # prevented"). Restore is CLI-only (`introspect unarchive <uuid>`); no API/UI path reveals or
+    # removes it. See migration 0004.
+    __tablename__ = "archived_sessions"
+
+    session_uuid: Mapped[str] = mapped_column(ForeignKey("sessions.session_uuid"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)

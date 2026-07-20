@@ -16,6 +16,27 @@ import { useCallback, useState } from 'react'
 
 const STORAGE_KEY = 'introspect.chatOnly.v1'
 
+// The server's `_CHAT_ONLY_TYPES` mirror (routes/sessions.py): the message types that survive
+// conversation-only mode. Kept as a set here so the ONE definition of "is this row part of the
+// conversation-only view" lives in one place.
+const CHAT_ONLY_TYPES = new Set(['user', 'assistant', 'attachment'])
+
+/**
+ * True when a message is shown in conversation-only mode. The single source of truth shared by
+ * MessageTurn's row-level hiding AND the raw inspector's prev/next navigation, so the two can
+ * never drift on WHICH rows count as "hidden": a `system`-type row is out (server-filtered), and
+ * a zero-block attachment is harness furniture the reader hides even though its type qualifies
+ * (MessageTurn returns null for it). Everything else the human said or pasted stays in.
+ */
+export function isChatOnlyVisible(message: {
+  type: string
+  blocks: readonly unknown[]
+}): boolean {
+  if (!CHAT_ONLY_TYPES.has(message.type)) return false
+  if (message.type === 'attachment' && message.blocks.length === 0) return false
+  return true
+}
+
 // localStorage can throw on read (SecurityError in some private-mode configs) and on write
 // (QuotaExceededError in Safari private mode). Both degrade to in-memory state rather than
 // crashing the reader — the toggle just doesn't persist across reloads in those environments.

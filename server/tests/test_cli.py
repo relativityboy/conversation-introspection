@@ -21,9 +21,31 @@ generally producing sane output.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from introspect.cli import main
+from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.ingest import run as run_module
+from introspect.ingest.capture import utcnow
 from introspect.ingest.discovery import discover
+from introspect.models import ArchivedSession
+
+
+def _open(dbp: str) -> session_factory:
+    engine = get_engine(Path(dbp))
+    upgrade_to_head(engine)
+    return session_factory(engine)
+
+
+def _archive(dbp: str, session_uuid: str) -> None:
+    with _open(dbp)() as db:
+        db.add(ArchivedSession(session_uuid=session_uuid, created_at=utcnow()))
+        db.commit()
+
+
+def _is_archived(dbp: str, session_uuid: str) -> bool:
+    with _open(dbp)() as db:
+        return db.get(ArchivedSession, session_uuid) is not None
 
 # --- Binding contract (adapted where noted above) -----------------------------------------
 
@@ -151,6 +173,51 @@ def test_cli_db_parent_blocked_by_file_exits_2(tmp_path, fixture_tree, capsys):
     assert capsys.readouterr().err
     assert main(["status", "--db", bad_db]) == 2
     assert capsys.readouterr().err
+
+
+# --- Archive: unarchive (CLI-only restore) + status archived count (§15.1) ---------------
+
+
+def test_cli_unarchive_restores_session(tmp_path, fixture_tree, capsys):
+    dbp = str(tmp_path / "a.db")
+    main(["import", "--db", dbp, "--source-root", str(fixture_tree)])
+    f = next(x for x in discover(fixture_tree) if x.kind == "main")
+    _archive(dbp, f.session_uuid)
+    capsys.readouterr()
+
+    assert main(["unarchive", f.session_uuid, "--db", dbp]) == 0
+    out = capsys.readouterr().out
+    assert f.session_uuid in out
+    assert not _is_archived(dbp, f.session_uuid)
+
+
+def test_cli_unarchive_unknown_uuid_exits_1(tmp_path, fixture_tree, capsys):
+    """An unknown (or simply not-archived) uuid is exit 1 with a stderr message -- there is no
+    list command that could reveal what IS archived, so the user supplies the uuid out-of-band."""
+    dbp = str(tmp_path / "a.db")
+    main(["import", "--db", dbp, "--source-root", str(fixture_tree)])
+    capsys.readouterr()
+
+    assert main(["unarchive", "not-archived-uuid", "--db", dbp]) == 1
+    assert capsys.readouterr().err
+
+
+def test_cli_unarchive_db_open_failure_exits_2(tmp_path, capsys):
+    bad_db = tmp_path / "not_a_file.db"
+    bad_db.mkdir()
+    assert main(["unarchive", "whatever", "--db", str(bad_db)]) == 2
+    assert capsys.readouterr().err
+
+
+def test_cli_status_shows_archived_count(tmp_path, fixture_tree, capsys):
+    dbp = str(tmp_path / "a.db")
+    main(["import", "--db", dbp, "--source-root", str(fixture_tree)])
+    f = next(x for x in discover(fixture_tree) if x.kind == "main")
+    _archive(dbp, f.session_uuid)
+    capsys.readouterr()
+
+    assert main(["status", "--db", dbp]) == 0
+    assert "archived=1" in capsys.readouterr().out
 
 
 def test_cli_import_mid_run_fatal_exits_1(tmp_path, fixture_tree, monkeypatch, capsys):

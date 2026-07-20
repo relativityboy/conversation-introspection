@@ -46,7 +46,14 @@ from introspect.db import get_engine, session_factory
 # SAME advisory lock as run_import to probe for a concurrent import. Reusing them (as cli.py
 # already does for reparse) is a smaller diff than lifting them to a shared module.
 from introspect.ingest.run import DbOpenError, _acquire_lock, _release_lock, run_import
-from introspect.models import ChatSession, ImportRun, ParseAnomaly, RawRecord, SourceFile
+from introspect.models import (
+    ArchivedSession,
+    ChatSession,
+    ImportRun,
+    ParseAnomaly,
+    RawRecord,
+    SourceFile,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -317,6 +324,13 @@ def export_transcript_jsonl(session_uuid: str, request: Request) -> StreamingRes
     a clean 404 problem BEFORE any ``200`` body starts; the remaining lines stream lazily.
     """
     stream_db: Session = request.app.state.session_factory()
+    # §15.1: the API export read path 404s an archived session (the CLI/direct-DB export path
+    # deliberately does NOT -- it is an admin path that reconstructs regardless, so this check
+    # lives at the HTTP route, never in the `export` module). Checked before priming so it becomes
+    # a clean 404 problem, never a 200 body that dies mid-stream.
+    if stream_db.get(ArchivedSession, session_uuid) is not None:
+        stream_db.close()
+        raise LookupError(f"session {session_uuid} not found")
     lines = export.iter_transcript_lines(stream_db, session_uuid)
     try:
         # NOTE(claude): priming holds ONE line in memory (real transcripts have lines up to
