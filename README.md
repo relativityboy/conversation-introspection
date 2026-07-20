@@ -129,6 +129,19 @@ forward.
    Open [http://127.0.0.1:8765](http://127.0.0.1:8765) — one process, one port, API and UI
    together.
 
+   A few things worth knowing about the reading room: the sidebar search box matches a
+   session's title, its message content, or a session-uuid substring as you type — a
+   content-only match shows a highlighted snippet under the title, and the query lives in the
+   URL (`?filter=`) so it's shareable. A project chip bar above the sidebar scopes the whole
+   app — sidebar, both search tabs, and deep links — to the projects you choose
+   (`?projects=slug1,slug2`); it's keyboard-driven: arrow-down opens the list, typing filters
+   it, Escape closes it, and a second quick Escape clears the selection. Click a session's
+   title to rename it inline — Enter commits, Escape cancels, and a second quick Escape
+   reverts to the original archive title; a small dot next to a renamed title reveals that
+   original on hover. A "conversation only" toggle in the reader's sticky header hides system
+   messages and tool-call/tool-result blocks while keeping anything you actually typed or
+   pasted — pasted content is still something a human said.
+
 ## Keep it running (cron, ELI5)
 
 A single manual import only protects what existed at that moment. The transcripts still on
@@ -251,8 +264,6 @@ useful contributions, roughly in order of how easy they are to make:
   without reviewing them first** — `detail` is intended to hold only field *names*, not
   message content, but review before pasting rather than trusting that blind. The schema
   registry this project relies on only grows by exactly these reports.
-- **Phase 3: the React reading-room UI.** Designed, not built — see the "Still Water"
-  mockup at [`docs/design/2026-07-13-still-water-mockup.html`](docs/design/2026-07-13-still-water-mockup.html).
 - **Windows/WSL testing.** Untested territory; see [Prerequisites](#prerequisites).
 - **A Postgres storage path** for the same schema, as an alternative to SQLite.
 
@@ -293,8 +304,12 @@ the anomaly count to a 21-row drift floor.
   Pydantic v2. 131 tests, built test-first.
 - **Phase 2 — shipped.** FTS5 full-text search, a FastAPI read layer over the archive, and
   favorites. 218 tests total, built test-first.
-- **Phase 3 — designed, not built.** A React reading-room UI in the "Still Water" theme
-  (mockup: [`docs/design/2026-07-13-still-water-mockup.html`](docs/design/2026-07-13-still-water-mockup.html)).
+- **Phase 3 — shipped.** The React reading-room UI in the "Still Water" theme (design mockup:
+  [`docs/design/2026-07-13-still-water-mockup.html`](docs/design/2026-07-13-still-water-mockup.html))
+  — sidebar, windowed conversation reader, dual search, favorites, subagent drill-in.
+- **Phase 4 — shipped.** Sidebar content search, an app-level project filter, editable session
+  titles, and a conversation-only reading mode (see [step 6](#step-by-step-first-run) above).
+  308 server tests, 230 web tests.
 - **Future.** A Postgres storage path for the same schema; recovery of "ghost" sessions (ones
   the TUI deleted before this tool ever ran) from `~/.claude/history.jsonl`.
 
