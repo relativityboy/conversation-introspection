@@ -107,7 +107,9 @@ describe('opening and filtering the list', () => {
 })
 
 describe('selecting a project', () => {
-  it('appends a chip, clears the box, keeps the list usable, and writes projects= (replace)', async () => {
+  // 2026-07-20 walk ruling (amendment to §14.2 "list stays usable"): selection now CLOSES the
+  // list — chip appended + box cleared, as before, PLUS close. Coverage kept, expectation changed.
+  it('appends a chip, clears the box, closes the list, and writes projects= (replace)', async () => {
     const { locationRef, navTypeRef } = renderBar()
     await openList()
 
@@ -116,11 +118,9 @@ describe('selecting a project', () => {
     expect(locationRef.current?.search).toBe('?projects=-Users-x-alpha')
     expect(navTypeRef.current).toBe('REPLACE')
     expect(input().value).toBe('')
-    // list stays usable: still open, with the just-selected option now excluded.
-    expect(screen.getByRole('listbox')).toBeDefined()
+    expect(screen.queryByRole('listbox')).toBeNull()
     const chip = screen.getByRole('button', { name: 'Remove -Users-x-alpha' })
     expect(chip).toBeDefined()
-    expect(screen.queryByRole('option', { name: '-Users-x-alpha' })).toBeNull()
   })
 
   it('selects the clicked option', async () => {
@@ -133,6 +133,30 @@ describe('selecting a project', () => {
     expect(screen.getByRole('button', { name: 'Remove -Users-x-mid' })).toBeDefined()
   })
 
+  // The race (critique F2/trap): a real browser fires the option's mousedown BEFORE its click, and
+  // mousedown's native default action would blur a focused input when the mousedown target (a
+  // plain <li>, not a form control) isn't itself focusable. If onBlur closed the list synchronously,
+  // the list (and the option inside it) would unmount before the click landed, and the click would
+  // be lost — selection would silently break. The option's onMouseDown calls preventDefault(),
+  // which suppresses that native blur in a real browser, so no blur ever fires during this sequence
+  // and selectSlug's own setOpen(false) does the closing. jsdom doesn't synthesize the native
+  // mousedown-blur step (verified: fireEvent.mouseDown never moves focus/fires blur here), so this
+  // can't reproduce the race directly — but it does pin the real event order (mousedown then click)
+  // so a regression that breaks the guard (e.g. dropping the option's preventDefault) is caught the
+  // moment it's exercised against a real browser / any harness that does model that default action.
+  it('mousedown-then-click on an option still selects and closes the list (race guard path)', async () => {
+    const { locationRef } = renderBar()
+    await openList()
+    const option = screen.getByRole('option', { name: '-Users-x-mid' })
+
+    fireEvent.mouseDown(option)
+    fireEvent.click(option)
+
+    expect(locationRef.current?.search).toBe('?projects=-Users-x-mid')
+    expect(screen.getByRole('button', { name: 'Remove -Users-x-mid' })).toBeDefined()
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
   it('navigates the list with ArrowDown/ArrowUp and selects the highlighted option on Enter', async () => {
     const { locationRef } = renderBar()
     await openList() // highlight 0 == alpha
@@ -143,6 +167,56 @@ describe('selecting a project', () => {
     fireEvent.keyDown(input(), { key: 'Enter' })
 
     expect(locationRef.current?.search).toBe('?projects=-Users-x-mid')
+  })
+})
+
+// 2026-07-20 walk ruling: two "ui tablestakes" gaps in the original spec. (1) selection now closes
+// the list (see 'selecting a project' above). (2) blur/outside-click also closes the list. Escape
+// is unchanged — its own describe block below is untouched.
+describe('closing the list on blur / outside interaction', () => {
+  it('blur to an outside element closes the list but preserves the typed text and existing chips', async () => {
+    const { locationRef } = renderBar(['/?projects=-Users-x-alpha'])
+    await screen.findByRole('button', { name: 'Remove -Users-x-alpha' })
+
+    fireEvent.change(input(), { target: { value: 'mid' } }) // opens the list
+    await screen.findByRole('listbox')
+
+    fireEvent.blur(input())
+
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(input().value).toBe('mid') // blur != clear
+    expect(screen.getByRole('button', { name: 'Remove -Users-x-alpha' })).toBeDefined()
+    expect(locationRef.current?.search).toBe('?projects=-Users-x-alpha')
+  })
+
+  it('ArrowDown reopens the list after a selection closed it, excluding the just-picked slug', async () => {
+    renderBar()
+    await openList()
+    fireEvent.keyDown(input(), { key: 'Enter' }) // picks alpha, closes the list
+    expect(screen.queryByRole('listbox')).toBeNull()
+
+    fireEvent.keyDown(input(), { key: 'ArrowDown' })
+
+    const options = await screen.findAllByRole('option')
+    expect(options.map((o) => o.textContent)).toEqual(['-Users-x-mid', '-Users-x-zeta'])
+  })
+
+  it('removing a chip via its "x" while the list is open still removes the chip, even though the resulting blur closes the list', async () => {
+    const { locationRef } = renderBar(['/?projects=-Users-x-alpha,-Users-x-mid'])
+    await screen.findByRole('button', { name: 'Remove -Users-x-alpha' })
+    // Box is already showing (chips present), so just open the list directly.
+    fireEvent.keyDown(input(), { key: 'ArrowDown' })
+    await screen.findByRole('listbox')
+
+    // The chip's remove button sits inside the bar but outside the combo/listbox, so it carries no
+    // mousedown guard — a blur landing here is expected to close the list. What must NOT happen is
+    // the click itself getting swallowed the way an unguarded option click would.
+    fireEvent.blur(input())
+    fireEvent.click(screen.getByRole('button', { name: 'Remove -Users-x-mid' }))
+
+    expect(locationRef.current?.search).toBe('?projects=-Users-x-alpha')
+    expect(screen.queryByRole('button', { name: 'Remove -Users-x-mid' })).toBeNull()
+    expect(screen.queryByRole('listbox')).toBeNull()
   })
 })
 

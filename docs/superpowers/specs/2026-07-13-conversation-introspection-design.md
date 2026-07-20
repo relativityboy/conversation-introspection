@@ -160,7 +160,8 @@ The sidebar's single input matches **title OR chat content** (was: title only). 
 Scope everything by a chosen subset of projects. **Donovan's UI spec, binding verbatim:**
 - Thin top bar (app level, above sidebar + main — spans both, since its context scopes both) showing a chip "all projects" with an 'x'.
 - 'x' removes it and replaces with a SearchBox. SearchBox focused: down-arrow when empty → alphabetized select-list of projects; typing → select-list filtered on dir_slug `%str%`; **double-tap `<esc>`**: if select-list open OR text present → clear text + close list; else (list closed, box empty) → remove ALL selected project chips & filtering.
-- Selecting a project in the list → adds a project chip to the right of the search box, clears the box. Chip 'x' removes that chip. Zero chips selected → bar reverts to the "all projects" chip.
+- Selecting a project in the list → adds a project chip to the right of the search box, clears the box, **and closes the list (amended 2026-07-20, Donovan walk ruling — UI tablestakes)**. Chip 'x' removes that chip. Zero chips selected → bar reverts to the "all projects" chip.
+- **List dismissal (amended 2026-07-20, same ruling):** the list also closes on input blur / click-outside — guarded so an option mousedown never races the blur into a swallowed click. Escape behavior unchanged (single esc closes list; double-esc per the branch spec above).
 Semantics:
 - Both search tabs (`Search all conversations`, `Current conversation`) inherit the filter context. All existing deep links carry it (URL param `projects=slug1,slug2` — comma list, everywhere: sidebar, /search, /s/*; consistent with the everything-in-the-URL rule).
 - As filters change, the session list re-queries live (and the sidebar content search of §14.1 respects the filter).

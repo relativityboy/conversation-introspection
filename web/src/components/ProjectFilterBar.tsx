@@ -78,7 +78,10 @@ export function ProjectFilterBar() {
     if (!selected.includes(slug)) commitSelection([...selected, slug])
     setText('')
     setHighlight(0)
-    // List stays usable (open) after a selection — spec §14.2.
+    // 2026-07-20 walk ruling (amends spec §14.2 "list stays usable"): selection now closes the
+    // list. ArrowDown / typing reopen it via the existing open-triggers, so multi-add (select ->
+    // ArrowDown -> pick next) is still fluid.
+    setOpen(false)
     requestFocus()
   }
 
@@ -173,6 +176,14 @@ export function ProjectFilterBar() {
                 setHighlight(0)
               }}
               onKeyDown={handleKeyDown}
+              // 2026-07-20 walk ruling: blur/outside-click also closes the list. This is safe from
+              // the mousedown-before-click race (option mousedown fires first and would blur the
+              // input, unmounting the list before the click lands) ONLY because each option's
+              // onMouseDown below calls preventDefault() — that suppresses the browser's native
+              // focus-shift-on-mousedown default action, so the input never actually blurs for an
+              // option click; selectSlug's own setOpen(false) closes the list instead. Text is
+              // preserved on blur (blur != clear) — only Escape/selection ever clear it.
+              onBlur={() => setOpen(false)}
               style={{
                 width: 200,
                 background: 'var(--surface)',
