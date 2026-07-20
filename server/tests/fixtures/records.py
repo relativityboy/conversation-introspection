@@ -264,6 +264,40 @@ def make_attachment_line(
     return _encode(record)
 
 
+def make_queued_command_line(
+    *,
+    prompt: str = "synthetic queued human prompt about a lone cormorant",
+    human: bool = True,
+    extra: dict | None = None,
+    **overrides: object,
+) -> bytes:
+    """An ``attachment`` record whose body is a ``queued_command`` (Task P4-F1).
+
+    ``human=True`` builds the human-origin shape the interpreter rescues into one text block:
+    ``commandMode == "prompt"`` + ``origin.kind == "human"``. ``human=False`` builds the
+    harness-furniture variant (``commandMode == "task-notification"``, no ``origin``) that must
+    stay zero-block even though it, too, carries a ``prompt`` key — so all three discriminator
+    conditions are load-bearing. The key paths (``attachment.type`` / ``commandMode`` /
+    ``origin.kind`` / ``prompt``) mirror the two real production records, verified read-only;
+    the prompt TEXT here is entirely invented (no private words in fixtures, spec §11).
+    """
+    if human:
+        attachment = {
+            "type": "queued_command",
+            "prompt": prompt,
+            "commandMode": "prompt",
+            "origin": {"kind": "human"},
+            "timestamp": DEFAULT_TIMESTAMP,
+        }
+    else:
+        attachment = {
+            "type": "queued_command",
+            "prompt": prompt,
+            "commandMode": "task-notification",
+        }
+    return make_attachment_line(attachment=attachment, extra=extra, **overrides)
+
+
 def make_session_file(lines: list[bytes]) -> bytes:
     """Concatenate record lines (each already newline-terminated) into a session payload."""
     return b"".join(lines)

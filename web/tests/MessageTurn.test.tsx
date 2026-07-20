@@ -216,6 +216,49 @@ describe('conversation-only block hiding (chatOnly prop)', () => {
   })
 })
 
+// Task P4-F1: a block-bearing attachment is a rescued human queued-command — labelled
+// SYSTEM (YOU), dawn (user) accent — while a zero-block attachment is harness furniture that
+// keeps the plain SYSTEM treatment in full mode and vanishes entirely under chatOnly.
+describe('attachment voice (rescued queued commands)', () => {
+  function accentOf(container: HTMLElement): string {
+    const inner = container.querySelector<HTMLElement>('.message-turn > div')
+    expect(inner).not.toBeNull()
+    return (inner as HTMLElement).style.borderLeft
+  }
+
+  it('labels a block-bearing attachment SYSTEM (YOU) with the dawn accent', () => {
+    const msg = message({ type: 'attachment', blocks: [textBlock(0, 'queued human words')] })
+    const { container } = render(<MessageTurn message={msg} />)
+    expect(turnOf(container).classList.contains('turn-attachment')).toBe(true)
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM \(YOU\) · /)
+    expect(accentOf(container)).toContain('var(--dawn)')
+    expect(container.textContent).toContain('queued human words')
+  })
+
+  it('keeps a zero-block attachment as plain SYSTEM in full mode (mist accent)', () => {
+    const msg = message({ type: 'attachment', blocks: [] })
+    const { container } = render(<MessageTurn message={msg} />)
+    expect(turnOf(container).classList.contains('turn-system')).toBe(true)
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM · /)
+    expect(accentOf(container)).toContain('var(--mist)')
+  })
+
+  it('hides a zero-block attachment entirely when chatOnly is on', () => {
+    const msg = message({ type: 'attachment', blocks: [] })
+    const { container } = render(<MessageTurn message={msg} chatOnly />)
+    expect(container.querySelector('.message-turn')).toBeNull()
+    expect(container.textContent).toBe('')
+  })
+
+  it('keeps a block-bearing attachment visible when chatOnly is on', () => {
+    const msg = message({ type: 'attachment', blocks: [textBlock(0, 'still a human turn')] })
+    const { container } = render(<MessageTurn message={msg} chatOnly />)
+    expect(container.querySelector('.message-turn')).not.toBeNull()
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM \(YOU\) · /)
+    expect(container.textContent).toContain('still a human turn')
+  })
+})
+
 describe('markdown prose', () => {
   it('renders bold and inline code', () => {
     const { container } = render(

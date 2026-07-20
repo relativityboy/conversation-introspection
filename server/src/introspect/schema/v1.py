@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag
 # NOTE(claude): the module name (v1) is code organization; this constant tracks the
 # registry GENERATION stamped on parsed rows. They diverge by design — bumping the
 # generation does not require forking a new module.
-SCHEMA_VERSION = "introspect-schema/2"
+SCHEMA_VERSION = "introspect-schema/3"
 
 
 # --- Normalized output shape ------------------------------------------------------------
@@ -343,8 +343,39 @@ class AttachmentRecord(Envelope):
     type: Literal["attachment"] = "attachment"
     # NOTE(claude): the attachment body (e.g. {"type": "deferred_tools_delta", ...}) is a
     # structured, kind-varying blob. Declared opaque `Any` like snapshot/toolUseResult:
-    # preserved verbatim, never modeled nor recursed for extras.
+    # preserved verbatim, never *modeled* (no sub-BaseModel) nor recursed for extras — which is
+    # why all 805 production attachments parse "ok" regardless of their body shape. `blocks()`
+    # peeks at ONE known shape (the human-origin queued_command) to rescue its text; it reads the
+    # raw dict directly rather than declaring a sub-model, so this interpretation never widens the
+    # anomaly surface. See task-p4-f1-brief.md.
     attachment: Any | None = None
+
+    def blocks(self) -> list[NormalizedBlock]:
+        """Rescue a human-typed queued prompt as one text block; every other body yields none.
+
+        Almost every attachment is harness furniture (deferred_tools_delta, skill_listing,
+        task_reminder, ...) with no conversational content. The ONE exception is a
+        ``queued_command`` the human typed: its only home in the conversation DAG is this
+        attachment record (the assistant's next turn parents to this record's uuid), so the
+        verbatim prompt would otherwise be invisible everywhere and absent from search. The
+        three-way guard is load-bearing — the furniture ``commandMode == "task-notification"``
+        variant ALSO carries a ``prompt``, and a ``commandMode == "prompt"`` issued by a
+        non-human origin is not a human turn — so both must stay silent. Field paths were
+        verified against the two real production records read-only (attachment.type /
+        commandMode / origin.kind / prompt).
+        """
+        att = self.attachment
+        if not isinstance(att, dict):
+            return []
+        if att.get("type") != "queued_command" or att.get("commandMode") != "prompt":
+            return []
+        origin = att.get("origin")
+        if not isinstance(origin, dict) or origin.get("kind") != "human":
+            return []
+        prompt = att.get("prompt")
+        if not isinstance(prompt, str) or not prompt:
+            return []
+        return [NormalizedBlock("text", prompt, None, None, None, None)]
 
 
 class ThinMetaRecord(BaseRecord):

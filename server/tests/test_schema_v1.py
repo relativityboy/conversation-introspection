@@ -71,7 +71,7 @@ def test_thin_meta_records_parse():
 
 
 def test_schema_version_constant():
-    assert SCHEMA_VERSION == "introspect-schema/2"
+    assert SCHEMA_VERSION == "introspect-schema/3"
 
 
 def test_anomaly_severity_is_warn_for_unknown_type():
@@ -287,6 +287,56 @@ def test_attachment_record_opaque_payload_parses_ok():
     assert r.record_type == "attachment"
     assert r.status == "ok" and r.anomalies == []
     assert r.record.attachment["type"] == "deferred_tools_delta"
+
+
+# --- Schema v3: human-origin queued_command attachments become one text block (Task P4-F1) --
+# The two real production records are queued_command payloads with commandMode "prompt" and
+# origin.kind "human": verbatim human turns whose only home in the DAG is the attachment record.
+# The interpreter rescues them into ONE text block; every other attachment shape stays silent.
+
+
+def test_human_queued_command_yields_one_text_block():
+    from tests.fixtures.records import make_queued_command_line
+
+    r = parse_line(make_queued_command_line(prompt="rescue this queued human turn"))
+    # Still a clean parse — the attachment body stays opaque for anomaly purposes.
+    assert r.record_type == "attachment"
+    assert r.status == "ok" and r.anomalies == []
+    blocks = r.record.blocks()
+    assert len(blocks) == 1
+    assert blocks[0].kind == "text"
+    assert blocks[0].text == "rescue this queued human turn"
+
+
+def test_furniture_queued_command_yields_zero_blocks():
+    # The non-human "task-notification" variant ALSO carries a `prompt` key, but is harness
+    # furniture: commandMode != "prompt" and no origin.kind == "human", so it stays zero-block.
+    from tests.fixtures.records import make_queued_command_line
+
+    r = parse_line(make_queued_command_line(human=False, prompt="furniture, not a human turn"))
+    assert r.status == "ok" and r.anomalies == []
+    assert r.record.blocks() == []
+
+
+def test_other_attachment_types_yield_zero_blocks():
+    # deferred_tools_delta (and every non-queued_command attachment) keeps yielding nothing.
+    r = parse_line(make_attachment_line())
+    assert r.record.blocks() == []
+
+
+def test_queued_command_without_human_origin_yields_zero_blocks():
+    # commandMode "prompt" but a non-human origin (e.g. a coordinator-issued prompt) is not a
+    # human turn — the origin.kind guard is load-bearing, not just the commandMode.
+    line = make_attachment_line(
+        attachment={
+            "type": "queued_command",
+            "prompt": "issued by a coordinator, not typed by a human",
+            "commandMode": "prompt",
+            "origin": {"kind": "coordinator"},
+        }
+    )
+    r = parse_line(line)
+    assert r.record.blocks() == []
 
 
 def test_agent_color_record_parses_ok():

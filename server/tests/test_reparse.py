@@ -50,6 +50,33 @@ def test_reparse_updates_schema_version_stamp(db_session, fixture_tree):
     assert versions == {SCHEMA_VERSION}
 
 
+def test_reparse_does_not_grow_anomaly_floor_for_queued_commands(db_session, tmp_path):
+    """Invariant #6 (Task P4-F1): the queued_command payloads parse clean under schema/3.
+
+    Both the human-origin and furniture variants are ``status == "ok"`` with zero anomalies, so
+    reparsing an archive containing them must not raise the anomaly floor — reparse's
+    before/after counts stay equal.
+    """
+    from tests.fixtures.records import make_queued_command_line, make_session_file
+
+    proj = tmp_path / "qc" / "-Users-x-qc"
+    proj.mkdir(parents=True)
+    (proj / "aaaaaaaa-0000-4000-8000-00000000000a.jsonl").write_bytes(
+        make_session_file(
+            [
+                make_queued_command_line(prompt="a human queued turn to rescue"),
+                make_queued_command_line(human=False, prompt="furniture task notification"),
+            ]
+        )
+    )
+    for f in discover(proj):
+        capture_file(db_session, f)
+    db_session.commit()
+
+    stats = reparse_all(db_session)
+    assert stats.anomalies_after == stats.anomalies_before
+
+
 # --- Amendments from the review rounds ----------------------------------------------------
 
 

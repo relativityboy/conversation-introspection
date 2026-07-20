@@ -85,3 +85,44 @@ def test_interpret_failure_rolls_back_index_with_rows(db_session, fixture_tree, 
 
     _, total = get_search_index().search(db_session, "horizon")
     assert total == 0  # the rolled-back block and its index row died together
+
+
+def test_human_queued_command_is_interpreted_and_searchable(db_session, tmp_path):
+    """A human-origin queued_command flows through capture -> interpret -> FTS (Task P4-F1).
+
+    These records were previously empty SYSTEM stubs (zero blocks, absent from search). The
+    schema/3 blocks() override materializes the prompt as a text ContentBlock, which the normal
+    capture-time indexing path then makes findable — no separate wiring, no rebuild needed.
+    """
+    from introspect.models import ContentBlock, Message
+    from tests.conftest import _ingest_single_line
+    from tests.fixtures.records import make_queued_command_line
+
+    token = "phosphorescence drifting on the queued midnight tide"
+    _ingest_single_line(db_session, tmp_path, make_queued_command_line(prompt=token))
+
+    # Interpreted: exactly one attachment Message carrying one text ContentBlock with the prompt.
+    msg = db_session.query(Message).filter_by(type="attachment").one()
+    block = db_session.query(ContentBlock).filter_by(message_id=msg.id).one()
+    assert block.block_kind == "text" and block.text_content == token
+
+    # Searchable: capture-time indexing already put the prompt in the FTS index.
+    _, total = get_search_index().search(db_session, "phosphorescence")
+    assert total >= 1
+
+
+def test_furniture_queued_command_stays_zero_block_and_unsearchable(db_session, tmp_path):
+    """The non-human furniture variant is interpreted to a blockless Message, absent from FTS."""
+    from introspect.models import ContentBlock, Message
+    from tests.conftest import _ingest_single_line
+    from tests.fixtures.records import make_queued_command_line
+
+    token = "bioluminescent furniture that must never be indexed"
+    _ingest_single_line(
+        db_session, tmp_path, make_queued_command_line(human=False, prompt=token)
+    )
+
+    msg = db_session.query(Message).filter_by(type="attachment").one()
+    assert db_session.query(ContentBlock).filter_by(message_id=msg.id).count() == 0
+    _, total = get_search_index().search(db_session, "bioluminescent")
+    assert total == 0
