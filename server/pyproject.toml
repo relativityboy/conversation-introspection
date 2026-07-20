@@ -9,6 +9,10 @@ dependencies = [
     "pydantic>=2.7",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    # TUI framework (§16). Pure-Python, no native deps, actively maintained, the de-facto
+    # Python TUI standard; lazy-imported inside the `introspect tui` verb so cron `import`
+    # never pays its cost.
+    "textual>=0.60",
 ]
 
 [project.scripts]

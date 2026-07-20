@@ -1,4 +1,4 @@
-"""Command-line entry point: ``introspect import|reparse|export|unarchive|status|serve``.
+"""Command-line entry point: ``introspect import|reparse|export|unarchive|status|serve|tui``.
 
 Thin layer — every subcommand resolves config, opens/migrates the DB, and delegates to the
 module that owns the logic (:mod:`introspect.ingest.run`, :mod:`introspect.ingest.reparse`,
@@ -41,14 +41,8 @@ from introspect.ingest.reparse import reparse_all
 # import/reparse pair can never race). Reusing them here is a smaller diff than lifting them
 # to a shared module.
 from introspect.ingest.run import DbOpenError, _acquire_lock, _release_lock, run_import
-from introspect.models import (
-    ArchivedSession,
-    ChatSession,
-    ImportRun,
-    ParseAnomaly,
-    RawRecord,
-    SourceFile,
-)
+from introspect.models import ArchivedSession
+from introspect.status import collect_status, counts_line, last_run_line
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -99,6 +93,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_serve.set_defaults(handler=_cmd_serve)
+
+    p_tui = subparsers.add_parser("tui", help="interactive terminal UI (search + slash commands)")
+    p_tui.add_argument("--db", help="path to the archive DB")
+    p_tui.add_argument("--source-root", help="root directory of transcripts to scan")
+    p_tui.set_defaults(handler=_cmd_tui)
 
     return parser
 
@@ -201,29 +200,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
     if engine is None:
         return 2
     with session_factory(engine)() as db:
-        sessions = db.query(ChatSession).count()
-        archived = db.query(ArchivedSession).count()
-        files = db.query(SourceFile).count()
-        records = db.query(RawRecord).count()
-        anomalies = db.query(ParseAnomaly).count()
-        errors = db.query(ParseAnomaly).filter_by(severity="error").count()
-        warns = db.query(ParseAnomaly).filter_by(severity="warn").count()
-        infos = db.query(ParseAnomaly).filter_by(severity="info").count()
-        last_run = db.query(ImportRun).order_by(ImportRun.id.desc()).first()
-
+        snap = collect_status(db)
     # `archived` is an aggregate count only (§15.1: "n only, no identities") -- status never
-    # enumerates which sessions are archived.
-    print(
-        f"sessions={sessions} archived={archived} files={files} records={records} "
-        f"anomalies={anomalies} (error={errors} warn={warns} info={infos})"
-    )
-    if last_run is None:
-        print("last run: none")
-    else:
-        print(
-            f"last run: id={last_run.id} trigger={last_run.trigger} "
-            f"status={last_run.status} finished_at={last_run.finished_at}"
-        )
+    # enumerates which sessions are archived. Format lives in `introspect.status` so the CLI and
+    # the TUI `/status` report identical numbers from one source of truth.
+    print(counts_line(snap))
+    print(last_run_line(snap))
     return 0
 
 
@@ -243,6 +225,23 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     else:
         print("UI: not built (API only) — cd web && npm run build")
     uvicorn.run(app, host=args.host, port=args.port)
+    return 0
+
+
+def _cmd_tui(args: argparse.Namespace) -> int:
+    dbp = _resolve_db_path_or_none(args.db)
+    if dbp is None:
+        return 2
+    # Validate DB open/migrate up front (same exit-2 mapping as the other subcommands) before
+    # entering the full-screen app, so a broken DB fails with a clean stderr line instead of a
+    # traceback painted over the alt-screen.
+    if _open_db_or_none(dbp) is None:
+        return 2
+    # Lazy import: the TUI pulls in `textual` (and rich), which cron's `introspect import` must
+    # never pay for. Keeping this import inside the handler is the seam that guarantees it.
+    from introspect.tui.app import run_tui
+
+    run_tui(db_path=dbp, source_root=config.source_root(args.source_root))
     return 0
 
 

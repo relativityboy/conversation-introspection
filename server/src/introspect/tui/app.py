@@ -1,0 +1,264 @@
+"""The Textual application for ``introspect tui`` (§16, step 1).
+
+This is the ONLY module in the package that imports ``textual``; everything it drives -- the
+command registry/handlers, the in-process search, the web-server manager -- is textual-free and
+independently unit-tested. The CLI imports :func:`run_tui` lazily so cron never pays this cost.
+
+Surface: a bottom command :class:`~textual.widgets.Input` with as-you-type slash-command
+autocomplete; a results :class:`OptionList` (default, non-slash input runs an archive search);
+and a :class:`~textual.widgets.RichLog` log area where command output and progress stream. Enter
+opens the highlighted result's session in the browser; Right opens its best-matching message;
+both auto-start the local web server if it is stopped. Esc clears; Ctrl-C / ``/quit`` exit,
+stopping any web server the TUI started.
+"""
+
+from __future__ import annotations
+
+import webbrowser
+from pathlib import Path
+
+from rich.text import Text
+from textual import on, work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.suggester import SuggestFromList
+from textual.widgets import Footer, Input, OptionList, RichLog
+from textual.widgets.option_list import Option
+
+from introspect import config
+from introspect.db import get_engine, session_factory, upgrade_to_head
+from introspect.tui.commands import Command, CommandContext, build_registry, parse_command
+from introspect.tui.search import SearchResultRow, search_sessions
+from introspect.tui.webserver import (
+    WebServerManager,
+    right_arrow_url,
+    session_url,
+)
+
+
+class ResultsList(OptionList):
+    """The search results list. Adds Right = open the highlighted hit's message deep-link.
+
+    Up/Down/Enter come from :class:`OptionList` (Enter -> ``OptionSelected``, handled by the
+    app as "open session"); Right is the extra §16 gesture for the message-level deep link.
+    """
+
+    BINDINGS = [Binding("right", "open_message", "Open message", show=False)]
+
+    def action_open_message(self) -> None:
+        self.app.open_selected_message()  # type: ignore[attr-defined]
+
+
+class IntrospectApp(App):
+    """Search-and-command TUI over one archive DB."""
+
+    TITLE = "introspect"
+    SUB_TITLE = "archive reading room"
+
+    CSS = """
+    Screen { background: #0B1220; }
+    #results {
+        height: 1fr;
+        border: round #24344f;
+        background: #111B2E;
+        color: #E7ECF4;
+    }
+    #results > .option-list--option-highlighted {
+        background: #24344f;
+        color: #E5A54B;
+    }
+    #log {
+        height: 12;
+        border: round #24344f;
+        background: #0e1626;
+        color: #cdd6e6;
+    }
+    #cmd { border: round #6FD3C7; }
+    """
+
+    BINDINGS = [Binding("escape", "clear", "Clear")]
+
+    def __init__(
+        self,
+        *,
+        db_path: Path | str,
+        source_root: Path | str | None = None,
+        web: WebServerManager | None = None,
+        session_factory=None,  # noqa: ANN001 -- a sqlalchemy sessionmaker; injected in tests
+    ) -> None:
+        super().__init__()
+        self._db_path = Path(db_path)
+        self._source_root = Path(source_root) if source_root is not None else config.source_root()
+        if session_factory is None:
+            engine = get_engine(self._db_path)
+            upgrade_to_head(engine)
+            session_factory = _session_factory_for(engine)
+        self._session_factory = session_factory
+        self._web = web if web is not None else WebServerManager(self._db_path)
+        self._command_registry = build_registry()
+        self._results: list[SearchResultRow] = []
+
+    # --- Layout --------------------------------------------------------------------------
+
+    def compose(self) -> ComposeResult:
+        yield ResultsList(id="results")
+        yield RichLog(id="log", markup=False, wrap=True, highlight=False)
+        yield Input(
+            id="cmd",
+            placeholder="type to search the archive, or /help for commands",
+            suggester=SuggestFromList(self._command_registry.slash_names(), case_sensitive=False),
+        )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        log = self.query_one("#log", RichLog)
+        log.write("introspect TUI -- type to search, /help for commands, /quit to exit")
+        self.query_one("#cmd", Input).focus()
+
+    # --- Input routing -------------------------------------------------------------------
+
+    @on(Input.Submitted, "#cmd")
+    def _on_submit(self, event: Input.Submitted) -> None:
+        text = event.value
+        self.query_one("#cmd", Input).value = ""
+        if not text.strip():
+            return
+        if text.strip().startswith("/"):
+            self._run_command(text)
+        else:
+            self._run_search(text)
+
+    def _run_command(self, text: str) -> None:
+        name, args = parse_command(text)
+        command = self._command_registry.get(name)
+        if command is None:
+            self._append_log(f"unknown command: /{name} -- type /help")
+            return
+        if command.background:
+            self._run_background(command, args)
+        else:
+            command.handler(self._make_ctx(self._append_log), args)
+
+    @work(thread=True)
+    def _run_background(self, command: Command, args: list[str]) -> None:
+        # Long-running verbs run off the UI thread; emit marshals each line back onto it so the
+        # log updates live while the worker runs (§16: "UI stays live").
+        ctx = self._make_ctx(lambda line: self.call_from_thread(self._append_log, line))
+        command.handler(ctx, args)
+
+    def _make_ctx(self, emit) -> CommandContext:  # noqa: ANN001 -- emit: Callable[[str], None]
+        return CommandContext(
+            db_path=self._db_path,
+            source_root=self._source_root,
+            session_factory=self._session_factory,
+            web=self._web,
+            emit=emit,
+            exit=self.exit,
+            registry=self._command_registry,
+        )
+
+    # --- Search --------------------------------------------------------------------------
+
+    def _run_search(self, query: str) -> None:
+        with self._session_factory() as db:
+            self._results = search_sessions(db, query)
+        results_list = self.query_one("#results", ResultsList)
+        results_list.clear_options()
+        if not self._results:
+            self._append_log(f'no results for "{query}"')
+            return
+        results_list.add_options(
+            [Option(self._format_row(row), id=row.session_uuid) for row in self._results]
+        )
+        results_list.highlighted = 0
+        results_list.focus()
+        self._append_log(f'{len(self._results)} result(s) for "{query}" -- '
+                         "Enter opens the session, Right the best message")
+
+    def _format_row(self, row: SearchResultRow) -> Text:
+        # Build with Text.append (never markup parsing) so untrusted archive content -- titles,
+        # slugs, snippets -- can never be interpreted as Rich markup or console control.
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append(row.title, style="bold #E5A54B")
+        text.append("  ·  ")
+        text.append(row.project_slug, style="#6FD3C7")
+        if row.date is not None:
+            text.append("  ·  ")
+            text.append(row.date.strftime("%Y-%m-%d"), style="#7f8db0")
+        if row.snippet:
+            text.append("  ·  ")
+            text.append(row.snippet, style="#9aa7c4")
+        return text
+
+    # --- Result actions (open in browser) ------------------------------------------------
+
+    @on(OptionList.OptionSelected, "#results")
+    def _on_option_selected(self, event: OptionList.OptionSelected) -> None:
+        # Enter (or click) on a result opens the session.
+        self._open_session(event.option_index)
+
+    def open_selected_message(self) -> None:
+        """Right gesture: open the highlighted result's best-matching message.
+
+        The URL is routed by the hit's transcript identity -- a subagent hit opens the
+        /a/{hex}/m/ drill-in, never the main-transcript /m/ that would 404 (see
+        :func:`introspect.tui.webserver.right_arrow_url`).
+        """
+        row = self._row_at(self.query_one("#results", ResultsList).highlighted)
+        if row is None:
+            return
+        base = self._ensure_web_for_open()
+        self._open_url(
+            right_arrow_url(base, row.session_uuid, row.agent_hex_id, row.record_uuid)
+        )
+
+    def _open_session(self, index: int | None) -> None:
+        row = self._row_at(index)
+        if row is None:
+            return
+        base = self._ensure_web_for_open()
+        self._open_url(session_url(base, row.session_uuid))
+
+    def _row_at(self, index: int | None) -> SearchResultRow | None:
+        if index is None or not (0 <= index < len(self._results)):
+            return None
+        return self._results[index]
+
+    def _ensure_web_for_open(self) -> str:
+        if self._web.ensure_started_local():
+            self._append_log(
+                f"started web server at {self._web.local_url()} (a browser launch needs one)"
+            )
+        return self._web.local_url()
+
+    def _open_url(self, url: str) -> None:
+        self._append_log(f"opening {url}")
+        webbrowser.open(url)
+
+    # --- Misc ----------------------------------------------------------------------------
+
+    def action_clear(self) -> None:
+        self.query_one("#cmd", Input).value = ""
+        self.query_one("#results", ResultsList).clear_options()
+        self._results = []
+        self.query_one("#cmd", Input).focus()
+
+    def _append_log(self, line: str) -> None:
+        self.query_one("#log", RichLog).write(line)
+
+    def stop_web(self) -> None:
+        """Stop any web server the TUI started (called on exit by :func:`run_tui`)."""
+        self._web.stop()
+
+
+def _session_factory_for(engine):  # noqa: ANN001, ANN202 -- Engine -> sessionmaker
+    return session_factory(engine)
+
+
+def run_tui(*, db_path: Path, source_root: Path) -> None:
+    """Build and run the TUI, stopping any web server it started on the way out."""
+    app = IntrospectApp(db_path=db_path, source_root=source_root)
+    try:
+        app.run()
+    finally:
+        app.stop_web()

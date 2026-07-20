@@ -217,6 +217,7 @@ All commands run via `uv run introspect <command>` from `server/`.
 | `introspect export <session-uuid> [-o file]` | Reconstructs a session's `.jsonl`, byte-identical to the source | Works even if the source file is gone |
 | `introspect reparse` | Rebuilds interpretation from stored raw bytes | For schema updates; takes the same advisory lock as `import` |
 | `introspect serve [--db PATH] [--port 8765] [--host 127.0.0.1]` | Serves the `/api/v1` read layer on localhost | The default host `127.0.0.1` is deliberate — binding any other interface exposes your entire conversation history to the network; don't, unless you fully understand the exposure |
+| `introspect tui [--db PATH] [--source-root PATH]` | Interactive terminal UI: type to search the archive, or run slash commands (`/import`, `/reparse`, `/export`, `/status`, `/unarchive`, `/start-web [public]`, `/stop-web`, `/help`) | Search results open in your browser (Enter → session, Right → best-matching message), auto-starting an in-process web server on `127.0.0.1:8765`; `/start-web public` binds `0.0.0.0` and prints a mandatory no-auth warning first |
 
 Every subcommand accepts `--db <path>` (or `INTROSPECT_DB`) to override the archive location;
 `import` also accepts `--source-root <path>` (or `INTROSPECT_SOURCE_ROOT`) to override the
