@@ -84,6 +84,7 @@ def make_assistant_line(
     extra: dict | None = None,
     message_extra: dict | None = None,
     tool_use_caller: dict | None = None,
+    extra_blocks: list[dict] | None = None,
     **overrides: object,
 ) -> bytes:
     """An ``assistant`` record.
@@ -95,9 +96,10 @@ def make_assistant_line(
     ``message_extra`` merges keys into the ``message`` sub-object (used to exercise
     message-level drift such as the CLI's ``type: "message"`` echo). ``tool_use_caller``
     attaches a ``caller`` payload to the ``tool_use`` block (block-level drift).
-    ``tool_use_id`` pins the ``tool_use`` block's ``id`` (default: random) — used by
-    callers that need a dispatching block's id to match a known subagent's
-    ``parent_tool_use_id``.
+    ``extra_blocks`` are appended verbatim after the standard blocks (used to inject a
+    novel content block such as the ``fallback`` model-fallback marker). ``tool_use_id``
+    pins the ``tool_use`` block's ``id`` (default: random) — used by callers that need a
+    dispatching block's id to match a known subagent's ``parent_tool_use_id``.
     """
     content: list[dict] = []
     if with_thinking:
@@ -114,6 +116,8 @@ def make_assistant_line(
         if tool_use_caller is not None:
             tool_block["caller"] = tool_use_caller
         content.append(tool_block)
+    if extra_blocks:
+        content.extend(extra_blocks)
     if usage is None:
         usage = {
             "input_tokens": 12,
@@ -215,6 +219,32 @@ def make_snapshot_line(
         "messageId": message_id or ("msg_" + _short()),
         "sessionId": session_id,
         "snapshot": {"trackedFileBackups": {}, "timestamp": DEFAULT_TIMESTAMP},
+    }
+    record.update(fields)
+    return _encode(record)
+
+
+def make_file_history_delta_line(
+    *,
+    message_id: str | None = None,
+    session_id: str = DEFAULT_SESSION_ID,
+    **fields: object,
+) -> bytes:
+    """A minimal ``file-history-delta`` record (sibling of ``file-history-snapshot``).
+
+    Like the snapshot record, the bulky ``backup`` payload is archive-only and intentionally
+    *not* modeled by the schema (declared opaque ``Any``); the other fields are declared, so a
+    default record parses to status ``ok``. Shapes mirror the production record (verified
+    read-only); no private content appears here.
+    """
+    record: dict = {
+        "type": "file-history-delta",
+        "messageId": message_id or ("msg_" + _short()),
+        "snapshotMessageId": "msg_" + _short(),
+        "sessionId": session_id,
+        "trackingPath": "/home/dev/synthetic-project/synthetic-file.py",
+        "backup": {"backupFileName": None, "version": 1, "backupTime": DEFAULT_TIMESTAMP},
+        "timestamp": DEFAULT_TIMESTAMP,
     }
     record.update(fields)
     return _encode(record)

@@ -56,7 +56,9 @@ def test_cli_import_and_status(tmp_path, fixture_tree, capsys):
     out = capsys.readouterr().out
     assert "status=ok" in out
     assert main(["status", "--db", dbp]) == 0
-    assert "sessions=" in capsys.readouterr().out
+    status_out = capsys.readouterr().out
+    assert "sessions=" in status_out
+    assert "schema: introspect-schema/" in status_out
 
 
 def test_cli_export_roundtrip(tmp_path, fixture_tree, capsys):

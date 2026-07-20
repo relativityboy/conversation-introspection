@@ -18,6 +18,7 @@ import json
 from pydantic import BaseModel, ValidationError
 
 from introspect.schema.v1 import (
+    DIFF_NOTES,
     SCHEMA_VERSION,
     AgentColorRecord,
     AgentNameRecord,
@@ -27,6 +28,7 @@ from introspect.schema.v1 import (
     AiTitleRecord,
     BaseRecord,
     CustomTitleRecord,
+    FileHistoryDeltaRecord,
     FileHistorySnapshotRecord,
     LastPromptRecord,
     ModeRecord,
@@ -41,6 +43,7 @@ from introspect.schema.v1 import (
 
 __all__ = [
     "SCHEMA_VERSION",
+    "DIFF_NOTES",
     "REGISTRY",
     "parse_line",
     "ParseResult",
@@ -63,6 +66,7 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "agent-name": AgentNameRecord,
     "agent-color": AgentColorRecord,
     "file-history-snapshot": FileHistorySnapshotRecord,
+    "file-history-delta": FileHistoryDeltaRecord,
 }
 
 

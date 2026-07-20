@@ -18,8 +18,10 @@ from introspect.models import (
     ImportRun,
     ParseAnomaly,
     RawRecord,
+    SchemaVersion,
     SourceFile,
 )
+from introspect.schema import SCHEMA_VERSION
 
 
 @dataclass
@@ -33,6 +35,8 @@ class StatusSnapshot:
     warns: int
     infos: int
     last_run: ImportRun | None
+    schema_version: str
+    schema_versions_known: int
 
 
 def collect_status(db: Session) -> StatusSnapshot:
@@ -51,6 +55,12 @@ def collect_status(db: Session) -> StatusSnapshot:
         warns=db.query(ParseAnomaly).filter_by(severity="warn").count(),
         infos=db.query(ParseAnomaly).filter_by(severity="info").count(),
         last_run=db.query(ImportRun).order_by(ImportRun.id.desc()).first(),
+        # `schema_version` is the running code's generation (always the SCHEMA_VERSION constant);
+        # `schema_versions_known` counts the provenance rows recorded in this archive. On a
+        # migrated-but-never-imported DB the count is the 3 backfilled historical rows only --
+        # the current version's row is added the first time import/reparse runs.
+        schema_version=SCHEMA_VERSION,
+        schema_versions_known=db.query(SchemaVersion).count(),
     )
 
 
@@ -69,3 +79,7 @@ def last_run_line(snap: StatusSnapshot) -> str:
         f"last run: id={snap.last_run.id} trigger={snap.last_run.trigger} "
         f"status={snap.last_run.status} finished_at={snap.last_run.finished_at}"
     )
+
+
+def schema_line(snap: StatusSnapshot) -> str:
+    return f"schema: {snap.schema_version} (known versions: {snap.schema_versions_known})"

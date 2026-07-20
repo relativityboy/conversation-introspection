@@ -28,6 +28,7 @@ from introspect.models import (
     TokenUsage,
 )
 from introspect.schema import SCHEMA_VERSION, parse_line
+from introspect.schema_versions import ensure_current_schema_version_recorded
 from introspect.search import get_search_index
 
 CHUNK_SIZE = 500
@@ -90,6 +91,10 @@ def reparse_all(db: Session) -> ReparseStats:
     call to ``apply()`` is guarded).
     """
     anomalies_before = db.query(ParseAnomaly).count()
+
+    # Provenance: reparse re-stamps every record with the current SCHEMA_VERSION, so it is
+    # exactly a "this codebase version ran against the DB" event -- record it (idempotent).
+    ensure_current_schema_version_recorded(db)
 
     _delete_all_interpretation_rows(db)
     # Clear the FTS index the corruption-safe way (the 'delete-all' external-content command,

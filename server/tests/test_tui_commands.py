@@ -148,6 +148,7 @@ def test_status_emits_counts_and_web_state(tmp_path: Path, fixture_tree: Path) -
     ctx, emitted = _ctx(dbp)
     _run(ctx, "/status")
     assert any(line.startswith("sessions=") for line in emitted)
+    assert any(line.startswith("schema: introspect-schema/") for line in emitted)
     assert emitted[-1] == "web server: stopped"
 
 

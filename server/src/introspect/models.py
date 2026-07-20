@@ -226,3 +226,17 @@ class ArchivedSession(Base):
 
     session_uuid: Mapped[str] = mapped_column(ForeignKey("sessions.session_uuid"), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class SchemaVersion(Base):
+    # NOTE(claude): provenance history of the interpretation schema GENERATION (the
+    # `introspect-schema/N` stamp), NOT user data. One row per version this codebase has run
+    # against the archive: `first_encountered_at` is set once, idempotently, the first time an
+    # import/reparse runs under that SCHEMA_VERSION (see introspect.schema_versions); migration
+    # 0005 backfills the historical rows. `diff_note` is the human-readable old-vs-new summary
+    # copied from introspect.schema.DIFF_NOTES. See migration 0005.
+    __tablename__ = "schema_versions"
+
+    version: Mapped[str] = mapped_column(primary_key=True)
+    first_encountered_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    diff_note: Mapped[str | None] = mapped_column(Text)

@@ -42,7 +42,7 @@ from introspect.ingest.reparse import reparse_all
 # to a shared module.
 from introspect.ingest.run import DbOpenError, _acquire_lock, _release_lock, run_import
 from introspect.models import ArchivedSession
-from introspect.status import collect_status, counts_line, last_run_line
+from introspect.status import collect_status, counts_line, last_run_line, schema_line
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -206,6 +206,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     # the TUI `/status` report identical numbers from one source of truth.
     print(counts_line(snap))
     print(last_run_line(snap))
+    print(schema_line(snap))
     return 0
 
 

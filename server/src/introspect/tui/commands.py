@@ -27,7 +27,7 @@ from introspect.export import (
 from introspect.ingest.reparse import reparse_all
 from introspect.ingest.run import DbOpenError, _acquire_lock, _release_lock, run_import
 from introspect.models import ArchivedSession
-from introspect.status import collect_status, counts_line, last_run_line
+from introspect.status import collect_status, counts_line, last_run_line, schema_line
 from introspect.tui.webserver import (
     LOCAL_HOST,
     PUBLIC_BIND_WARNING,
@@ -191,6 +191,7 @@ def _cmd_status(ctx: CommandContext, args: list[str]) -> None:
         snap = collect_status(db)
     ctx.emit(counts_line(snap))
     ctx.emit(last_run_line(snap))
+    ctx.emit(schema_line(snap))
     ctx.emit(ctx.web.describe())
 
 

@@ -5,6 +5,7 @@ from introspect.schema.v1 import BaseRecord
 from tests.fixtures.records import (
     make_assistant_line,
     make_attachment_line,
+    make_file_history_delta_line,
     make_session_file,
     make_snapshot_line,
     make_system_line,
@@ -71,7 +72,7 @@ def test_thin_meta_records_parse():
 
 
 def test_schema_version_constant():
-    assert SCHEMA_VERSION == "introspect-schema/3"
+    assert SCHEMA_VERSION == "introspect-schema/4"
 
 
 def test_anomaly_severity_is_warn_for_unknown_type():
@@ -208,6 +209,7 @@ def test_every_registry_type_instantiates_and_round_trips():
         "agent-name": make_thin_meta_line("agent-name"),
         "agent-color": make_thin_meta_line("agent-color"),
         "file-history-snapshot": make_snapshot_line(),
+        "file-history-delta": make_file_history_delta_line(),
     }
     assert set(lines) == set(REGISTRY)
     for rtype, line in lines.items():
@@ -461,3 +463,100 @@ def test_full_production_drift_line_parses_clean():
         )
     )
     assert r.status == "ok" and r.anomalies == []
+
+
+# --- Schema v4: second production-drift pass (new CLI versions ~2.1.207-2.1.215) ----------
+# Positions verified read-only against the post-import floor (3,586 info + 10 warn); see
+# task-p4-f7-report.md. Each test carries the newly-declared field(s) at the real location
+# and asserts a clean parse (status "ok", zero anomalies).
+
+
+def test_assistant_effort_and_api_error_fields_parse_ok():
+    # `effort` (reasoning effort, dominant new field) + the api-error markers + supersedes
+    # list are assistant-record top-level.
+    r = parse_line(
+        make_assistant_line(
+            extra={
+                "effort": "xhigh",
+                "isApiErrorMessage": True,
+                "apiErrorStatus": 529,
+                "supersedesUuids": ["05fe2f3c-94f8-4007-b3bb-9280aa41bc22"],
+            }
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []
+
+
+def test_assistant_message_container_and_context_management_parse_ok():
+    # `container` and `context_management` ride on the assistant MESSAGE object (null in the
+    # wild; declared opaque Any so a future populated shape never becomes a validation error).
+    r = parse_line(
+        make_assistant_line(message_extra={"container": None, "context_management": None})
+    )
+    assert r.status == "ok" and r.anomalies == []
+
+
+def test_model_fallback_block_parses_ok():
+    # A new content block `{"type":"fallback","from":{...},"to":{...}}` records a model
+    # fallback inline in an assistant turn. `from`/`to` are opaque (aliased; `from` is a
+    # Python keyword) so the block parses clean and yields a normalized "fallback" block.
+    r = parse_line(
+        make_assistant_line(
+            extra_blocks=[
+                {
+                    "type": "fallback",
+                    "from": {"model": "claude-opus-4"},
+                    "to": {"model": "claude-sonnet-4"},
+                }
+            ]
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []
+    fallback = [b for b in r.record.blocks() if b.kind == "fallback"]
+    assert len(fallback) == 1
+    assert fallback[0].payload["from"] == {"model": "claude-opus-4"}
+
+
+def test_user_tool_denial_and_interrupt_fields_parse_ok():
+    # toolEndsTurn / interruptedMessageId / toolDenialKind / classifierMetaLines are all
+    # user-record top-level in the drift population.
+    r = parse_line(
+        make_user_line(
+            extra={
+                "toolEndsTurn": True,
+                "interruptedMessageId": "msg_synthetic0000000000000000",
+                "toolDenialKind": "user-rejected",
+                "classifierMetaLines": "synthetic-classifier-meta-line-token",
+            }
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []
+
+
+def test_system_model_refusal_fallback_fields_parse_ok():
+    # The new system subtype "model_refusal_fallback" carries a whole field family; all land
+    # on SystemRecord (envelope-derived). `retractedMessageUuids` is opaque Any (a list).
+    r = parse_line(
+        make_system_line(
+            "model_refusal_fallback",
+            content=None,
+            trigger="refusal",
+            direction="retry",
+            originalModel="claude-opus-4-x",
+            fallbackModel="claude-sonnet-4-x",
+            requestId="req_synthetic0000000000000000",
+            apiRefusalCategory="cyber",
+            apiRefusalExplanation=None,
+            retractedMessageUuids=["05fe2f3c-94f8-4007-b3bb-9280aa41bc22"],
+            refusedUserMessageUuid="c67b666f-80b3-4a5d-8c85-d6bfb75decfc",
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []
+
+
+def test_file_history_delta_record_parses_ok():
+    # A new record type sibling to file-history-snapshot; `backup` is opaque Any (archive-only).
+    r = parse_line(make_file_history_delta_line())
+    assert r.record is not None and r.record_type == "file-history-delta"
+    assert r.status == "ok" and r.anomalies == []
+    assert r.record.blocks() == []

@@ -57,6 +57,7 @@ from introspect.ingest.capture import capture_file, detect_gone, utcnow
 from introspect.ingest.discovery import DiscoveredFile, discover
 from introspect.models import ImportRun, ParseAnomaly, RawRecord, SourceFile
 from introspect.schema import SCHEMA_VERSION, parse_line
+from introspect.schema_versions import ensure_current_schema_version_recorded
 
 
 class DbOpenError(RuntimeError):
@@ -178,6 +179,10 @@ def _run_locked(db, root: Path, trigger: str, run_id: int | None = None) -> Impo
     # (autoincrement is monotonic and we are the only writer under the lock). This is exact and
     # free of any timestamp-format assumptions.
     baseline_anomaly_id = db.query(func.max(ParseAnomaly.id)).scalar() or 0
+
+    # Provenance: record the running SCHEMA_VERSION the first time this codebase imports against
+    # this archive (idempotent no-op thereafter). Done under the lock, before any capture work.
+    ensure_current_schema_version_recorded(db)
 
     if run_id is None:
         run = ImportRun(trigger=trigger, started_at=utcnow(), status="running")
