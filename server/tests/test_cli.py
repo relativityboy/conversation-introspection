@@ -233,3 +233,68 @@ def test_cli_import_mid_run_fatal_exits_1(tmp_path, fixture_tree, monkeypatch, c
     dbp = str(tmp_path / "a.db")
     assert main(["import", "--db", dbp, "--source-root", str(fixture_tree)]) == 1
     assert capsys.readouterr().err
+
+
+# --- cron: scheduled-import crontab management --------------------------------------------
+# Every cron test injects a fake `crontab` subprocess (via the module-level runner seam), so no
+# test ever reads or writes the developer's real crontab. `resolve_binary`/`DEFAULT_LOG` are
+# pinned to temp locations so install never touches PATH or the real home directory.
+
+
+def _seed_crontab(monkeypatch, initial=""):
+    from tests.test_cron import FakeRunner
+
+    runner = FakeRunner(read_text=initial)
+    monkeypatch.setattr("introspect.cron._subprocess_runner", runner)
+    return runner
+
+
+def test_cli_cron_status_not_installed(tmp_path, monkeypatch, capsys):
+    _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
+    assert main(["cron", "status"]) == 0
+    assert "cron: not installed" in capsys.readouterr().out
+
+
+def test_cli_cron_install_status_remove_roundtrip(tmp_path, monkeypatch, capsys):
+    import introspect.cron as cron_mod
+    from tests.test_cron import make_exec
+
+    runner = _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
+    binary = make_exec(tmp_path)
+    monkeypatch.setattr(cron_mod, "resolve_binary", lambda **k: binary)
+    monkeypatch.setattr(cron_mod, "DEFAULT_LOG", tmp_path / "cron.log")
+
+    assert main(["cron", "install", "--every", "5"]) == 0
+    assert "installed" in capsys.readouterr().out
+    written = runner.written[-1]
+    assert written.count(cron_mod.MARKER) == 1  # exactly one managed line
+    assert "*/5 * * * *" in written
+    assert written.startswith("MAILTO=me@example.com\n")  # unrelated line preserved
+
+    assert main(["cron", "status"]) == 0
+    assert "installed@5m" in capsys.readouterr().out
+
+    assert main(["cron", "remove"]) == 0
+    assert "removed" in capsys.readouterr().out
+    assert runner.written[-1] == "MAILTO=me@example.com\n"  # byte-for-byte back to original
+
+
+def test_cli_cron_install_rejects_unusable_binary(tmp_path, monkeypatch, capsys):
+    import introspect.cron as cron_mod
+
+    _seed_crontab(monkeypatch, "")
+    monkeypatch.setattr(cron_mod, "resolve_binary", lambda **k: tmp_path / "nope")
+    assert main(["cron", "install"]) == 1
+    assert capsys.readouterr().err
+
+
+def test_cli_cron_install_rejects_bad_interval(tmp_path, monkeypatch, capsys):
+    _seed_crontab(monkeypatch, "")
+    assert main(["cron", "install", "--every", "0"]) == 1
+    assert capsys.readouterr().err
+
+
+def test_cli_cron_remove_when_absent(tmp_path, monkeypatch, capsys):
+    _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
+    assert main(["cron", "remove"]) == 0
+    assert "nothing to remove" in capsys.readouterr().out

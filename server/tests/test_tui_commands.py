@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import Mock
 
+from introspect.cron import CrontabIO
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.ingest.run import run_import
 from introspect.tui.commands import (
@@ -18,6 +19,7 @@ from introspect.tui.commands import (
 )
 from introspect.tui.webserver import PUBLIC_BIND_WARNING, StartResult
 from tests.conftest import SESSION_UUID_1
+from tests.test_cron import FakeRunner, make_exec
 
 VERBS = {
     "help",
@@ -28,8 +30,14 @@ VERBS = {
     "unarchive",
     "start-web",
     "stop-web",
+    "cron",
     "quit",
 }
+
+
+def _fake_crontab(initial: str = "") -> CrontabIO:
+    """A CrontabIO backed by an in-memory crontab -- never touches the real one."""
+    return CrontabIO(runner=FakeRunner(read_text=initial))
 
 
 class FakeWeb:
@@ -78,6 +86,7 @@ def _ctx(
     source_root: Path | None = None,
     web: FakeWeb | None = None,
     exit_fn=None,
+    crontab: CrontabIO | None = None,
 ) -> tuple[CommandContext, list[str]]:
     emitted: list[str] = []
     ctx = CommandContext(
@@ -88,6 +97,7 @@ def _ctx(
         emit=emitted.append,
         exit=exit_fn or Mock(),
         registry=build_registry(),
+        crontab=crontab or _fake_crontab(),  # hermetic by default: empty in-memory crontab
     )
     return ctx, emitted
 
@@ -142,14 +152,15 @@ def test_help_unknown_command(tmp_path: Path) -> None:
 # --- /status (reuses the shared snapshot; adds web state) ---------------------------------
 
 
-def test_status_emits_counts_and_web_state(tmp_path: Path, fixture_tree: Path) -> None:
+def test_status_emits_counts_web_and_cron_state(tmp_path: Path, fixture_tree: Path) -> None:
     dbp = tmp_path / "a.db"
     run_import(dbp, fixture_tree)
-    ctx, emitted = _ctx(dbp)
+    ctx, emitted = _ctx(dbp)  # default fake crontab is empty
     _run(ctx, "/status")
     assert any(line.startswith("sessions=") for line in emitted)
     assert any(line.startswith("schema: introspect-schema/") for line in emitted)
-    assert emitted[-1] == "web server: stopped"
+    assert "web server: stopped" in emitted
+    assert emitted[-1] == "cron: not installed"  # the new trailing cron line
 
 
 # --- /export ------------------------------------------------------------------------------
@@ -223,6 +234,78 @@ def test_unarchive_unknown(tmp_path: Path, fixture_tree: Path) -> None:
     ctx, emitted = _ctx(dbp)
     _run(ctx, "/unarchive not-archived")
     assert any("no archived session" in line for line in emitted)
+
+
+# --- /cron (marker-line ownership over the user crontab) ---------------------------------
+
+
+def test_cron_status_not_installed(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=_fake_crontab("MAILTO=x\n"))
+    _run(ctx, "/cron")
+    assert emitted == ["cron: not installed"]
+
+
+def test_cron_status_installed_shows_interval_and_line(tmp_path: Path) -> None:
+    from introspect.cron import apply_install, build_line
+
+    binary = make_exec(tmp_path)
+    seeded = apply_install("", binary, 15, tmp_path / "cron.log")
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=_fake_crontab(seeded))
+    _run(ctx, "/cron")
+    assert any("installed@15m" in line for line in emitted)
+    assert build_line(binary, 15, tmp_path / "cron.log") in emitted  # full line shown
+
+
+def test_cron_install_dispatch_writes_line(tmp_path: Path, monkeypatch) -> None:
+    import introspect.cron as cron_mod
+
+    binary = make_exec(tmp_path)
+    monkeypatch.setattr(cron_mod, "resolve_binary", lambda **k: binary)
+    monkeypatch.setattr(cron_mod, "DEFAULT_LOG", tmp_path / "cron.log")
+    runner = FakeRunner(read_text="MAILTO=x\n")
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=cron_mod.CrontabIO(runner=runner))
+    _run(ctx, "/cron install 5")
+    assert any("installed" in line for line in emitted)
+    assert "*/5 * * * *" in runner.written[-1]
+    assert runner.written[-1].startswith("MAILTO=x\n")  # unrelated line preserved
+
+
+def test_cron_install_bad_minutes(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/cron install abc")
+    assert any("invalid minutes" in line for line in emitted)
+
+
+def test_cron_remove_dispatch(tmp_path: Path) -> None:
+    from introspect.cron import CrontabIO, apply_install
+
+    binary = make_exec(tmp_path)
+    seeded = apply_install("MAILTO=x\n", binary, 15, tmp_path / "cron.log")
+    runner = FakeRunner(read_text=seeded)
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=CrontabIO(runner=runner))
+    _run(ctx, "/cron remove")
+    assert any("removed" in line for line in emitted)
+    assert runner.written[-1] == "MAILTO=x\n"  # byte-for-byte back to original
+
+
+def test_cron_remove_when_absent(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=_fake_crontab("MAILTO=x\n"))
+    _run(ctx, "/cron remove")
+    assert any("nothing to remove" in line for line in emitted)
+
+
+def test_cron_unknown_subcommand(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/cron frobnicate")
+    assert any("usage:" in line for line in emitted)
+
+
+def test_cron_help_has_silent_caveat(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/help cron")
+    blob = "\n".join(emitted).lower()
+    assert "crontab" in blob
+    assert "silent" in blob  # the "cron runs silently" caveat is present
 
 
 # --- web management -----------------------------------------------------------------------

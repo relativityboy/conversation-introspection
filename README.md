@@ -152,6 +152,33 @@ A single manual import only protects what existed at that moment. The transcript
 disk keep aging toward deletion, so this needs to run on a recurring schedule — cron is the
 simplest way to do that on macOS and Linux.
 
+### The easy way: `introspect cron install`
+
+The tool can manage its own crontab entry for you:
+
+```bash
+uv run introspect cron install          # schedule an import every 15 minutes
+uv run introspect cron install --every 5   # or pick your own interval (1–60 minutes)
+uv run introspect cron status           # show whether it's scheduled, and the exact line
+uv run introspect cron remove           # unschedule it
+```
+
+`install` adds (or replaces) exactly **one** line in your user crontab, marked so it can find
+and manage only its own entry — every other crontab line you have is preserved untouched. It
+schedules the absolute path to the `introspect` binary directly (no `uv` or `cd` needed, so it
+survives cron's minimal environment), and appends output to
+`~/.conversation-introspection/cron.log`. Running it again just updates the interval; it never
+creates a second job.
+
+One caveat worth knowing: cron runs the job **silently** — on macOS there's no prompt and no
+notification when it fires. Use `introspect cron status` (or `introspect status`, and check
+`last run:`) to confirm it's actually running.
+
+### The manual way
+
+If you'd rather hand-edit your crontab (for example, to run through `uv` from the repo instead
+of the installed binary):
+
 1. Find the absolute path to `uv`, since cron runs with a minimal environment that won't have
    your shell's `PATH`:
    ```bash
@@ -216,8 +243,9 @@ All commands run via `uv run introspect <command>` from `server/`.
 | `introspect status` | Prints archive counts and the last import run | |
 | `introspect export <session-uuid> [-o file]` | Reconstructs a session's `.jsonl`, byte-identical to the source | Works even if the source file is gone |
 | `introspect reparse` | Rebuilds interpretation from stored raw bytes | For schema updates; takes the same advisory lock as `import` |
+| `introspect cron status\|install [--every N]\|remove` | Manages a single scheduled-import line in your user crontab | Owns exactly one marked line (default every 15 min, `--every` accepts 1–60); replaces rather than duplicates, and leaves every other crontab entry byte-for-byte untouched |
 | `introspect serve [--db PATH] [--port 8765] [--host 127.0.0.1]` | Serves the `/api/v1` read layer on localhost | The default host `127.0.0.1` is deliberate — binding any other interface exposes your entire conversation history to the network; don't, unless you fully understand the exposure |
-| `introspect tui [--db PATH] [--source-root PATH]` | Interactive terminal UI: type to search the archive, or run slash commands (`/import`, `/reparse`, `/export`, `/status`, `/unarchive`, `/start-web [public]`, `/stop-web`, `/help`) | Search results open in your browser (Enter → session, Right → best-matching message), auto-starting an in-process web server on `127.0.0.1:8765`; `/start-web public` binds `0.0.0.0` and prints a mandatory no-auth warning first |
+| `introspect tui [--db PATH] [--source-root PATH]` | Interactive terminal UI: type to search the archive, or run slash commands (`/import`, `/reparse`, `/export`, `/status`, `/unarchive`, `/start-web [public]`, `/stop-web`, `/cron [install [minutes] \| remove]`, `/help`) | Search results open in your browser (Enter → session, Right → best-matching message), auto-starting an in-process web server on `127.0.0.1:8765`; `/start-web public` binds `0.0.0.0` and prints a mandatory no-auth warning first |
 
 Every subcommand accepts `--db <path>` (or `INTROSPECT_DB`) to override the archive location;
 `import` also accepts `--source-root <path>` (or `INTROSPECT_SOURCE_ROOT`) to override the

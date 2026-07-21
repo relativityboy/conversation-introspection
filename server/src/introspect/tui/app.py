@@ -26,6 +26,7 @@ from textual.widgets import Footer, Input, OptionList, RichLog
 from textual.widgets.option_list import Option
 
 from introspect import config
+from introspect.cron import CrontabIO
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.tui.commands import Command, CommandContext, build_registry, parse_command
 from introspect.tui.search import SearchResultRow, search_sessions
@@ -105,6 +106,7 @@ class IntrospectApp(App):
         db_path: Path | str,
         source_root: Path | str | None = None,
         web: WebServerManager | None = None,
+        crontab: CrontabIO | None = None,
         session_factory=None,  # noqa: ANN001 -- a sqlalchemy sessionmaker; injected in tests
     ) -> None:
         super().__init__()
@@ -116,6 +118,7 @@ class IntrospectApp(App):
             session_factory = _session_factory_for(engine)
         self._session_factory = session_factory
         self._web = web if web is not None else WebServerManager(self._db_path)
+        self._crontab = crontab if crontab is not None else CrontabIO()
         self._command_registry = build_registry()
         self._results: list[SearchResultRow] = []
 
@@ -176,6 +179,7 @@ class IntrospectApp(App):
             emit=emit,
             exit=self.exit,
             registry=self._command_registry,
+            crontab=self._crontab,
         )
 
     # --- Search --------------------------------------------------------------------------

@@ -15,10 +15,16 @@ import pytest
 from sqlalchemy.orm import Session
 from textual.widgets import Input
 
+from introspect.cron import CrontabIO
 from introspect.tui.app import IntrospectApp
 from introspect.tui.webserver import PUBLIC_BIND_WARNING, WebServerManager
 from tests.conftest import AGENT_HEX_ID, SESSION_UUID_1
+from tests.test_cron import FakeRunner
 from tests.test_tui_commands import VERBS, FakeWeb
+
+
+def _fake_crontab(initial: str = "") -> CrontabIO:
+    return CrontabIO(runner=FakeRunner(read_text=initial))
 
 
 class _FakeServer:
@@ -258,7 +264,8 @@ def test_app_start_web_then_status_roundtrips_state(
     recorded: list[str] = []
 
     async def scenario() -> None:
-        app = IntrospectApp(db_path=tmp_path / "a.db")  # a REAL WebServerManager
+        # A REAL WebServerManager, but a fake crontab so /status never reads the real one.
+        app = IntrospectApp(db_path=tmp_path / "a.db", crontab=_fake_crontab())
         async with app.run_test() as pilot:
             _spy_log(app, recorded)
             inp = app.query_one("#cmd", Input)
@@ -273,6 +280,22 @@ def test_app_start_web_then_status_roundtrips_state(
     asyncio.run(scenario())
     assert any("serving at http://127.0.0.1:8765" in line for line in recorded)
     assert any("web server: running at http://127.0.0.1:8765" in line for line in recorded)
+    assert any(line == "cron: not installed" for line in recorded)
+
+
+def test_app_cron_status_through_running_app(tmp_path: Path) -> None:
+    recorded: list[str] = []
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb(), crontab=_fake_crontab())
+        async with app.run_test() as pilot:
+            _spy_log(app, recorded)
+            app.query_one("#cmd", Input).value = "/cron"
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert any(line == "cron: not installed" for line in recorded)
 
 
 def test_app_start_web_port_refusal(

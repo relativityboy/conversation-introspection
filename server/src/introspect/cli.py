@@ -30,7 +30,7 @@ from pathlib import Path
 
 import uvicorn
 
-from introspect import config
+from introspect import config, cron
 from introspect.api import create_app
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.export import SessionNotFoundError, TranscriptNotFoundError, export_session_to
@@ -98,6 +98,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tui.add_argument("--db", help="path to the archive DB")
     p_tui.add_argument("--source-root", help="root directory of transcripts to scan")
     p_tui.set_defaults(handler=_cmd_tui)
+
+    p_cron = subparsers.add_parser("cron", help="manage the scheduled-import crontab entry")
+    cron_sub = p_cron.add_subparsers(required=True)
+    c_status = cron_sub.add_parser("status", help="show whether the import job is scheduled")
+    c_status.set_defaults(handler=_cmd_cron_status)
+    c_install = cron_sub.add_parser("install", help="install or replace the scheduled import job")
+    c_install.add_argument(
+        "--every", type=int, default=15, metavar="MINUTES", help="run every N minutes (1-60)"
+    )
+    c_install.set_defaults(handler=_cmd_cron_install)
+    c_remove = cron_sub.add_parser("remove", help="remove the scheduled import job")
+    c_remove.set_defaults(handler=_cmd_cron_remove)
 
     return parser
 
@@ -243,6 +255,45 @@ def _cmd_tui(args: argparse.Namespace) -> int:
     from introspect.tui.app import run_tui
 
     run_tui(db_path=dbp, source_root=config.source_root(args.source_root))
+    return 0
+
+
+# --- cron: manage the single scheduled-import crontab line (no DB involved) ----------------
+# These verbs never open the archive DB -- they only read/rewrite the user crontab -- so they
+# do not share the exit-2 DB-open family. A cron failure (bad interval, unusable binary, crontab
+# I/O) is one clean stderr line + exit 1; success is one stdout line + exit 0.
+
+
+def _cmd_cron_status(args: argparse.Namespace) -> int:
+    try:
+        st = cron.status(cron.CrontabIO())
+    except cron.CronError as exc:
+        print(f"cron: {exc}", file=sys.stderr)
+        return 1
+    print(cron.status_line(st))
+    if st.line is not None:
+        print(st.line)
+    return 0
+
+
+def _cmd_cron_install(args: argparse.Namespace) -> int:
+    try:
+        st = cron.install(cron.CrontabIO(), minutes=args.every)
+    except cron.CronError as exc:
+        print(f"cron: {exc}", file=sys.stderr)
+        return 1
+    print(f"cron: installed ({cron.status_line(st).removeprefix('cron: ')})")
+    print(st.line)
+    return 0
+
+
+def _cmd_cron_remove(args: argparse.Namespace) -> int:
+    try:
+        removed = cron.remove(cron.CrontabIO())
+    except cron.CronError as exc:
+        print(f"cron: {exc}", file=sys.stderr)
+        return 1
+    print("cron: removed" if removed else "cron: nothing to remove (not installed)")
     return 0
 
 

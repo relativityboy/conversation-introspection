@@ -19,6 +19,8 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from introspect import cron
+from introspect.cron import CrontabIO
 from introspect.export import (
     SessionNotFoundError,
     TranscriptNotFoundError,
@@ -52,6 +54,9 @@ class CommandContext:
     emit: Callable[[str], None]
     exit: Callable[[], None]
     registry: "CommandRegistry"
+    # The user-crontab edge for /cron. A field (like `web`) so tests inject a fake and no test
+    # ever shells out to the real crontab; the app supplies one real instance.
+    crontab: CrontabIO = field(default_factory=CrontabIO)
 
 
 @dataclass
@@ -193,6 +198,60 @@ def _cmd_status(ctx: CommandContext, args: list[str]) -> None:
     ctx.emit(last_run_line(snap))
     ctx.emit(schema_line(snap))
     ctx.emit(ctx.web.describe())
+    try:
+        ctx.emit(cron.status_line(cron.status(ctx.crontab)))
+    except cron.CronError as exc:
+        # Reading the crontab is best-effort here -- an unreadable crontab must not sink /status.
+        ctx.emit(f"cron: unavailable ({exc})")
+
+
+def _cmd_cron(ctx: CommandContext, args: list[str]) -> None:
+    sub = args[0].lower() if args else "status"
+    if sub == "status":
+        _cron_show_status(ctx)
+    elif sub == "install":
+        _cron_install(ctx, args[1:])
+    elif sub == "remove":
+        _cron_remove(ctx)
+    else:
+        ctx.emit("usage: /cron [install [minutes] | remove]")
+
+
+def _cron_show_status(ctx: CommandContext) -> None:
+    try:
+        st = cron.status(ctx.crontab)
+    except cron.CronError as exc:
+        ctx.emit(f"cron: {exc}")
+        return
+    ctx.emit(cron.status_line(st))
+    if st.line is not None:
+        ctx.emit(st.line)
+
+
+def _cron_install(ctx: CommandContext, rest: list[str]) -> None:
+    minutes = 15
+    if rest:
+        try:
+            minutes = int(rest[0])
+        except ValueError:
+            ctx.emit(f"cron: invalid minutes '{rest[0]}' -- must be an integer 1-60")
+            return
+    try:
+        st = cron.install(ctx.crontab, minutes=minutes)
+    except cron.CronError as exc:
+        ctx.emit(f"cron: {exc}")
+        return
+    ctx.emit(f"cron: installed ({cron.status_line(st).removeprefix('cron: ')})")
+    ctx.emit(st.line)
+
+
+def _cron_remove(ctx: CommandContext) -> None:
+    try:
+        removed = cron.remove(ctx.crontab)
+    except cron.CronError as exc:
+        ctx.emit(f"cron: {exc}")
+        return
+    ctx.emit("cron: removed" if removed else "cron: nothing to remove (not installed)")
 
 
 def _cmd_unarchive(ctx: CommandContext, args: list[str]) -> None:
@@ -370,6 +429,26 @@ def build_registry() -> CommandRegistry:
             ),
             examples=["/stop-web"],
             handler=_cmd_stop_web,
+        )
+    )
+    registry.register(
+        Command(
+            name="cron",
+            summary="schedule (or unschedule) periodic imports via the user crontab",
+            usage="/cron [install [minutes] | remove]",
+            long_help=(
+                "With no argument, reports whether the managed import job is scheduled and, if\n"
+                "so, its interval and the exact crontab line. 'install' adds or REPLACES a single\n"
+                "line that runs `introspect import` every N minutes (default 15; valid 1-60); it\n"
+                "never creates a second line. 'remove' deletes only that line, leaving every other\n"
+                "crontab entry byte-for-byte untouched.\n"
+                "CAVEAT: this edits your user crontab (the same one `crontab -e` shows). cron runs\n"
+                "the job SILENTLY -- on macOS there is no prompt and no notification; output is\n"
+                "appended to ~/.conversation-introspection/cron.log. Run /cron with no argument\n"
+                "(or `introspect cron status`) to confirm it is scheduled."
+            ),
+            examples=["/cron", "/cron install", "/cron install 5", "/cron remove"],
+            handler=_cmd_cron,
         )
     )
     registry.register(
