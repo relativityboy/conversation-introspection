@@ -298,3 +298,56 @@ def test_cli_cron_remove_when_absent(tmp_path, monkeypatch, capsys):
     _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
     assert main(["cron", "remove"]) == 0
     assert "nothing to remove" in capsys.readouterr().out
+
+
+# --- cron: macOS TCC-permission-dialog forewarning ------------------------------------------
+# `crontab` (even `-l`) triggers an unwarned macOS permission dialog the first time a terminal
+# app invokes it; these tests pin `sys.platform` explicitly so behavior is deterministic
+# regardless of which OS actually runs the suite.
+
+
+def test_cli_cron_status_shows_macos_notice_on_darwin(tmp_path, monkeypatch, capsys):
+    import introspect.cron as cron_mod
+
+    monkeypatch.setattr(cron_mod.sys, "platform", "darwin")
+    _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
+    assert main(["cron", "status"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith(cron_mod.MACOS_PERMISSION_NOTICE)
+    assert out.count(cron_mod.MACOS_PERMISSION_NOTICE) == 1
+
+
+def test_cli_cron_status_no_macos_notice_off_darwin(tmp_path, monkeypatch, capsys):
+    import introspect.cron as cron_mod
+
+    monkeypatch.setattr(cron_mod.sys, "platform", "linux")
+    _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
+    assert main(["cron", "status"]) == 0
+    assert cron_mod.MACOS_PERMISSION_NOTICE not in capsys.readouterr().out
+
+
+def test_cli_cron_install_shows_macos_notice_once_despite_read_and_write(
+    tmp_path, monkeypatch, capsys
+):
+    import introspect.cron as cron_mod
+    from tests.test_cron import make_exec
+
+    monkeypatch.setattr(cron_mod.sys, "platform", "darwin")
+    _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
+    binary = make_exec(tmp_path)
+    monkeypatch.setattr(cron_mod, "resolve_binary", lambda **k: binary)
+    monkeypatch.setattr(cron_mod, "DEFAULT_LOG", tmp_path / "cron.log")
+
+    assert main(["cron", "install", "--every", "5"]) == 0
+    out = capsys.readouterr().out
+    # `install` issues a read AND a write subprocess call -- the notice must still appear once.
+    assert out.count(cron_mod.MACOS_PERMISSION_NOTICE) == 1
+
+
+def test_cli_cron_remove_shows_macos_notice_on_darwin(tmp_path, monkeypatch, capsys):
+    import introspect.cron as cron_mod
+
+    monkeypatch.setattr(cron_mod.sys, "platform", "darwin")
+    _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
+    assert main(["cron", "remove"]) == 0
+    assert cron_mod.MACOS_PERMISSION_NOTICE in capsys.readouterr().out

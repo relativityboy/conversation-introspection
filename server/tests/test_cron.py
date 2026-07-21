@@ -326,3 +326,17 @@ def test_status_line_not_installed() -> None:
 def test_status_line_installed() -> None:
     st = cron.CronStatus(True, 15, f"*/15 * * * * x import >> y 2>&1  {MARKER}")
     assert cron.status_line(st) == "cron: installed@15m"
+
+
+# --- macos_permission_notice (the TCC-dialog forewarning) ---------------------------------
+
+
+def test_macos_permission_notice_on_darwin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cron.sys, "platform", "darwin")
+    assert cron.macos_permission_notice() == cron.MACOS_PERMISSION_NOTICE
+
+
+def test_macos_permission_notice_off_darwin(monkeypatch: pytest.MonkeyPatch) -> None:
+    for other in ("linux", "win32"):
+        monkeypatch.setattr(cron.sys, "platform", other)
+        assert cron.macos_permission_notice() is None

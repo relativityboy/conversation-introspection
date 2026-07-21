@@ -118,7 +118,9 @@ Then, inside the TUI, type:
 
 That schedules an import every 15 minutes — the tightest interval that matters, the gap between
 "you finished a conversation" and "it's safely archived," and comfortably inside the ~30-day
-deletion window. Prefer the CLI? `uv run introspect cron install` does exactly the same thing.
+deletion window. Prefer the CLI? `uv run introspect cron install` does exactly the same thing
+(on macOS, expect a one-time OS permission prompt the first time you run a `cron` command — see
+[Keep it running](#keep-it-running-the-15-minute-belt)).
 One heads-up: cron runs the job **silently** (no prompt, no notification), so verify it later —
 see [Keep it running](#keep-it-running-the-15-minute-belt).
 
@@ -199,6 +201,10 @@ Running it again just updates the interval; it never creates a second job.
 One caveat worth knowing: cron runs the job **silently** — on macOS there's no prompt and no
 notification when it fires. Use `introspect cron status` (or `introspect status`, and check
 `last run:`) to confirm it's actually running.
+
+A separate, one-time thing: the *first* `cron` command you run on macOS may trigger an OS
+permission dialog (confirming your terminal can manage scheduled jobs) — that's expected, not an
+error. See [`docs/user/cron.md`](docs/user/cron.md#the-macos-permission-prompt) for details.
 
 ### Or manage cron yourself
 

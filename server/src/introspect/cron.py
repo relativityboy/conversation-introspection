@@ -45,6 +45,28 @@ BINARY_NAME = "introspect"
 #: whole edge can be driven by a double in tests.
 Runner = Callable[[list[str], "str | None"], "tuple[int, str, str]"]
 
+#: Shown once, by the caller, before the first ``crontab`` subprocess call a command invocation
+#: makes -- macOS only. macOS gates ``crontab`` (even a read-only ``-l``) behind a TCC
+#: "administer this computer" dialog the first time a given terminal app invokes it, and nothing
+#: about ``crontab`` itself warns the user first -- so an unwarned, security-minded user
+#: reasonably distrusts us. Same pattern as ``introspect.tui.webserver.PUBLIC_BIND_WARNING``: the
+#: text lives here, but printing/emitting it is the CLI/TUI layer's job (see module docstring) --
+#: this module never writes to stdout or the TUI log itself.
+MACOS_PERMISSION_NOTICE = (
+    "macOS may ask for permission -- that's the OS confirming your terminal may manage "
+    "scheduled jobs (one-time grant)."
+)
+
+
+def macos_permission_notice() -> str | None:
+    """:data:`MACOS_PERMISSION_NOTICE` on macOS, ``None`` everywhere else.
+
+    Callers print/emit this once per command invocation, right before the first call that will
+    actually touch the crontab -- not before every individual subprocess call within it (e.g.
+    ``install`` issues a read AND a write, but the notice is still shown only once).
+    """
+    return MACOS_PERMISSION_NOTICE if sys.platform == "darwin" else None
+
 
 class CronError(Exception):
     """A cron operation could not be completed (bad interval, unusable binary, crontab I/O)."""

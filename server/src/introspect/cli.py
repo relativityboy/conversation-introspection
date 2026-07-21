@@ -265,6 +265,9 @@ def _cmd_tui(args: argparse.Namespace) -> int:
 
 
 def _cmd_cron_status(args: argparse.Namespace) -> int:
+    notice = cron.macos_permission_notice()
+    if notice is not None:
+        print(notice)
     try:
         st = cron.status(cron.CrontabIO())
     except cron.CronError as exc:
@@ -277,6 +280,9 @@ def _cmd_cron_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_cron_install(args: argparse.Namespace) -> int:
+    notice = cron.macos_permission_notice()
+    if notice is not None:
+        print(notice)
     try:
         st = cron.install(cron.CrontabIO(), minutes=args.every)
     except cron.CronError as exc:
@@ -288,6 +294,9 @@ def _cmd_cron_install(args: argparse.Namespace) -> int:
 
 
 def _cmd_cron_remove(args: argparse.Namespace) -> int:
+    notice = cron.macos_permission_notice()
+    if notice is not None:
+        print(notice)
     try:
         removed = cron.remove(cron.CrontabIO())
     except cron.CronError as exc:

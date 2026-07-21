@@ -218,6 +218,9 @@ def _cmd_cron(ctx: CommandContext, args: list[str]) -> None:
 
 
 def _cron_show_status(ctx: CommandContext) -> None:
+    notice = cron.macos_permission_notice()
+    if notice is not None:
+        ctx.emit(notice)
     try:
         st = cron.status(ctx.crontab)
     except cron.CronError as exc:
@@ -236,6 +239,9 @@ def _cron_install(ctx: CommandContext, rest: list[str]) -> None:
         except ValueError:
             ctx.emit(f"cron: invalid minutes '{rest[0]}' -- must be an integer 1-60")
             return
+    notice = cron.macos_permission_notice()
+    if notice is not None:
+        ctx.emit(notice)
     try:
         st = cron.install(ctx.crontab, minutes=minutes)
     except cron.CronError as exc:
@@ -246,6 +252,9 @@ def _cron_install(ctx: CommandContext, rest: list[str]) -> None:
 
 
 def _cron_remove(ctx: CommandContext) -> None:
+    notice = cron.macos_permission_notice()
+    if notice is not None:
+        ctx.emit(notice)
     try:
         removed = cron.remove(ctx.crontab)
     except cron.CronError as exc:
@@ -445,7 +454,11 @@ def build_registry() -> CommandRegistry:
                 "CAVEAT: this edits your user crontab (the same one `crontab -e` shows). cron runs\n"
                 "the job SILENTLY -- on macOS there is no prompt and no notification; output is\n"
                 "appended to ~/.conversation-introspection/cron.log. Run /cron with no argument\n"
-                "(or `introspect cron status`) to confirm it is scheduled."
+                "(or `introspect cron status`) to confirm it is scheduled.\n"
+                "macOS CAVEAT: the FIRST time this command runs `crontab` (status, install, or\n"
+                "remove alike -- even a read-only `crontab -l` counts) macOS shows a one-time\n"
+                "permission dialog asking to let your terminal manage scheduled jobs. That's the\n"
+                "OS, not us; declining it makes cron commands fail with a permission error."
             ),
             examples=["/cron", "/cron install", "/cron install 5", "/cron remove"],
             handler=_cmd_cron,

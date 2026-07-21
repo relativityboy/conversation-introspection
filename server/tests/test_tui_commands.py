@@ -239,7 +239,12 @@ def test_unarchive_unknown(tmp_path: Path, fixture_tree: Path) -> None:
 # --- /cron (marker-line ownership over the user crontab) ---------------------------------
 
 
-def test_cron_status_not_installed(tmp_path: Path) -> None:
+def test_cron_status_not_installed(tmp_path: Path, monkeypatch) -> None:
+    import introspect.cron as cron_mod
+
+    # Pinned off darwin: this test is about the status text, not the macOS notice (covered
+    # separately below), and must stay deterministic regardless of the OS running the suite.
+    monkeypatch.setattr(cron_mod.sys, "platform", "linux")
     ctx, emitted = _ctx(tmp_path / "a.db", crontab=_fake_crontab("MAILTO=x\n"))
     _run(ctx, "/cron")
     assert emitted == ["cron: not installed"]
@@ -306,6 +311,72 @@ def test_cron_help_has_silent_caveat(tmp_path: Path) -> None:
     blob = "\n".join(emitted).lower()
     assert "crontab" in blob
     assert "silent" in blob  # the "cron runs silently" caveat is present
+
+
+def test_cron_help_has_macos_permission_caveat(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/help cron")
+    blob = "\n".join(emitted).lower()
+    assert "permission" in blob  # the macOS TCC-dialog caveat is present (distinct from "silent")
+
+
+# --- /cron: macOS TCC-permission-dialog forewarning ----------------------------------------
+# `crontab` (even `-l`) triggers an unwarned macOS permission dialog the first time a terminal
+# app invokes it; these tests pin `sys.platform` explicitly so behavior is deterministic
+# regardless of which OS actually runs the suite.
+
+
+def test_cron_status_shows_macos_notice_on_darwin(tmp_path: Path, monkeypatch) -> None:
+    import introspect.cron as cron_mod
+
+    monkeypatch.setattr(cron_mod.sys, "platform", "darwin")
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=_fake_crontab("MAILTO=x\n"))
+    _run(ctx, "/cron")
+    assert emitted == [cron_mod.MACOS_PERMISSION_NOTICE, "cron: not installed"]
+
+
+def test_cron_status_no_macos_notice_off_darwin(tmp_path: Path, monkeypatch) -> None:
+    import introspect.cron as cron_mod
+
+    monkeypatch.setattr(cron_mod.sys, "platform", "linux")
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=_fake_crontab("MAILTO=x\n"))
+    _run(ctx, "/cron")
+    assert cron_mod.MACOS_PERMISSION_NOTICE not in emitted
+
+
+def test_cron_install_shows_macos_notice_once_despite_read_and_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import introspect.cron as cron_mod
+
+    monkeypatch.setattr(cron_mod.sys, "platform", "darwin")
+    binary = make_exec(tmp_path)
+    monkeypatch.setattr(cron_mod, "resolve_binary", lambda **k: binary)
+    monkeypatch.setattr(cron_mod, "DEFAULT_LOG", tmp_path / "cron.log")
+    runner = FakeRunner(read_text="MAILTO=x\n")
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=cron_mod.CrontabIO(runner=runner))
+    _run(ctx, "/cron install 5")
+    # `install` issues a read AND a write subprocess call -- the notice must still appear once.
+    assert emitted.count(cron_mod.MACOS_PERMISSION_NOTICE) == 1
+
+
+def test_cron_install_bad_minutes_shows_no_macos_notice(tmp_path: Path, monkeypatch) -> None:
+    import introspect.cron as cron_mod
+
+    # No crontab call is ever made on this path (validation fails first) -- no notice either.
+    monkeypatch.setattr(cron_mod.sys, "platform", "darwin")
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/cron install abc")
+    assert cron_mod.MACOS_PERMISSION_NOTICE not in emitted
+
+
+def test_cron_remove_shows_macos_notice_on_darwin(tmp_path: Path, monkeypatch) -> None:
+    import introspect.cron as cron_mod
+
+    monkeypatch.setattr(cron_mod.sys, "platform", "darwin")
+    ctx, emitted = _ctx(tmp_path / "a.db", crontab=_fake_crontab("MAILTO=x\n"))
+    _run(ctx, "/cron remove")
+    assert cron_mod.MACOS_PERMISSION_NOTICE in emitted
 
 
 # --- web management -----------------------------------------------------------------------

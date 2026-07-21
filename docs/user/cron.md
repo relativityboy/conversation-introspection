@@ -32,6 +32,32 @@ preserved byte-for-byte. Key properties:
 `--every` accepts 1–60. Under the hood, `*/N * * * *` schedules "every N minutes" for N under 60,
 and 60 becomes `0 * * * *` (the top of every hour).
 
+## The macOS permission prompt
+
+The first time any `cron` command runs on macOS — `install`, `status`, or `remove` alike, since
+even a read-only `crontab -l` triggers it — macOS shows a permission dialog along the lines of
+*"Terminal would like to administer your computer."* This is macOS's TCC (Transparency, Consent,
+and Control) privacy system gating `crontab` as an "administer this Mac" capability; it's the OS
+doing that, not the tool asking for anything extra. It's a **one-time grant per terminal app**
+(Terminal.app, iTerm2, etc.) — once you allow it, later `cron` commands from that same app run
+without prompting again.
+
+Because that dialog can otherwise look alarming and unexplained, every `cron` command prints a
+one-line notice on macOS, before it touches the crontab for the first time:
+
+```
+macOS may ask for permission -- that's the OS confirming your terminal may manage scheduled jobs
+(one-time grant).
+```
+
+If you **decline** the dialog, every `cron` command — and the scheduled job itself, once
+installed — fails with a permission error until the grant is made. You can revisit it in System
+Settings → Privacy & Security (the exact entry varies by macOS version).
+
+A `launchd` agent (macOS's native scheduler) is a possible future alternative that would avoid
+this prompt entirely — it's under consideration, but not implemented; cron remains the supported
+mechanism for now, and it's the only one that works the same way on both macOS and Linux.
+
 ## The caveat: cron runs silently
 
 Once installed, cron fires the job with **no prompt and no notification** — on macOS especially,
