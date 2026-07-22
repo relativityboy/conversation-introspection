@@ -56,6 +56,8 @@ function makeSession(over: Partial<SessionDetail> = {}): SessionDetail {
     message_count: 1,
     favorite: false,
     match_snippet: null,
+    match_record_uuid: null,
+    match_agent_hex_id: null,
     transcripts: [MAIN_TRANSCRIPT],
     ...over,
   }

@@ -49,6 +49,8 @@ const SESSION_A: SessionSummary = {
   message_count: 4,
   favorite: false,
   match_snippet: null,
+  match_record_uuid: null,
+  match_agent_hex_id: null,
 }
 
 const SESSION_B: SessionSummary = {
@@ -62,6 +64,8 @@ const SESSION_B: SessionSummary = {
   message_count: 2,
   favorite: false,
   match_snippet: 'a <mark>tidal</mark> wave of changes',
+  match_record_uuid: 'rec-tidal',
+  match_agent_hex_id: null,
 }
 
 function renderSidebar(initialEntries: string[] = ['/']) {

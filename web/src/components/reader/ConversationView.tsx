@@ -53,22 +53,33 @@ export function ConversationView({
   chatOnly,
   setChatOnly,
 }: ConversationViewProps) {
-  // "View from the beginning" recovery. When the around-target isn't in this transcript (a 404
-  // — e.g. a stale deep link), the reader drops the around-seed and re-fetches offset 0 WITHOUT
-  // a route change. Adjust-state-during-render (see ConversationSearch) clears the override the
-  // moment a fresh deep link arrives, so a later valid /m/ target still seeds correctly.
-  const [fromBeginning, setFromBeginning] = useState(false)
+  // Re-seed control. `seedOverride` pins an explicit page — Top → offset 0, End → the last page,
+  // and the 404 "view from the beginning" recovery → offset 0 — winning over the deep-link
+  // `initialAroundUuid` WITHOUT a route change. `seedNonce` bumps on every press so the window
+  // remounts and re-seeds even when the target page is unchanged (e.g. Top while already at the
+  // top). Adjust-state-during-render (see ConversationSearch) clears the override the moment a
+  // fresh deep link arrives, so a later valid /m/ target still seeds correctly.
+  const [seedOverride, setSeedOverride] = useState<SeedOverride | null>(null)
+  const [seedNonce, setSeedNonce] = useState(0)
   const [seenAround, setSeenAround] = useState(initialAroundUuid)
   if (initialAroundUuid !== seenAround) {
     setSeenAround(initialAroundUuid)
-    setFromBeginning(false)
+    setSeedOverride(null)
   }
-  const around = fromBeginning ? undefined : initialAroundUuid
+  const reseed = (override: SeedOverride) => {
+    setSeedOverride(override)
+    setSeedNonce((n) => n + 1)
+  }
+  const around = seedOverride ? undefined : initialAroundUuid
 
   const initial = useMessages(
     transcriptId,
     withChatOnly(
-      around ? { around, limit: PAGE_SIZE } : { offset: 0, limit: PAGE_SIZE },
+      seedOverride
+        ? { offset: seedOverride.offset, limit: PAGE_SIZE }
+        : around
+          ? { around, limit: PAGE_SIZE }
+          : { offset: 0, limit: PAGE_SIZE },
       chatOnly,
     ),
   )
@@ -86,7 +97,11 @@ export function ConversationView({
       return (
         <Calm>
           message not found in this conversation{' '}
-          <button type="button" onClick={() => setFromBeginning(true)} style={LINK_BUTTON_STYLE}>
+          <button
+            type="button"
+            onClick={() => reseed({ offset: 0, landAtEnd: false })}
+            style={LINK_BUTTON_STYLE}
+          >
             view from the beginning
           </button>
           {chatOnly && (
@@ -110,18 +125,74 @@ export function ConversationView({
 
   // The key resets the window state whenever the identity of the stream changes — a new
   // transcript or a new around-target must re-seed rather than mutate the old window. Keying on
-  // the EFFECTIVE `around` also re-seeds cleanly when "view from the beginning" drops it, and on
-  // `chatOnly` so toggling remounts the window: an unfiltered edge page mixed into a filtered
-  // window would corrupt the offset math (§14.4). The remount is also the isolation boundary for
-  // an in-flight edge fetch — see MessageStream's pendingRef note.
+  // the EFFECTIVE `around` also re-seeds cleanly when a Top/End/"view from the beginning" drops
+  // it, on `chatOnly` so toggling remounts the window (an unfiltered edge page mixed into a
+  // filtered window would corrupt the offset math, §14.4), and on `seedNonce` so a repeated Top/
+  // End press re-seeds even when the target page is unchanged. The remount is also the isolation
+  // boundary for an in-flight edge fetch — see MessageStream's pendingRef note.
+  const total = initial.data.total
   return (
-    <MessageStream
-      key={`${transcriptId}:${around ?? ''}:${chatOnly ? 1 : 0}`}
-      transcriptId={transcriptId}
-      seed={initial.data}
-      initialAroundUuid={around}
-      chatOnly={chatOnly}
-    />
+    <div style={{ position: 'relative', height: '100%' }}>
+      <MessageStream
+        key={`${transcriptId}:${around ?? ''}:${chatOnly ? 1 : 0}:${seedNonce}`}
+        transcriptId={transcriptId}
+        seed={initial.data}
+        initialAroundUuid={around}
+        chatOnly={chatOnly}
+        landAtEnd={seedOverride?.landAtEnd ?? false}
+      />
+      <ReaderJumpControls
+        onTop={() => reseed({ offset: 0, landAtEnd: false })}
+        // End pins the LAST page within the CURRENT chat_only filter — `total` already respects
+        // it (server-side), so the same arithmetic works filtered or not.
+        onEnd={() => reseed({ offset: Math.max(0, total - PAGE_SIZE), landAtEnd: true })}
+      />
+    </div>
+  )
+}
+
+// The re-seed target: an explicit page offset plus whether to land scrolled to the bottom (End)
+// rather than the top (Top / recovery).
+interface SeedOverride {
+  offset: number
+  landAtEnd: boolean
+}
+
+const CONTROLS_WRAP_STYLE: CSSProperties = {
+  position: 'absolute',
+  bottom: 14,
+  right: 16,
+  display: 'flex',
+  gap: 6,
+  // Above the virtualized rows so the pills stay clickable while content scrolls beneath them.
+  zIndex: 2,
+}
+
+const CONTROL_BUTTON_STYLE: CSSProperties = {
+  fontFamily: 'var(--mono)',
+  fontSize: 11,
+  color: 'var(--mist)',
+  background: 'var(--shore)',
+  border: '1px solid transparent',
+  borderRadius: 999,
+  padding: '4px 10px',
+  cursor: 'pointer',
+}
+
+// NOTE(claude): floated at the bottom-right CORNER of the scroller. The raw-inspector `{}`
+// affordances sit at each turn's TOP-right, so a bottom-corner group never collides with the
+// topmost (always-visible) row's `{}`. Two quiet Still-Water pills — re-seed to offset 0 (top)
+// or the last page (end); the window remount does the scroll, so these hold no scroll state.
+function ReaderJumpControls({ onTop, onEnd }: { onTop: () => void; onEnd: () => void }) {
+  return (
+    <div style={CONTROLS_WRAP_STYLE}>
+      <button type="button" aria-label="top" onClick={onTop} style={CONTROL_BUTTON_STYLE}>
+        ↑ top
+      </button>
+      <button type="button" aria-label="end" onClick={onEnd} style={CONTROL_BUTTON_STYLE}>
+        ↓ end
+      </button>
+    </div>
   )
 }
 
@@ -143,9 +214,17 @@ interface MessageStreamProps {
   seed: MessageList
   initialAroundUuid?: string
   chatOnly: boolean
+  /** End re-seed: start scrolled to the LAST message of the seeded (last) page. */
+  landAtEnd: boolean
 }
 
-function MessageStream({ transcriptId, seed, initialAroundUuid, chatOnly }: MessageStreamProps) {
+function MessageStream({
+  transcriptId,
+  seed,
+  initialAroundUuid,
+  chatOnly,
+  landAtEnd,
+}: MessageStreamProps) {
   const [stream, setStream] = useState<StreamWindow>(() => ({
     firstItemIndex: seed.offset,
     items: seed.items,
@@ -171,7 +250,14 @@ function MessageStream({ transcriptId, seed, initialAroundUuid, chatOnly }: Mess
   // space) of the around-target within the seeded page; top of the stream when absent.
   // NOTE(claude): the target is CENTERED (2026-07-20 walk finding — top-edge landing hid the
   // context above the highlighted message and read as "not what I hoped for").
-  const [initialTopMostItemIndex] = useState<number | { index: number; align: 'center' }>(() => {
+  const [initialTopMostItemIndex] = useState<
+    number | { index: number; align: 'center' | 'end' }
+  >(() => {
+    // End re-seed lands on the LAST message of the last page; align 'end' pins it to the bottom
+    // of the viewport (vs the top-edge landing a bare index would give).
+    if (landAtEnd) {
+      return seed.items.length > 0 ? { index: seed.items.length - 1, align: 'end' } : 0
+    }
     if (!initialAroundUuid) return 0
     const index = seed.items.findIndex((m) => m.record_uuid === initialAroundUuid)
     return index === -1 ? 0 : { index, align: 'center' }

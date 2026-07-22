@@ -315,7 +315,13 @@ def list_sessions(
             get_search_index().best_snippets(db, content_only, q) if content_only else {}
         )
         for item in items:
-            item.match_snippet = snippets.get(item.session_uuid)
+            best = snippets.get(item.session_uuid)
+            if best is not None:
+                # All three fields move together — the location pair is meaningful only where a
+                # snippet is (same attribution rule; SessionSummary defaults them to None).
+                item.match_snippet = best.snippet
+                item.match_record_uuid = best.record_uuid
+                item.match_agent_hex_id = best.agent_hex_id
 
     return SessionList(items=items, total=total or 0)
 

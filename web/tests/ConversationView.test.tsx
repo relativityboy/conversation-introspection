@@ -348,6 +348,85 @@ describe('chat_only threads through every fetch site', () => {
   })
 })
 
+// Top / End reader controls: quiet buttons that re-seed the window at offset 0 (top) or the last
+// page (end). Both must thread chat_only through the re-seed fetch and work in the shared reader.
+describe('top / end reader controls', () => {
+  it('renders quiet top and end controls once the stream is loaded', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    renderView()
+    await screen.findAllByTestId('row')
+
+    expect(screen.getByRole('button', { name: 'top' })).toBeDefined()
+    expect(screen.getByRole('button', { name: 'end' })).toBeDefined()
+  })
+
+  it('top re-seeds the window at offset 0 (dropping an around seed)', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
+    renderView('uuid-90')
+    await screen.findAllByTestId('row')
+    expect(virtuosoProps.current?.firstItemIndex).toBe(40)
+
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    await userEvent.click(screen.getByRole('button', { name: 'top' }))
+
+    await waitFor(() => expect(virtuosoProps.current?.firstItemIndex).toBe(0))
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+    expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(0)
+  })
+
+  it('end fetches the LAST page (offset = total - PAGE_SIZE) and renders the final message', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    renderView()
+    await screen.findAllByTestId('row')
+
+    fetchMessages.mockResolvedValueOnce(pageOf(150, 100, 250))
+    await userEvent.click(screen.getByRole('button', { name: 'end' }))
+
+    await waitFor(() =>
+      expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 150, limit: 100 }),
+    )
+    // Window seeded at the last page (firstItemIndex 150) and scrolled to the final message.
+    expect(virtuosoProps.current?.firstItemIndex).toBe(150)
+    expect(virtuosoProps.current?.initialTopMostItemIndex).toEqual({ index: 99, align: 'end' })
+    const rows = screen.getAllByTestId('row')
+    expect(rows[rows.length - 1].textContent).toContain('message 249')
+  })
+
+  it('threads chat_only through the end re-seed fetch', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
+    renderView(undefined, true)
+    await screen.findAllByTestId('row')
+
+    fetchMessages.mockResolvedValueOnce(pageOf(150, 100, 250))
+    await userEvent.click(screen.getByRole('button', { name: 'end' }))
+
+    await waitFor(() =>
+      expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+        offset: 150,
+        limit: 100,
+        chat_only: true,
+      }),
+    )
+  })
+
+  it('top re-seeds an appended window back to just the first page (already-loaded)', async () => {
+    fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 300))
+    renderView()
+    await screen.findAllByTestId('row')
+
+    // Grow the window by appending the next page, then jump to top.
+    fetchMessages.mockResolvedValueOnce(pageOf(100, 100, 300))
+    fireEvent.click(screen.getByText('reach-end'))
+    await waitFor(() => expect(screen.getAllByTestId('row')).toHaveLength(200))
+
+    // A cheap re-seed: offset 0 is already cached, so no new fetch — the window remounts back to
+    // the single first page at firstItemIndex 0.
+    await userEvent.click(screen.getByRole('button', { name: 'top' }))
+    await waitFor(() => expect(screen.getAllByTestId('row')).toHaveLength(100))
+    expect(virtuosoProps.current?.firstItemIndex).toBe(0)
+  })
+})
+
 // §15.2: each row's `{}` opens the reader-level raw-record inspector, seeded on that row's uuid and
 // reading the loaded window as its traversal order. This is the wiring check; the modal's own
 // behavior matrix lives in RawRecordInspector.test.tsx.

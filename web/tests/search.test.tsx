@@ -43,6 +43,8 @@ function makeSession(over: Partial<SessionSummary> = {}): SessionSummary {
     message_count: 3,
     favorite: false,
     match_snippet: null,
+    match_record_uuid: null,
+    match_agent_hex_id: null,
     ...over,
   }
 }

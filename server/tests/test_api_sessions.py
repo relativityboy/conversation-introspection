@@ -209,8 +209,41 @@ def test_sessions_q_content_only_match_populates_snippet(client: TestClient) -> 
     body = client.get("/api/v1/sessions", params={"q": "horizon"}).json()
     assert _uuids(body["items"]) == [SESSION_UUID_1]
     assert body["total"] == 1
-    snippet = body["items"][0]["match_snippet"]
+    item = body["items"][0]
+    snippet = item["match_snippet"]
     assert snippet is not None and "<mark>" in snippet
+    # The snippet carries WHERE it matched so the sidebar can deep-link the click. "horizon" is a
+    # MAIN-transcript hit: record_uuid points at the matched message, agent_hex_id stays null.
+    assert item["match_record_uuid"] is not None
+    assert item["match_agent_hex_id"] is None
+
+
+def test_sessions_q_subagent_content_match_carries_agent_hex(client: TestClient) -> None:
+    # "cormorant" lives only in session 1's SUBAGENT transcript (conftest). The content match
+    # attributes to the subagent, so the sidebar deep-link must route through /a/{hex}/.
+    body = client.get("/api/v1/sessions", params={"q": "cormorant"}).json()
+    assert _uuids(body["items"]) == [SESSION_UUID_1]
+    item = body["items"][0]
+    assert item["match_snippet"] is not None and "<mark>" in item["match_snippet"]
+    assert item["match_record_uuid"] is not None
+    assert item["match_agent_hex_id"] == AGENT_HEX_ID
+
+
+def test_sessions_q_title_match_location_fields_null(
+    db_session: Session, client: TestClient
+) -> None:
+    # A title/uuid match carries no snippet, and the location pair follows the SAME attribution
+    # rule: match_record_uuid and match_agent_hex_id are null whenever match_snippet is null.
+    db_session.query(ChatSession).filter(ChatSession.session_uuid == SESSION_UUID_1).update(
+        {ChatSession.custom_title: "horizon overview"}
+    )
+    db_session.commit()
+
+    body = client.get("/api/v1/sessions", params={"q": "horizon"}).json()
+    item = body["items"][0]
+    assert item["match_snippet"] is None
+    assert item["match_record_uuid"] is None
+    assert item["match_agent_hex_id"] is None
 
 
 def test_sessions_q_title_match_snippet_null_even_when_content_matches(

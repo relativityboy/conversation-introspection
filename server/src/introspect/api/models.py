@@ -38,6 +38,12 @@ class SessionSummary(BaseModel):
     # uuid/title (a <mark>-wrapped best snippet); null on unfiltered lists, detail, and title/
     # uuid matches. See routes/sessions.py `list_sessions` for the match-attribution rule.
     match_snippet: str | None = None
+    # Where the match_snippet's winning hit lives, so the sidebar can deep-link the snippet click
+    # straight to the matched message. Both are null WHENEVER match_snippet is null (same
+    # attribution rule); match_agent_hex_id is additionally null for a MAIN-transcript hit and
+    # non-null only when the best hit sits in a subagent transcript (route via /a/{hex}/).
+    match_record_uuid: str | None = None
+    match_agent_hex_id: str | None = None
 
 
 class TranscriptInfo(BaseModel):

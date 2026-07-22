@@ -6,6 +6,7 @@ The public surface is the :class:`SearchIndex` protocol plus :func:`get_search_i
 """
 
 from introspect.search.fts5 import (
+    BestSnippet,
     Fts5SearchIndex,
     SearchHit,
     SearchIndex,
@@ -14,6 +15,7 @@ from introspect.search.fts5 import (
 )
 
 __all__ = [
+    "BestSnippet",
     "Fts5SearchIndex",
     "SearchHit",
     "SearchIndex",

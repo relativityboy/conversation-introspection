@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import { NavLink } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { useFavorite } from '../api/hooks'
 import type { SessionSummary } from '../api/types'
 import { renderSnippet } from '../lib/snippet'
@@ -32,6 +32,15 @@ const LINK_ACTIVE_STYLE: CSSProperties = {
   borderLeft: '2px solid var(--dragonfly)',
 }
 
+// A row segment (title block, meta block). The box padding/border/active state live on the
+// container div now, so a segment is just an unstyled block anchor carrying the click target.
+const SEGMENT_STYLE: CSSProperties = {
+  display: 'block',
+  textDecoration: 'none',
+  color: 'inherit',
+  cursor: 'pointer',
+}
+
 // One-line, ellipsized hint shown only when the sidebar's content search matched this session's
 // conversation body rather than its title/uuid (`session.match_snippet` non-null — see
 // SessionSummary in api/types.ts). `<mark>` spans inside it render via the same shared splitter
@@ -46,14 +55,21 @@ const SNIPPET_HINT_STYLE: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
-// NOTE(claude): the star is a SIBLING of the NavLink, absolutely positioned over its top-right
-// corner — NOT a child. An <a> must not contain a <button> (invalid interactive-inside-
-// interactive content model), and the sibling structure is also what guarantees a star click
-// can't navigate: the click never enters the anchor's subtree, so no preventDefault/
-// stopPropagation gymnastics are needed. The link's title row reserves right padding so text
-// never runs under the overlaid star.
+// NOTE(claude): TWO decisions govern this row's structure.
+//  1. The snippet hint is its OWN link (→ the matched message) while the title/meta link to the
+//     session top. An <a> can't nest inside another <a> (invalid interactive content), so the
+//     row is NOT one big anchor: the box (padding, border, active wash) lives on the container
+//     div, and title / snippet / meta are SIBLING block anchors inside it. Keeping the snippet
+//     visually between title and meta forces this split — title and meta are two separate
+//     same-target anchors rather than one, the honest cost of a mid-row second link.
+//  2. The star is a SIBLING of the box, absolutely positioned over its top-right corner — never
+//     a child (an <a> must not contain a <button>). The title row reserves right padding so text
+//     never runs under the overlaid star.
+// Active state moved off NavLink (the box isn't an anchor) onto a useLocation match that mirrors
+// NavLink's default end=false: active for this session's top AND any descendant (/m/, /a/…).
 export function SessionListItem({ session, search }: SessionListItemProps) {
   const favoriteMutation = useFavorite()
+  const { pathname } = useLocation()
 
   const title = displayTitle(session)
   const dateLabel = formatDate(session.last_activity_at)
@@ -61,41 +77,71 @@ export function SessionListItem({ session, search }: SessionListItemProps) {
     ? `${dateLabel} · ${session.message_count} msgs`
     : `${session.message_count} msgs`
 
+  const sessionTop = { pathname: `/s/${session.session_uuid}`, search }
+  const isActive =
+    pathname === `/s/${session.session_uuid}` ||
+    pathname.startsWith(`/s/${session.session_uuid}/`)
+
+  // The snippet deep-links to WHERE it matched: a subagent hit routes through the /a/{hex}/
+  // drill-in (mirrors HitSnippet — linking a subagent hit to the main path 404s), a main hit to
+  // /s/{uuid}/m/{record}. match_record_uuid is server-guaranteed present whenever match_snippet
+  // is; a snippet lacking one (contract violation OR old-server key-absent skew — the walk
+  // caught a live /m/undefined against a stale server) degrades to plain text. Loose != null
+  // deliberately: it must catch undefined too.
+  const snippetPath =
+    session.match_record_uuid != null
+      ? session.match_agent_hex_id
+        ? `/s/${session.session_uuid}/a/${session.match_agent_hex_id}/m/${session.match_record_uuid}`
+        : `/s/${session.session_uuid}/m/${session.match_record_uuid}`
+      : null
+
   return (
     <div className="convo-item-wrap" style={{ position: 'relative', marginBottom: 4 }}>
-      <NavLink
-        to={{ pathname: `/s/${session.session_uuid}`, search }}
-        className={({ isActive }) => `convo-item${isActive ? ' active' : ''}`}
-        style={({ isActive }) => ({ ...LINK_STYLE, ...(isActive ? LINK_ACTIVE_STYLE : null) })}
+      <div
+        className={`convo-item${isActive ? ' active' : ''}`}
+        style={{ ...LINK_STYLE, ...(isActive ? LINK_ACTIVE_STYLE : null) }}
       >
-        <div
-          style={{
-            fontFamily: 'var(--sans)',
-            fontSize: 14,
-            color: 'var(--moonpaper)',
-            lineHeight: 1.3,
-            paddingRight: 24,
-          }}
-        >
-          {title}
-        </div>
-        {session.match_snippet !== null && (
-          <div className="convo-snippet-hint" style={SNIPPET_HINT_STYLE}>
-            {renderSnippet(session.match_snippet)}
+        <Link to={sessionTop} style={SEGMENT_STYLE}>
+          <div
+            style={{
+              fontFamily: 'var(--sans)',
+              fontSize: 14,
+              color: 'var(--moonpaper)',
+              lineHeight: 1.3,
+              paddingRight: 24,
+            }}
+          >
+            {title}
           </div>
-        )}
-        <div
-          style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--mist)', marginTop: 5 }}
-        >
-          {projectEyebrow(session.project_slug)}
-        </div>
-        <div
-          style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--mist)', marginTop: 3 }}
-        >
-          {metaText}
-        </div>
-        <HorizonBand start={session.started_at} end={session.last_activity_at} variant="micro" />
-      </NavLink>
+        </Link>
+        {session.match_snippet !== null &&
+          (snippetPath !== null ? (
+            <Link
+              to={{ pathname: snippetPath, search }}
+              className="convo-snippet-hint"
+              style={{ ...SNIPPET_HINT_STYLE, display: 'block', textDecoration: 'none' }}
+            >
+              {renderSnippet(session.match_snippet)}
+            </Link>
+          ) : (
+            <div className="convo-snippet-hint" style={SNIPPET_HINT_STYLE}>
+              {renderSnippet(session.match_snippet)}
+            </div>
+          ))}
+        <Link to={sessionTop} style={SEGMENT_STYLE}>
+          <div
+            style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--mist)', marginTop: 5 }}
+          >
+            {projectEyebrow(session.project_slug)}
+          </div>
+          <div
+            style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--mist)', marginTop: 3 }}
+          >
+            {metaText}
+          </div>
+          <HorizonBand start={session.started_at} end={session.last_activity_at} variant="micro" />
+        </Link>
+      </div>
       <button
         type="button"
         className={session.favorite ? 'star star-on' : 'star'}

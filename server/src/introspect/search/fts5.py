@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
@@ -66,6 +66,22 @@ class SearchHit:
     timestamp: datetime | None
 
 
+class BestSnippet(NamedTuple):
+    """A session's single bm25-best snippet plus WHERE that winning hit lives.
+
+    ``record_uuid`` is the matched message's uuid (Message.record_uuid is non-null, so this is
+    always a real uuid); ``agent_hex_id`` is the subagent hex when the winning block sits in a
+    subagent transcript, ``None`` for a main-transcript hit — the same ``kind``-discriminated
+    rule :func:`introspect.api.routes.search._agent_hex_by_transcript` applies per hit. The
+    sidebar row uses the pair to deep-link the snippet click straight to the matched message
+    (``/s/{uuid}/m/{record_uuid}`` or ``/s/{uuid}/a/{agent_hex_id}/m/{record_uuid}``).
+    """
+
+    snippet: str
+    record_uuid: str
+    agent_hex_id: str | None
+
+
 class SearchIndex(Protocol):
     """The search surface the reader depends on. FTS5 today; a config point for tsvector later."""
 
@@ -87,7 +103,7 @@ class SearchIndex(Protocol):
     ) -> list[str]: ...
     def best_snippets(
         self, db: Session, session_uuids: list[str], q: str
-    ) -> dict[str, str]: ...
+    ) -> dict[str, BestSnippet]: ...
     def rebuild(self, db: Session) -> int: ...
 
 
@@ -181,13 +197,17 @@ _SESSION_UUIDS_SQL = "SELECT DISTINCT t.session_id AS session_uuid" + _SEARCH_FR
 # over that plain ``rank`` with ROW_NUMBER (portable standard SQL — survives a Postgres swap,
 # unlike SQLite's min()-bare-column idiom); the outer keeps rn = 1. A session with no matching
 # block produces no row and is therefore absent from the result — exactly the dict contract.
+# The winning row also carries WHERE it lives (m.record_uuid + t.kind/t.agent_hex_id) so the
+# sidebar can deep-link the snippet click to the matched message; those columns ride through
+# every layer untouched (they are not part of the ORDER BY, just passengers to rn = 1).
 _BEST_SNIPPETS_SQL = (
-    "SELECT session_uuid, snippet FROM ("
-    " SELECT session_uuid, snippet,"
+    "SELECT session_uuid, snippet, record_uuid, kind, agent_hex_id FROM ("
+    " SELECT session_uuid, snippet, record_uuid, kind, agent_hex_id,"
     " ROW_NUMBER() OVER (PARTITION BY session_uuid ORDER BY rank ASC, block_id ASC) AS rn"
     " FROM ("
     " SELECT t.session_id AS session_uuid,"
     " snippet(content_fts, 0, '<mark>', '</mark>', '…', 12) AS snippet,"
+    " m.record_uuid AS record_uuid, t.kind AS kind, t.agent_hex_id AS agent_hex_id,"
     " bm25(content_fts) AS rank, content_fts.rowid AS block_id"
     " FROM content_fts"
     " JOIN content_blocks cb ON cb.id = content_fts.rowid"
@@ -373,13 +393,16 @@ class Fts5SearchIndex:
 
     def best_snippets(
         self, db: Session, session_uuids: list[str], q: str
-    ) -> dict[str, str]:
-        """Each listed session's single bm25-best snippet (``<mark>``-wrapped), batched.
+    ) -> dict[str, BestSnippet]:
+        """Each listed session's single bm25-best :class:`BestSnippet`, batched.
 
-        ONE query for the whole page (Donovan ruling 2026-07-19: keep the round-trip count at
-        one for the future Postgres backend). Sessions with no match for ``q`` are absent from
-        the returned dict. An empty ``session_uuids`` list (or an empty sanitized ``q``) short
-        -circuits to ``{}`` with zero DB queries. No input can raise.
+        The value carries the ``<mark>``-wrapped snippet AND where the winning hit lives
+        (``record_uuid`` + subagent ``agent_hex_id``) so the caller can deep-link the snippet
+        click to the matched message. ONE query for the whole page (Donovan ruling 2026-07-19:
+        keep the round-trip count at one for the future Postgres backend). Sessions with no
+        match for ``q`` are absent from the returned dict. An empty ``session_uuids`` list (or
+        an empty sanitized ``q``) short-circuits to ``{}`` with zero DB queries. No input can
+        raise.
         """
         if not session_uuids:
             return {}
@@ -391,8 +414,18 @@ class Fts5SearchIndex:
         # refactor into a per-session loop (Donovan ruling 2026-07-19: round-trip count stays
         # at one so a Postgres backend can serve it identically).
         stmt = text(_BEST_SNIPPETS_SQL).bindparams(bindparam("session_uuids", expanding=True))
-        rows = db.execute(stmt, {"match": match, "session_uuids": session_uuids}).all()
-        return {session_uuid: snippet for session_uuid, snippet in rows}
+        rows = db.execute(stmt, {"match": match, "session_uuids": session_uuids}).mappings().all()
+        # agent_hex_id is meaningful only for subagent transcripts — a main hit resolves to None
+        # even though its transcript's agent_hex_id column is likewise null (mirrors the search
+        # route's _agent_hex_by_transcript kind-discriminated rule, kept explicit not incidental).
+        return {
+            row["session_uuid"]: BestSnippet(
+                snippet=row["snippet"],
+                record_uuid=row["record_uuid"],
+                agent_hex_id=row["agent_hex_id"] if row["kind"] == "subagent" else None,
+            )
+            for row in rows
+        }
 
     def rebuild(self, db: Session) -> int:
         """Clear and re-index every text block from scratch. Returns the number indexed.

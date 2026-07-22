@@ -18,9 +18,10 @@ import pytest
 from sqlalchemy import text
 
 from introspect.models import ContentBlock, Message
-from introspect.search import SearchHit, get_search_index, sanitize_query
+from introspect.search import BestSnippet, SearchHit, get_search_index, sanitize_query
 from introspect.search.fts5 import _TEXT_PREDICATE
 from tests.conftest import (
+    AGENT_HEX_ID,
     PROJECT_SLUG_1,
     PROJECT_SLUG_2,
     SESSION_UUID_1,
@@ -362,16 +363,38 @@ def test_best_snippets_picks_bm25_best_not_first_rowid(db_session, indexed_fixtu
 
     snippets = idx.best_snippets(db_session, [SESSION_UUID_1], "quantum")
     assert SESSION_UUID_1 in snippets
-    body = snippets[SESSION_UUID_1]
-    assert "BETAMARK" in body and "ALPHAMARK" not in body
-    assert "<mark>" in body  # marks are included
+    best = snippets[SESSION_UUID_1]
+    assert isinstance(best, BestSnippet)
+    assert "BETAMARK" in best.snippet and "ALPHAMARK" not in best.snippet
+    assert "<mark>" in best.snippet  # marks are included
+    # The BestSnippet carries WHERE the winning hit lives: the strong block hangs off the
+    # "horizon" message (a MAIN transcript), so record_uuid is that message's uuid and
+    # agent_hex_id is None (main, not a subagent).
+    assert best.record_uuid == db_session.get(Message, msg_id).record_uuid
+    assert best.agent_hex_id is None
+
+
+def test_best_snippets_subagent_hit_carries_agent_hex(db_session, indexed_fixture):
+    """A best snippet living in a SUBAGENT transcript carries that subagent's hex + record uuid.
+
+    "cormorant" appears only in session 1's subagent transcript (conftest), so the winning
+    block's identity is the subagent's: agent_hex_id == AGENT_HEX_ID (never None the way a
+    main-transcript hit resolves), and record_uuid is the subagent message's uuid.
+    """
+    snippets = idx.best_snippets(db_session, [SESSION_UUID_1], "cormorant")
+    assert SESSION_UUID_1 in snippets
+    best = snippets[SESSION_UUID_1]
+    assert "cormorant" in _strip_marks(best.snippet).lower()
+    assert best.agent_hex_id == AGENT_HEX_ID
+    msg_id = _message_id_for_phrase(db_session, "cormorant")
+    assert best.record_uuid == db_session.get(Message, msg_id).record_uuid
 
 
 def test_best_snippets_absent_for_no_match_sessions(db_session, indexed_fixture):
     # "horizon" is in session 1 only; session 2 is listed but must be absent from the dict.
     snippets = idx.best_snippets(db_session, [SESSION_UUID_1, SESSION_UUID_2], "horizon")
     assert set(snippets) == {SESSION_UUID_1}
-    assert "horizon" in _strip_marks(snippets[SESSION_UUID_1]).lower()
+    assert "horizon" in _strip_marks(snippets[SESSION_UUID_1].snippet).lower()
 
 
 def test_best_snippets_empty_input_runs_zero_queries(db_session, indexed_fixture):

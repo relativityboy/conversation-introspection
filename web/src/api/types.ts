@@ -23,6 +23,12 @@ export interface SessionSummary {
   // uuid/title (a <mark>-wrapped best snippet); null on unfiltered lists, detail, and title/
   // uuid matches. See server routes/sessions.py `list_sessions` for the match-attribution rule.
   match_snippet: string | null
+  // Where match_snippet's winning hit lives, so the sidebar can deep-link the snippet click to
+  // the matched message. Both null WHENEVER match_snippet is null; match_agent_hex_id is
+  // additionally null for a main-transcript hit, non-null only for a subagent-transcript hit
+  // (routes the deep link through /a/{hex}/, mirroring HitOut.agent_hex_id).
+  match_record_uuid: string | null
+  match_agent_hex_id: string | null
 }
 
 export interface TranscriptInfo {
