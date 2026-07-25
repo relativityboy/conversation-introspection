@@ -34,9 +34,11 @@ from introspect.api.routes.admin import router as admin_router
 from introspect.api.routes.archive import router as archive_router
 from introspect.api.routes.favorites import router as favorites_router
 from introspect.api.routes.records import router as records_router
+from introspect.api.routes.resume import router as resume_router
 from introspect.api.routes.search import router as search_router
 from introspect.api.routes.sessions import router as sessions_router
 from introspect.api.routes.titles import router as titles_router
+from introspect.cron import Runner
 from introspect.db import get_engine, session_factory, upgrade_to_head
 
 
@@ -44,6 +46,8 @@ def create_app(
     db_path: Path | None = None,
     source_root: Path | None = None,
     ui_dist: Path | None = None,
+    terminal_app: str | None = None,
+    resume_runner: "Runner | None" = None,
 ) -> FastAPI:
     """Build a fully-migrated app instance bound to one archive DB.
 
@@ -72,6 +76,8 @@ def create_app(
     app.state.session_factory = session_factory(engine)
     app.state.db_path = resolved_db_path
     app.state.source_root = resolved_source_root
+    app.state.terminal_app = config.terminal_app(terminal_app)
+    app.state.resume_runner = resume_runner  # tests inject a fake; None = real subprocess
 
     register_error_handlers(app)
     app.include_router(sessions_router)
@@ -81,6 +87,7 @@ def create_app(
     app.include_router(archive_router)
     app.include_router(records_router)
     app.include_router(admin_router)
+    app.include_router(resume_router)
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:

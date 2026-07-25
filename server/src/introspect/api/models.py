@@ -113,3 +113,16 @@ class Problem(BaseModel):
     status: int
     title: str
     detail: str
+
+
+class ResumeResult(BaseModel):
+    """POST /sessions/{uuid}/resume outcome (spec §17.2/§17.3). `mode` is the launch outcome
+    only; `restored` is orthogonal."""
+
+    restored: bool
+    launched: bool
+    mode: str
+    command: str
+    cwd: str | None
+    live_path: str
+    detail: str | None
