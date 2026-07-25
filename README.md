@@ -79,9 +79,9 @@ cd conversation-introspection
 
 `install.sh` checks your machine has what it needs, then runs the whole setup: it creates the
 Python environment (`uv sync`), installs and builds the reading room (`npm ci && npm run build`),
-and runs your first archive import. **Re-running it is always safe** — completed steps are
-detected and skipped, so if any step fails you just fix the cause and run `./install.sh` again and
-it resumes where it left off. (Prefer to do it by hand, or want the details? See
+and runs your first archive import. **Re-running it is always safe** — every step re-converges, so
+the same command repairs a half-finished install, and re-running after `git pull` picks up new
+dependencies and rebuilds the reading room. (Prefer to do it by hand, or want the details? See
 [`docs/user/install.md`](docs/user/install.md). Flags: `--yes` to accept every prompt
 non-interactively, `--skip-import` to set up the tooling without importing yet.)
 
@@ -155,6 +155,8 @@ A few things worth knowing about the reading room — full details in
 - Every message row carries a small mono **`{}`** that opens a **raw-record inspector**: the exact
   stored transcript line, pretty-printed with a raw-bytes toggle, and ◀/▶ (or the arrow keys) to
   step through neighbouring records.
+- `⟲ resume` — reopen any archived conversation in a terminal via `claude --resume`, restoring the
+  transcript first if Claude Code deleted it.
 
 ### Prove the trust promise to yourself
 

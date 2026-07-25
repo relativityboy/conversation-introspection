@@ -10,7 +10,8 @@ cd conversation-introspection
 
 `install.sh` is an **orchestrator**: it does no install work of its own. Every step shells out to
 a tested tool (`uv`, `npm`, the `introspect` CLI) and reports honestly what happened. Running it
-is safe to repeat — see [Idempotency and resuming](#idempotency-and-resuming) below.
+is safe to repeat, and repeating it is also how you update — see
+[Re-running](#re-running-and-how-you-update) below.
 
 ## What it does, in order
 
@@ -35,23 +36,31 @@ is safe to repeat — see [Idempotency and resuming](#idempotency-and-resuming) 
 | `--skip-import` | Skip step 5. Useful if you want to set up the tooling now and import later. |
 | `--help`, `-h` | Print usage and exit. |
 
-## Idempotency and resuming
+## Re-running (and how you update)
 
-Each step is gated on the **real artifact it produces**, not a marker file. That's a deliberate
-honesty choice: if you delete `server/.venv`, the next run rebuilds it; a stamp file would have
-lied and skipped it.
+**Every step runs on every invocation.** The installer doesn't try to work out whether a step is
+still needed — each underlying tool already reconciles its own state and is safe to repeat, so the
+installer's job is just to run them and report honestly what happened.
 
-| Step | Considered done when… |
-|---|---|
-| `uv sync` | `server/.venv/` exists |
-| `npm ci` | `web/node_modules/` exists |
-| `npm run build` | `web/dist/index.html` exists |
-| first import | the archive DB exists (`$INTROSPECT_DB`, else `~/.conversation-introspection/archive.db`) |
+That means re-running `./install.sh` is how you do three different things:
 
-So a second run is a no-op that prints an "already done" line for each completed step, and a run
-that **failed partway through resumes at the failed step** — the earlier steps are detected and
-skipped. When a step fails, the installer tells you *which* step, shows the tail of that tool's
-output (the *why*), and reminds you that re-running resumes there.
+- **Repair a partial install.** A tool that fails can still leave its output behind — `uv sync`
+  creates `server/.venv` before it builds dependencies, `npm ci` leaves a partial `node_modules`
+  if an install dies midway, and an import creates the archive DB before it reads any transcripts.
+  Re-running repairs all of those, because nothing is skipped on the basis of what's on disk.
+- **Pick up changes you pulled.** After `git pull`, a re-run installs new dependencies and
+  rebuilds the reading room. This matters: a stale `web/dist` would otherwise keep serving you the
+  *old* UI with no indication anything was out of date.
+- **Confirm you're set up.** A run against an already-current checkout does no harm; the tools
+  each report that there's nothing to change.
+
+When a step fails, the installer tells you *which* step, shows the tail of that tool's output (the
+*why*), and stops. Fix the cause, run it again.
+
+> **The cost, measured:** `npm ci` reconciles by deleting and reinstalling `node_modules` from the
+> lockfile, by design — so it does real work every time rather than detecting it can skip. On a
+> warm npm cache that is about 2 seconds; a whole no-change re-run (`uv sync` + `npm ci` + build)
+> measured ~3 seconds. A cold cache costs whatever downloading your dependencies costs.
 
 ## The manual path
 
@@ -66,3 +75,13 @@ cd ../server && uv run introspect import
 
 See the [root README's prerequisites](../../README.md#prerequisites) for how to install `uv`, and
 [Keeping it running (cron)](cron.md) for the scheduled belt you'll want next.
+
+## Environment variables
+
+Every subcommand and the web server accept a few optional environment variables to override defaults:
+
+| Variable | What it does |
+|---|---|
+| `INTROSPECT_DB` | Archive database file path. Default: `~/.conversation-introspection/archive.db`. |
+| `INTROSPECT_SOURCE_ROOT` | Root of the transcript file tree. Default: `~/.claude/projects/`. Used for testing and custom setups. |
+| `INTROSPECT_TERMINAL_APP` | Terminal application opened by resume links (macOS). Default: `Terminal`. |

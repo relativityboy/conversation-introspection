@@ -129,6 +129,26 @@ out-of-band act: you run [`introspect unarchive <uuid>`](tui.md#slash-commands) 
 the TUI) with a uuid you already know. Making "un-hide this" require knowing the identity — rather
 than picking it off a list the UI shows you — is the whole point of archiving.
 
+## Resuming a conversation
+
+Every conversation header has a `⟲ resume` link. Clicking it opens a terminal in the
+session's original project directory with `claude --resume <session-id>` already running —
+whether or not Claude Code still has the transcript.
+
+- If the live `.jsonl` is still under `~/.claude/projects/`, it is left exactly as-is.
+- If Claude Code has deleted it, the label reads `⟲ restore & resume` and the archive first
+  writes the byte-identical transcript back where Claude Code expects it. Your live file is
+  never overwritten — restore only happens when the file is missing.
+- The terminal app defaults to macOS Terminal; set `INTROSPECT_TERMINAL_APP` (e.g. `iTerm`)
+  before `introspect serve` to use another.
+- If `claude` isn't on your PATH, the opened terminal copies the resume command to your
+  clipboard and says so — paste and run.
+- If the original project directory no longer exists, or you're not on macOS, nothing is
+  launched; the reader shows the exact command to run instead.
+
+Launching happens on the machine running `introspect serve`. That's the point on your own
+Mac — but it's one more reason never to bind the server beyond 127.0.0.1.
+
 ## "Not found" states
 
 The app never pretends. Unknown or missing things get honest, recoverable states:
