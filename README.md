@@ -79,9 +79,9 @@ cd conversation-introspection
 
 `install.sh` checks your machine has what it needs, then runs the whole setup: it creates the
 Python environment (`uv sync`), installs and builds the reading room (`npm ci && npm run build`),
-and runs your first archive import. **Re-running it is always safe** — every step re-converges, so
-the same command repairs a half-finished install, and re-running after `git pull` picks up new
-dependencies and rebuilds the reading room. (Prefer to do it by hand, or want the details? See
+and runs your first archive import. **Re-running it is always safe** — completed steps are
+detected and skipped, so if any step fails you just fix the cause and run `./install.sh` again and
+it resumes where it left off. (Prefer to do it by hand, or want the details? See
 [`docs/user/install.md`](docs/user/install.md). Flags: `--yes` to accept every prompt
 non-interactively, `--skip-import` to set up the tooling without importing yet.)
 
