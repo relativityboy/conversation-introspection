@@ -84,6 +84,7 @@ function makeSession(over: Partial<SessionDetail> = {}): SessionDetail {
     match_record_uuid: null,
     match_agent_hex_id: null,
     transcripts: [MAIN_TRANSCRIPT, makeSubagentTranscript()],
+    on_disk: true,
     ...over,
   }
 }

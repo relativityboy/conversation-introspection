@@ -42,6 +42,7 @@ export interface TranscriptInfo {
 
 export interface SessionDetail extends SessionSummary {
   transcripts: TranscriptInfo[]
+  on_disk: boolean
 }
 
 export interface BlockOut {
@@ -78,6 +79,18 @@ export interface Problem {
   status: number
   title: string
   detail: string
+}
+
+export type ResumeMode = 'launched' | 'missing_cwd' | 'open_failed' | 'unsupported_platform'
+
+export interface ResumeResult {
+  restored: boolean
+  launched: boolean
+  mode: ResumeMode
+  command: string
+  cwd: string | null
+  live_path: string
+  detail: string | null
 }
 
 // --- server/src/introspect/api/routes/sessions.py (route-local envelopes) ---------------

@@ -9,6 +9,7 @@ import {
 } from '../components/search/ConversationSearch'
 import { ArchiveButton } from '../components/ArchiveButton'
 import { ChatOnlyToggle } from '../components/reader/ChatOnlyToggle'
+import { ResumeButton } from '../components/ResumeButton'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
 import { TitleEditor } from '../components/TitleEditor'
@@ -109,6 +110,9 @@ export function SessionPage() {
             <span>
               {session.message_count} msgs{chatOnly ? ' · conversation only' : ''}
             </span>
+            {/* §17: the door back in. Archived sessions never render this page (§15.1 detail
+              404), so no archived-branch is needed here — the hiding is structural. */}
+            <ResumeButton sessionUuid={session.session_uuid} onDisk={session.on_disk} />
             {/* The archive's headline capability, one glance from every conversation: the raw
               records back out as JSONL. Plain <a> (not router Link) — it's an API endpoint. */}
             <a

@@ -16,6 +16,7 @@ import {
   fetchSession,
   fetchSessions,
   fetchStatus,
+  postResume,
   putArchive,
   putFavorite,
   putSessionTitle,
@@ -178,6 +179,15 @@ export function useArchiveSession() {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
       queryClient.invalidateQueries({ queryKey: ['search'] })
     },
+  })
+}
+
+export function useResumeSession() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (uuid: string) => postResume(uuid),
+    // ['sessions'] prefixes the detail key ['sessions', uuid] — a restore flips on_disk.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sessions'] }),
   })
 }
 

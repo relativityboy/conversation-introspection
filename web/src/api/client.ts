@@ -13,6 +13,7 @@ import type {
   MessageList,
   Problem,
   ProjectOut,
+  ResumeResult,
   SearchScope,
   SessionDetail,
   SessionList,
@@ -246,6 +247,14 @@ export function putSessionTitle(uuid: string, title: string): Promise<undefined>
 export function putArchive(uuid: string): Promise<undefined> {
   return apiFetch<undefined>(`/sessions/${encodeURIComponent(uuid)}/archive`, {
     method: 'PUT',
+  })
+}
+
+// --- resume ---------------------------------------------------------------------------------
+
+export function postResume(uuid: string): Promise<ResumeResult> {
+  return apiFetch<ResumeResult>(`/sessions/${encodeURIComponent(uuid)}/resume`, {
+    method: 'POST',
   })
 }
 
