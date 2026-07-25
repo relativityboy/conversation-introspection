@@ -1,4 +1,4 @@
-"""Runtime configuration: filesystem locations for the archive DB and source root.
+"""Runtime configuration: archive DB and source-root locations, plus the resume-links terminal app.
 
 Precedence for every setting: explicit argument > environment variable > default.
 """

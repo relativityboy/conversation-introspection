@@ -34,6 +34,10 @@ function statusText(r: ResumeResult): string {
       return `${prefix}couldn't open terminal (${r.detail}) — run: ${r.command}`
     case 'unsupported_platform':
       return `${prefix}launch is macOS-only — run: ${r.command}`
+    default: {
+      const exhausted: never = r.mode
+      return exhausted
+    }
   }
 }
 
