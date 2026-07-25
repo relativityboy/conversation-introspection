@@ -12,7 +12,7 @@ export interface SidebarParams {
 /** Reads the sidebar's own params out of a location's search params, defaulting absent values
  * to "no filter" (`filter: ''`, `fav: false`). Anything other than the literal `fav=1` reads as
  * `false` rather than throwing, since a malformed/foreign query string should just mean "off".
- * Zero-legacy ruling (Donovan, ledger #4): the retired `?title=` key is never read here — a URL
+ * Zero-legacy ruling (relativityboy, ledger #4): the retired `?title=` key is never read here — a URL
  * built against the old contract lands unfiltered, not silently upgraded. */
 export function readSidebarParams(searchParams: URLSearchParams): SidebarParams {
   return {

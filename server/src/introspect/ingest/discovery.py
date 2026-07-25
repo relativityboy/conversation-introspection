@@ -45,7 +45,7 @@ class AgentMeta:
 @dataclass
 class DiscoveredFile:
     path: Path
-    project_slug: str  # source dir name, e.g. "-Users-donovan-projects--ai-jetwalls"
+    project_slug: str  # source dir name, e.g. "-Users-relativityboy-projects--ai-jetwalls"
     session_uuid: str
     kind: str  # 'main' | 'subagent' | 'backup'
     agent_hex_id: str | None  # subagents only, from filename agent-<hex>.jsonl

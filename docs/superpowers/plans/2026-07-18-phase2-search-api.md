@@ -1,7 +1,7 @@
 # Phase 2: Search + API — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-> **Git rule (overrides skill templates):** Donovan owns pushes; the controller commits per approved plan (authored as Claude). Workers only `git add` — never commit.
+> **Git rule (overrides skill templates):** relativityboy owns pushes; the controller commits per approved plan (authored as Claude). Workers only `git add` — never commit.
 
 **Goal:** Full-text search over the archive (FTS5 behind the `SearchIndex` interface) and a localhost FastAPI read layer (`/api/v1`) with favorites and an import trigger — the server the Phase 3 UI will sit on.
 
@@ -332,4 +332,4 @@ def test_interpret_failure_rolls_back_index_with_rows(db_session, fixture_tree, 
 - Reviewer calibration: full two-stage review for Tasks 2, 3, 8 (interface-defining / Phase-1-touching / concurrency); single review for 1, 5, 6; controller spot-check for 4, 7.
 - Model calibration: opus for 2, 3, 5, 8; sonnet for 1, 4, 6, 7.
 - Every implementer re-runs the FULL suite — Phase 1 regression protection is non-negotiable, especially Tasks 1 (migration touches divergence invariant) and 3 (touches interpret/reparse).
-- Commit checkpoints (controller, authored as Claude): after Task 3 (search core), after Task 8 (API complete), after Task 9 (verified). Donovan reviews before any push, as always.
+- Commit checkpoints (controller, authored as Claude): after Task 3 (search core), after Task 8 (API complete), after Task 9 (verified). relativityboy reviews before any push, as always.

@@ -338,7 +338,7 @@ function MessageStream({
         // NOTE(claude): 1200px of pre-rendered runway above the viewport (2026-07-20 walk
         // finding): startReached then fires while the join is still off-screen, so the
         // prepend's scrollTop correction can't fight an in-flight user scroll — that fight
-        // was the scrollbar-teleport + stutter Donovan felt when scrolling up from a
+        // was the scrollbar-teleport + stutter relativityboy felt when scrolling up from a
         // deep-linked message. Bottom kept modest; appends don't correct scrollTop.
         // NOTE(claude): 1200 measured better than 2400 (2026-07-20 Playwright runs: 1 vs 3
         // scroll-corrections per 12-step sweep) — a larger runway triggers MORE prepends per

@@ -148,7 +148,7 @@ describe('content filter debounce', () => {
     )
   })
 
-  // Zero-legacy ruling (Donovan, ledger #4): the retired `?title=` key must NOT seed the input.
+  // Zero-legacy ruling (relativityboy, ledger #4): the retired `?title=` key must NOT seed the input.
   // A deep link built against the old contract lands on an unfiltered list, not a silently
   // resurrected filter.
   it('does not seed the input from the retired `?title=` param', async () => {

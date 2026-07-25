@@ -28,7 +28,7 @@ describe('readSidebarParams', () => {
     })
   })
 
-  // Zero-legacy ruling (Donovan, ledger #4): pre-release, the old `?title=` key just dies — no
+  // Zero-legacy ruling (relativityboy, ledger #4): pre-release, the old `?title=` key just dies — no
   // fallback read. A URL carrying only the retired key must read as "no filter", not silently
   // resurrect the old param under the new name.
   it('does not read the retired `title` key — a `?title=` URL yields an empty filter', () => {

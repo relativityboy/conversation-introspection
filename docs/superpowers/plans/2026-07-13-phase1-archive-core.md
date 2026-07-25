@@ -1,7 +1,7 @@
 # Phase 1: Archive Core — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-> **Git rule (overrides skill templates):** Donovan commits; workers only `git add`. Every "Commit" step in the canonical template is a **Stage** step here.
+> **Git rule (overrides skill templates):** relativityboy commits; workers only `git add`. Every "Commit" step in the canonical template is a **Stage** step here.
 
 **Goal:** A working importer + archive: every Claude Code transcript line captured byte-faithfully into SQLite, interpreted through a versioned schema registry, reconstructable to identical bytes, driven by a cron-safe CLI.
 
@@ -392,7 +392,7 @@ def parse_line(raw: bytes) -> ParseResult:
   @dataclass
   class DiscoveredFile:
       path: Path
-      project_slug: str        # source dir name, e.g. "-Users-donovan-projects--ai-jetwalls"
+      project_slug: str        # source dir name, e.g. "-Users-relativityboy-projects--ai-jetwalls"
       session_uuid: str
       kind: str                # 'main' | 'subagent' | 'backup'
       agent_hex_id: str | None # subagents only, from filename agent-<hex>.jsonl
@@ -1055,7 +1055,7 @@ Review anomaly counts. `info`-severity drift on unmodeled fields is expected and
 - [ ] **Step 3: Live byte-compare (the guarantee, proven on real data)**
 
 ```bash
-S=$(ls ~/.claude/projects/-Users-donovan-projects--ai-conversation-introspection/*.jsonl | head -1)
+S=$(ls ~/.claude/projects/-Users-relativityboy-projects--ai-conversation-introspection/*.jsonl | head -1)
 UUID=$(basename "$S" .jsonl)
 uv run introspect export "$UUID" -o /tmp/roundtrip.jsonl
 cmp "$S" /tmp/roundtrip.jsonl && echo "BYTE-IDENTICAL"
@@ -1064,7 +1064,7 @@ Expected: `BYTE-IDENTICAL`. (Today's session file keeps growing — if cmp fails
 
 - [ ] **Step 4: Record the capture**
 
-Append to the session plan-log in `claude_notes/`: import counts, anomaly summary, byte-compare result, and the DB size. **The 12 survivors are now archived.** Note cron line for Donovan to register when he chooses: `*/15 * * * * <abs-path>/uv run --project <abs-path>/server introspect import`
+Append to the session plan-log in `claude_notes/`: import counts, anomaly summary, byte-compare result, and the DB size. **The 12 survivors are now archived.** Note cron line for relativityboy to register when he chooses: `*/15 * * * * <abs-path>/uv run --project <abs-path>/server introspect import`
 
 ---
 

@@ -398,7 +398,7 @@ class Fts5SearchIndex:
 
         The value carries the ``<mark>``-wrapped snippet AND where the winning hit lives
         (``record_uuid`` + subagent ``agent_hex_id``) so the caller can deep-link the snippet
-        click to the matched message. ONE query for the whole page (Donovan ruling 2026-07-19:
+        click to the matched message. ONE query for the whole page (relativityboy ruling 2026-07-19:
         keep the round-trip count at one for the future Postgres backend). Sessions with no
         match for ``q`` are absent from the returned dict. An empty ``session_uuids`` list (or
         an empty sanitized ``q``) short-circuits to ``{}`` with zero DB queries. No input can
@@ -411,7 +411,7 @@ class Fts5SearchIndex:
             return {}
         # NOTE(claude): session_uuids expands into an IN(...) — the same 999-variable ceiling
         # as session_uuids_matching (see its NOTE). This is deliberately ONE query; do NOT
-        # refactor into a per-session loop (Donovan ruling 2026-07-19: round-trip count stays
+        # refactor into a per-session loop (relativityboy ruling 2026-07-19: round-trip count stays
         # at one so a Postgres backend can serve it identically).
         stmt = text(_BEST_SNIPPETS_SQL).bindparams(bindparam("session_uuids", expanding=True))
         rows = db.execute(stmt, {"match": match, "session_uuids": session_uuids}).mappings().all()

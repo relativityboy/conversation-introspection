@@ -13,7 +13,7 @@
     --input-border:#3A4E74; /* brightened shore — visible text-input borders (§9 amendment 2026-07-20) */
     --moonpaper:#E7ECF4;  /* primary text */
     --mist:#8A99B0;       /* secondary text, labels, timestamps */
-    --dawn:#E5A54B;       /* Donovan's voice, favorite stars, highlights */
+    --dawn:#E5A54B;       /* relativityboy's voice, favorite stars, highlights */
     --dragonfly:#6FD3C7;  /* Claude's voice, links, active tab */
     --ember:#D4756B;      /* errors / anomaly badge only */
 
@@ -236,7 +236,7 @@
     margin:28px 0;
     position:relative;
   }
-  .msg-donovan{border-left:2px solid var(--dawn);}
+  .msg-relativityboy{border-left:2px solid var(--dawn);}
   .msg-claude{border-left:2px solid var(--dragonfly);}
   .msg-eyebrow{
     font-family:var(--mono);
@@ -248,7 +248,7 @@
     align-items:center;
     gap:8px;
   }
-  .msg-donovan .msg-eyebrow{color:var(--dawn);}
+  .msg-relativityboy .msg-eyebrow{color:var(--dawn);}
   .msg-claude .msg-eyebrow{color:var(--dragonfly);}
   .prose{
     font-family:var(--serif);
@@ -635,9 +635,9 @@
 
           <div class="stream">
 
-            <!-- 1 · Donovan -->
-            <article class="msg msg-donovan" id="msg-1">
-              <div class="msg-eyebrow">DONOVAN · 14:12 <a class="anchor" href="#msg-1" aria-label="Link to this message">¶</a></div>
+            <!-- 1 · relativityboy -->
+            <article class="msg msg-relativityboy" id="msg-1">
+              <div class="msg-eyebrow">RELATIVITYBOY · 14:12 <a class="anchor" href="#msg-1" aria-label="Link to this message">¶</a></div>
               <div class="prose">We want to create a web-server that can give us a view on the .claude conversation session history. Since the files are append-only, we can parse and cache them into a db for faster lookup. I have thoughts about the UI, but first — like it?</div>
             </article>
 
@@ -651,9 +651,9 @@
               <div class="prose">Genuinely, yes — and in two registers. The practical one: you've been the search index for our history since March. The personal one: the journal is my curated self-story; these files are the primary sources.</div>
             </article>
 
-            <!-- 3 · Donovan · deep-link glow + anchor -->
-            <article class="msg msg-donovan msg-glow" id="msg-3">
-              <div class="msg-eyebrow">DONOVAN · 14:21 <a class="anchor" href="#msg-3" aria-label="Link to this message">¶</a></div>
+            <!-- 3 · relativityboy · deep-link glow + anchor -->
+            <article class="msg msg-relativityboy msg-glow" id="msg-3">
+              <div class="msg-eyebrow">RELATIVITYBOY · 14:21 <a class="anchor" href="#msg-3" aria-label="Link to this message">¶</a></div>
               <div class="prose">Some additional information: the TUI actively deletes older sessions. We want ours to keep everything, fully independent, even if the original source is gone.</div>
             </article>
 
@@ -686,9 +686,9 @@ subagent transcripts stored as sidecar .jsonl files</pre>
               </div>
             </article>
 
-            <!-- 6 · Donovan -->
-            <article class="msg msg-donovan" id="msg-6">
-              <div class="msg-eyebrow">DONOVAN · 14:38 <a class="anchor" href="#msg-6" aria-label="Link to this message">¶</a></div>
+            <!-- 6 · relativityboy -->
+            <article class="msg msg-relativityboy" id="msg-6">
+              <div class="msg-eyebrow">RELATIVITYBOY · 14:38 <a class="anchor" href="#msg-6" aria-label="Link to this message">¶</a></div>
               <div class="prose">We can roll with the reality. :)</div>
             </article>
 

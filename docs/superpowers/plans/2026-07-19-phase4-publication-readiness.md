@@ -1,12 +1,12 @@
 # Phase 4: Publication Readiness — Implementation Plan (revision 2)
 
 > **Revision 1:** Opus critique FIX-THEN-SHIP — 9 findings (2 blockers, 3 majors, 4 minors), all accepted, zero vetoed, folded in. Fourth consecutive all-real critique.
-> **Revision 2 (Donovan's in-session rulings, 2026-07-19):** snippets BATCHED (`best_snippets`, one query per request); attachments-IN confirmed; ZERO-LEGACY — the single `project=` param, the `title=` alias, and the legacy `?title=` client read are all removed, not deprecated. Spec §8/§14.1 amended to match.
+> **Revision 2 (relativityboy's in-session rulings, 2026-07-19):** snippets BATCHED (`best_snippets`, one query per request); attachments-IN confirmed; ZERO-LEGACY — the single `project=` param, the `title=` alias, and the legacy `?title=` client read are all removed, not deprecated. Spec §8/§14.1 amended to match.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-> **Git rule:** Donovan owns pushes; the controller commits at checkpoints (authored as Claude). Workers only `git add` — never commit.
+> **Git rule:** relativityboy owns pushes; the controller commits at checkpoints (authored as Claude). Workers only `git add` — never commit.
 
-**Goal:** The four features that make the reading room publishable (spec §14): sidebar content+uuid search with snippet hints, the project-filter subsystem (app-level chip bar, Donovan's keyboard spec verbatim), editable session titles (user-data layer), and a sticky conversation-only mode.
+**Goal:** The four features that make the reading room publishable (spec §14): sidebar content+uuid search with snippet hints, the project-filter subsystem (app-level chip bar, relativityboy's keyboard spec verbatim), editable session titles (user-data layer), and a sticky conversation-only mode.
 
 **Spec authority:** `docs/superpowers/specs/2026-07-13-conversation-introspection-design.md` **§14** — final, all critique rulings baked. Where this plan quotes a §14 resolution it is restating, not re-deciding. Phase 1–3 API/UI shapes are binding contracts — read them from source (`server/src/introspect/api/models.py`, routes, `web/src/api/types.ts`), never from memory.
 
@@ -20,9 +20,9 @@
 
 ## Resolved ambiguities (spec-fidelity ledger — every gap named, nothing silent)
 
-1. **Attachments in chat_only — `type IN ('user','assistant','attachment')`.** §14.4's headline ruling (Donovan 2026-07-19: "pasted things are things a human said") governs over the stale `('user','assistant')` bullet below it. **CONFIRMED by Donovan in-session 2026-07-19.**
-2. **Snippets are BATCHED — Donovan ruling 2026-07-19 (supersedes the critiqued per-session interpretation).** The Protocol method is `best_snippets(db, session_uuids: list[str], q) -> dict[str, str]`: ONE call per request returning all of the page's content-matched snippets in one query. "Keep DB query count down if we can get the same quality results." Spec §14.1 amended to match.
-3. **The single `project=` param is REMOVED — Donovan ruling 2026-07-19: "We haven't released. Zero code debt, zero legacy stuff."** `projects=` (comma list) is the only project filter; the old param, its filter code, its test, and the client's unused `SessionFilters.project` all go.
+1. **Attachments in chat_only — `type IN ('user','assistant','attachment')`.** §14.4's headline ruling (relativityboy 2026-07-19: "pasted things are things a human said") governs over the stale `('user','assistant')` bullet below it. **CONFIRMED by relativityboy in-session 2026-07-19.**
+2. **Snippets are BATCHED — relativityboy ruling 2026-07-19 (supersedes the critiqued per-session interpretation).** The Protocol method is `best_snippets(db, session_uuids: list[str], q) -> dict[str, str]`: ONE call per request returning all of the page's content-matched snippets in one query. "Keep DB query count down if we can get the same quality results." Spec §14.1 amended to match.
+3. **The single `project=` param is REMOVED — relativityboy ruling 2026-07-19: "We haven't released. Zero code debt, zero legacy stuff."** `projects=` (comma list) is the only project filter; the old param, its filter code, its test, and the client's unused `SessionFilters.project` all go.
 4. **No `title=` alias — same zero-legacy ruling applied (controller extension, one word reverses it).** `q=` replaces `title=` outright on `GET /sessions`; the client writes/reads only `?filter=`, no legacy `?title=` read. The alias's only beneficiaries would have been our own pre-release bookmarks. Spec §14.1 amended.
 5. **uuid-substring match is case-insensitive** (lower both sides; stored uuids are lowercase hex).
 6. **The chat-only toggle control renders in BOTH readers' headers** (SessionPage and SubagentPage) — §14.4 says the mode "applies in main and subagent readers" and the control "lives in the conversation header"; both readers have one.
@@ -35,7 +35,7 @@
 - **SearchIndex Protocol boundary (binding, protects §13 Postgres):** all new FTS SQL lives in `search/fts5.py` behind the Protocol. Routes compose Protocol calls only.
 - **List contract:** every sessions-list query path — filtered, unioned, project-scoped — preserves the three-key ordering exactly. The snippet is a hint, never a re-rank (§14.1 critique #2).
 - **User-data invariant:** `user_titles` follows the favorites family — never touched by import/reparse (tested identically), structurally excluded from export (export reads raw bytes only), never merged into the reparse-owned `sessions.*title` caches.
-- **Donovan's project-filter keyboard spec is verbatim-binding** (§14.2): down-arrow-when-empty opens the alphabetized list; typing filters dir_slug `%str%`; double-esc (two Escape keydowns within **400ms**): list-open-or-text-present → clear+close, else → remove ALL chips; select → chip right of box + clear box; chip 'x' removes; zero chips → "all projects" chip.
+- **relativityboy's project-filter keyboard spec is verbatim-binding** (§14.2): down-arrow-when-empty opens the alphabetized list; typing filters dir_slug `%str%`; double-esc (two Escape keydowns within **400ms**): list-open-or-text-present → clear+close, else → remove ALL chips; select → chip right of box + clear box; chip 'x' removes; zero chips → "all projects" chip.
 - **Everything-in-the-URL** rule continues: `projects=slug1,slug2` comma list on sidebar, `/search`, `/s/*`; sidebar param renamed `?filter=` (client reads legacy `?title=`, writes strip it).
 - **chat_only windowing correctness:** the server computes total/ordinal/page/target within the filtered set; the client threads `chat_only` through ALL THREE fetch sites and the remount key (§14.4 critique #3).
 - TS strict, eslint+prettier clean, ruff clean, type hints on public functions. RED-first per task; the full suite (`server: uv run pytest`, `web: npm test`) green + linters at every task close. Stage-only workflow (git add; write-tree snapshots for review diffs).
@@ -75,7 +75,7 @@ web/tests/ProjectFilterBar.test.tsx  TitleEditor.test.tsx  chatOnly.test.ts(x)  
 
 **Contract (§14.1 critique #1 as amended 2026-07-19, binding signatures):**
 - `session_uuids_matching(db, q, project_slugs: list[str] | None) -> list[str]` — the one corpus-wide FTS pass; returns distinct session uuids whose text content matches sanitized `q`, optionally constrained to projects.
-- `best_snippets(db, session_uuids: list[str], q) -> dict[str, str]` — **BATCHED (ledger #2, Donovan ruling)**: one query returning each listed session's best-bm25 snippet (`<mark>`s included); sessions with no match are absent from the dict. Empty input list → empty dict, zero queries.
+- `best_snippets(db, session_uuids: list[str], q) -> dict[str, str]` — **BATCHED (ledger #2, relativityboy ruling)**: one query returning each listed session's best-bm25 snippet (`<mark>`s included); sessions with no match are absent from the dict. Empty input list → empty dict, zero queries.
 - `search(db, query, *, session_uuid=None, project_slugs: list[str] | None = None, limit, offset)` — existing signature gains `project_slugs` (global-scope filtering for `/search`).
 All three sanitize via the existing `sanitize_query` (empty sanitized → empty results, never raises — extend `test_sanitize_never_raises` family). Join path for project constraint: `content_fts → content_blocks → messages → transcripts → sessions → projects.dir_slug` — SQL stays in this module's template constants (extend the `{session_filter}` slot pattern).
 
@@ -145,7 +145,7 @@ All three sanitize via the existing `sanitize_query` (empty sanitized → empty 
 
 ---
 
-### Task 8: Web — ProjectFilterBar component (Donovan's keyboard spec, verbatim)
+### Task 8: Web — ProjectFilterBar component (relativityboy's keyboard spec, verbatim)
 
 **Files:** `components/ProjectFilterBar.tsx`, `App.tsx` + `App.css` (new grid row: areas `'topbar topbar' / 'nav main' / 'footer footer'`), `lib/urlState.ts` (+`readProjects`/`writeProjects` — comma list ↔ `string[]`). Tests: `ProjectFilterBar.test.tsx` (the task's center of gravity), `urlState.test.ts` additions.
 
@@ -228,4 +228,4 @@ Against the production archive: sidebar content search (uuid fragment, a user-ti
 - **Dependencies:** T1→T3 (user-title LIKE); T2→T3,T4; T5 independent; T6 after T1/T3/T4/T5 freeze the API shapes; T7 needs T3+T6; T8 needs T6; T9 needs T8; T10 needs T1+T6; T11 needs T5+T6. T2 can run parallel to T1; T5 parallel to T1–T4; web tasks sequence T6 → {T7, T8} → {T9, T10, T11}.
 - **Model guidance:** judgment-dense (T2, T3, T8, T11) → opus implementers + full review; pattern-copy/mechanical (T1, T4, T5, T6, T7, T9, T10, T12) → sonnet implementers with named-risk briefs; review depth calibrated per task risk as ever. Name CONCRETE risks in reviewer briefs — the ledger items above are the seed list.
 - **Budget note (§14 execution):** the `?title=`→`?filter=` rename churn (11 urlState tests + Sidebar assertions) is budgeted inside T7 — mechanical, not scope creep.
-- **NOT Phase 4** (do not drift): ¶ copy-link anchors, drift-floor schema loop (info anomalies), ghost recovery (§13), push-to-public decision (Donovan's).
+- **NOT Phase 4** (do not drift): ¶ copy-link anchors, drift-floor schema loop (info anomalies), ghost recovery (§13), push-to-public decision (relativityboy's).

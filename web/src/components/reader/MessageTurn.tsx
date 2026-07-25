@@ -9,7 +9,7 @@ import { ToolBlock } from './ToolBlock'
 
 // NOTE(claude): speaker labels are deliberately generic — "YOU" / "CLAUDE" / "SYSTEM", never
 // personal names. This repo is public and reads whatever archive it's pointed at; other
-// people's archives aren't Donovan's, so the reader must not bake anyone's identity in.
+// people's archives aren't relativityboy's, so the reader must not bake anyone's identity in.
 //
 // "attachment" is the fourth voice (Task P4-F1): a block-bearing attachment is a queued command
 // the human typed that the harness delivered as a system record. It is labelled SYSTEM (YOU) —

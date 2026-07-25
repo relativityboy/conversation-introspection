@@ -354,7 +354,7 @@ def get_session(session_uuid: str, db: Session = Depends(get_db)) -> SessionDeta
 
 #: The §14.4 "conversation only" predicate: everything a human said or pasted stays IN,
 #: only `system`-type rows (CLI-internal chatter) are hidden. Attachments are IN by
-#: Donovan's ruling ("pasted things are things a human said") -- do not narrow this to
+#: relativityboy's ruling ("pasted things are things a human said") -- do not narrow this to
 #: `("user", "assistant")`, that was a stale draft.
 _CHAT_ONLY_TYPES = ("user", "assistant", "attachment")
 
