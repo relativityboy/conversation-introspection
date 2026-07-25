@@ -59,6 +59,9 @@ class TranscriptInfo(BaseModel):
 
 class SessionDetail(SessionSummary):
     transcripts: list[TranscriptInfo]
+    # Whether the live .jsonl still exists under source_root (detail-only -- the sidebar has no
+    # resume affordance, §17.7). Default keeps other `from_attributes` construction paths valid.
+    on_disk: bool = False
 
 
 class BlockOut(BaseModel):

@@ -15,7 +15,7 @@ never here). Two shape rules are load-bearing and enforced by the spec:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import ColumnElement, func, or_, select, true
 from sqlalchemy.orm import Session
@@ -327,7 +327,9 @@ def list_sessions(
 
 
 @router.get("/sessions/{session_uuid}", response_model=SessionDetail)
-def get_session(session_uuid: str, db: Session = Depends(get_db)) -> SessionDetail:
+def get_session(
+    session_uuid: str, request: Request, db: Session = Depends(get_db)
+) -> SessionDetail:
     row = db.execute(
         select(ChatSession, Project.dir_slug, _main_message_count(), _is_favorited(), _user_title())
         .join(Project, ChatSession.project_id == Project.id)
@@ -345,10 +347,13 @@ def get_session(session_uuid: str, db: Session = Depends(get_db)) -> SessionDeta
         .order_by(Transcript.kind, Transcript.id)  # 'main' before 'subagent'
     ).scalars().all()
 
+    live_path = request.app.state.source_root / slug / f"{session_uuid}.jsonl"
+
     summary = _summary(session, slug, count, fav, u_title)
     return SessionDetail(
         **summary.model_dump(),
         transcripts=[TranscriptInfo.model_validate(t) for t in transcripts],
+        on_disk=live_path.exists(),
     )
 
 

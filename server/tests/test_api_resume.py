@@ -87,3 +87,12 @@ def test_resume_restores_missing_file_byte_identical(
     body = client.post(f"/api/v1/sessions/{SESSION_UUID_1}/resume").json()
     assert body["restored"] is True
     assert live.read_bytes() == expected
+
+
+def test_on_disk_flips_after_restore(client: TestClient, fixture_tree: Path) -> None:
+    live = fixture_tree / PROJECT_SLUG_1 / f"{SESSION_UUID_1}.jsonl"
+    assert client.get(f"/api/v1/sessions/{SESSION_UUID_1}").json()["on_disk"] is True
+    live.unlink()
+    assert client.get(f"/api/v1/sessions/{SESSION_UUID_1}").json()["on_disk"] is False
+    client.post(f"/api/v1/sessions/{SESSION_UUID_1}/resume")
+    assert client.get(f"/api/v1/sessions/{SESSION_UUID_1}").json()["on_disk"] is True
