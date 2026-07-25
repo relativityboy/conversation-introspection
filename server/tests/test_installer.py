@@ -42,29 +42,52 @@ _SYS_TOOLS = [
 # Each fake appends "<name> <argv>" to $FAKE_ARGV_LOG, then optionally fails (when its
 # FAKE_*_FAIL_ON env matches the joined argv) or simulates the real tool's on-disk side effect.
 
+# Each fake has TWO failure knobs, because the two shapes are not equivalent:
+#   FAKE_*_FAIL_ON        fails BEFORE the side effect -- a clean failure, no artifact.
+#   FAKE_*_DIRTY_FAIL_ON  produces the artifact and THEN fails.
+# The dirty shape is the real one -- `uv sync` creates .venv before a dependency build can blow
+# up, and the import creates the db before any capture work -- and it is precisely the shape an
+# artifact-presence gate cannot see.
+
 FAKE_UV = """#!/bin/sh
 printf '%s\\n' "uv $*" >> "$FAKE_ARGV_LOG"
+side_effect() {
+  if [ "$1" = "sync" ]; then mkdir -p .venv; fi
+  if [ "$1" = "run" ] && [ "$2" = "introspect" ] && [ "$3" = "import" ]; then
+    mkdir -p "$HOME/.conversation-introspection"
+    : > "$HOME/.conversation-introspection/archive.db"
+    echo "imported files=0 records=0 dupes=0 anomalies=0 gone=0 status=ok"
+  fi
+}
+if [ -n "${FAKE_UV_DIRTY_FAIL_ON:-}" ] && [ "$*" = "$FAKE_UV_DIRTY_FAIL_ON" ]; then
+  side_effect "$@"
+  echo "uv: simulated dirty failure for '$*'" >&2
+  exit 1
+fi
 if [ -n "${FAKE_UV_FAIL_ON:-}" ] && [ "$*" = "$FAKE_UV_FAIL_ON" ]; then
   echo "uv: simulated failure for '$*'" >&2
   exit 1
 fi
-if [ "$1" = "sync" ]; then mkdir -p .venv; fi
-if [ "$1" = "run" ] && [ "$2" = "introspect" ] && [ "$3" = "import" ]; then
-  mkdir -p "$HOME/.conversation-introspection"
-  : > "$HOME/.conversation-introspection/archive.db"
-  echo "imported files=0 records=0 dupes=0 anomalies=0 gone=0 status=ok"
-fi
+side_effect "$@"
 exit 0
 """
 
 FAKE_NPM = """#!/bin/sh
 printf '%s\\n' "npm $*" >> "$FAKE_ARGV_LOG"
+side_effect() {
+  if [ "$*" = "ci" ]; then mkdir -p node_modules; fi
+  if [ "$*" = "run build" ]; then mkdir -p dist; : > dist/index.html; fi
+}
+if [ -n "${FAKE_NPM_DIRTY_FAIL_ON:-}" ] && [ "$*" = "$FAKE_NPM_DIRTY_FAIL_ON" ]; then
+  side_effect "$@"
+  echo "npm ERR! simulated dirty failure for 'npm $*'" >&2
+  exit 1
+fi
 if [ -n "${FAKE_NPM_FAIL_ON:-}" ] && [ "$*" = "$FAKE_NPM_FAIL_ON" ]; then
   echo "npm ERR! simulated failure for 'npm $*'" >&2
   exit 1
 fi
-if [ "$*" = "ci" ]; then mkdir -p node_modules; fi
-if [ "$*" = "run build" ]; then mkdir -p dist; : > dist/index.html; fi
+side_effect "$@"
 exit 0
 """
 
@@ -256,17 +279,60 @@ def test_uv_missing_prompt_declined_aborts_without_changes(tmp_path: Path) -> No
     assert not (sb.root / "server" / ".venv").exists()
 
 
-def test_idempotent_second_run_skips_completed_steps(tmp_path: Path) -> None:
+def test_second_run_reexecutes_every_step_so_pulled_changes_land(tmp_path: Path) -> None:
+    """Existing artifacts must NOT short-circuit a re-run.
+
+    Each tool converges on its own, so re-running is safe. Skipping is what silently serves a
+    stale UI after `git pull` and ignores an updated lockfile -- the artifact proves a step once
+    produced output, never that the output is current.
+    """
     sb = _make_sandbox(tmp_path)
     first = sb.run("--yes")
     assert first.returncode == 0, first.stderr
     sb.truncate_argv()
     second = sb.run("--yes")
     assert second.returncode == 0, second.stderr
-    # No completed work step re-executes on the second run.
-    assert _work_steps_in(sb.argv) == []
-    # And the user is told each was already done.
-    assert second.stdout.lower().count("already") >= 3
+    # Every work step runs again, in dependency order.
+    assert sb.argv_lines == _WORK_STEPS
+    # And the installer does not claim anything was "already done".
+    assert "already done" not in second.stdout.lower()
+
+
+def test_failed_sync_that_left_a_venv_reruns_on_the_next_invocation(tmp_path: Path) -> None:
+    # `uv sync` creates .venv, then the dependency build fails: presence is not success.
+    sb = _make_sandbox(tmp_path)
+    first = sb.run("--yes", env_extra={"FAKE_UV_DIRTY_FAIL_ON": "sync"})
+    assert first.returncode != 0
+    assert (sb.root / "server" / ".venv").is_dir()  # the artifact the failed run left behind
+    sb.truncate_argv()
+    second = sb.run("--yes")
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "uv sync" in sb.argv_lines  # repaired, not skipped
+
+
+def test_failed_npm_ci_that_left_node_modules_reruns_on_the_next_invocation(tmp_path: Path) -> None:
+    # `npm ci` wipes and repopulates node_modules; a mid-install failure leaves a partial tree.
+    sb = _make_sandbox(tmp_path)
+    first = sb.run("--yes", env_extra={"FAKE_NPM_DIRTY_FAIL_ON": "ci"})
+    assert first.returncode != 0
+    assert (sb.root / "web" / "node_modules").is_dir()
+    sb.truncate_argv()
+    second = sb.run("--yes")
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "npm ci" in sb.argv_lines
+
+
+def test_failed_import_that_left_a_db_reruns_on_the_next_invocation(tmp_path: Path) -> None:
+    # The import commits its schema-version stamp and ImportRun row before any capture work, so a
+    # fatal import still leaves the db file on disk. Ingestion is idempotent; re-running is right.
+    sb = _make_sandbox(tmp_path)
+    first = sb.run("--yes", env_extra={"FAKE_UV_DIRTY_FAIL_ON": "run introspect import"})
+    assert first.returncode != 0
+    assert (sb.home / ".conversation-introspection" / "archive.db").is_file()
+    sb.truncate_argv()
+    second = sb.run("--yes")
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "uv run introspect import" in sb.argv_lines
 
 
 def test_midstep_failure_names_the_step_and_exits_nonzero(tmp_path: Path) -> None:
@@ -283,7 +349,7 @@ def test_midstep_failure_names_the_step_and_exits_nonzero(tmp_path: Path) -> Non
     assert not (sb.root / "web" / "dist" / "index.html").exists()
 
 
-def test_rerun_after_failure_resumes_at_failed_step(tmp_path: Path) -> None:
+def test_rerun_after_failure_completes_every_step(tmp_path: Path) -> None:
     sb = _make_sandbox(tmp_path)
     first = sb.run("--yes", env_extra={"FAKE_NPM_FAIL_ON": "run build"})
     assert first.returncode != 0
@@ -291,10 +357,7 @@ def test_rerun_after_failure_resumes_at_failed_step(tmp_path: Path) -> None:
     sb.truncate_argv()
     second = sb.run("--yes")
     assert second.returncode == 0, second.stdout + second.stderr
-    steps = sb.argv_lines
-    # Completed steps are skipped; the run resumes at the previously-failed build step.
-    assert "uv sync" not in steps
-    assert "npm ci" not in steps
-    assert "npm run build" in steps
-    assert "uv run introspect import" in steps
+    # Every step runs again -- including the ones that already succeeded, whose artifacts prove
+    # nothing about whether they are still current.
+    assert sb.argv_lines == _WORK_STEPS
     assert (sb.root / "web" / "dist" / "index.html").is_file()

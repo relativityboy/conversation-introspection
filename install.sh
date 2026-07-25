@@ -19,29 +19,42 @@
 #   --skip-import    do not run the first import (step 4).
 #   --help, -h       show usage and exit.
 #
-# IDEMPOTENCY / RESUME (design):
-#   Each step is gated on the REAL artifact it produces, not a marker file -- an artifact is the
-#   honest signal (delete server/.venv and the next run rebuilds it; a stamp file would lie):
-#       step 1  done iff  server/.venv/                 exists
-#       step 2  done iff  web/node_modules/             exists
-#       step 3  done iff  web/dist/index.html           exists
-#       step 4  done iff  the archive db                exists ($INTROSPECT_DB, else
-#                         ~/.conversation-introspection/archive.db)
-#   A completed step prints an "already done" line and is skipped -- so a second run is a no-op,
-#   and a run that resumes after a failure re-executes only the steps whose artifact is missing.
+# ALWAYS-RUN (design):
+#   Every step runs on every invocation. The TOOLS are the convergence layer -- uv sync, npm ci,
+#   npm run build and the importer each reconcile their own state and are safe to repeat -- so the
+#   installer's job is to run them and report honestly, never to guess whether they still need it.
+#
+#   This replaces an earlier design that skipped a step whenever the artifact it produces already
+#   existed (server/.venv, web/node_modules, web/dist/index.html, the archive db). That gate was
+#   wrong in two independent directions:
+#     * presence != success. `uv sync` creates .venv BEFORE a dependency build can fail; `npm ci`
+#       leaves a partial node_modules when an install dies midway; the importer commits its
+#       schema-version stamp and ImportRun row before any capture work. Each leaves its artifact
+#       behind on failure -- so the next run skipped precisely the step that had not finished.
+#     * presence != current. A stale web/dist survives `git pull`, so the installer silently kept
+#       serving the OLD UI, and an updated uv.lock / package-lock.json was ignored outright
+#       whenever the deps directory happened to exist.
+#   The old rationale ("a stamp file would lie") was half right: a stamp file does lie -- and so
+#   does an artifact's mere presence, which just looks more physical. The honest signal is the
+#   tool's own convergence check, which is the thing the gating routed around.
+#
+#   Accepted cost, measured rather than guessed: `npm ci` converges by wiping and reinstalling
+#   node_modules, so it does real work every time. On a warm npm cache a no-change re-run of ALL
+#   steps measured ~3s end to end (uv sync 9ms, npm ci 2s, vite build 0.4s). Comparing lockfile
+#   mtimes would shave that and would reintroduce a proxy-for-truth -- the same class of mistake
+#   this design removes. Cheap enough that the tradeoff is not close.
 #
 # FAILURE HONESTY:
-#   A failing step prints WHICH step failed, the tail of the tool's captured output (the WHY),
-#   and that re-running ./install.sh resumes at that step. Preflight failures happen before any
-#   step, so a missing prerequisite never leaves a half-built tree.
+#   A failing step prints WHICH step failed, the tail of the tool's captured output (the WHY), and
+#   that re-running ./install.sh is safe: every step re-converges, so a fixed environment reaches a
+#   complete install. Preflight failures happen before any step, so a missing prerequisite never
+#   leaves a half-built tree.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$REPO_ROOT/server"
 WEB_DIR="$REPO_ROOT/web"
-ARCHIVE_DB="${INTROSPECT_DB:-$HOME/.conversation-introspection/archive.db}"
-
 ASSUME_YES=0
 SKIP_IMPORT=0
 
@@ -67,11 +80,11 @@ ${C_BOLD}install.sh${C_OFF} -- set up conversation-introspection (deps, web buil
 Usage: ./install.sh [--yes] [--skip-import]
 
   --yes, -y       Non-interactive: accept every prompt (e.g. installing uv).
-  --skip-import   Skip the first archive import.
+  --skip-import   Skip the archive import.
   --help, -h      Show this help.
 
-Re-running is safe: completed steps are detected and skipped, so a run that failed
-partway resumes where it left off.
+Re-running is safe, and is how you update: every step re-converges, so a re-run
+repairs a partial install and picks up whatever you pulled (new deps, new UI sources).
 EOF
 }
 
@@ -177,45 +190,19 @@ run_step() {
   printf '%s  --- last output from the failed step ---%s\n' "$C_DIM" "$C_OFF" >&2
   tail -n 20 "$log" 2>/dev/null | sed 's/^/  /' >&2
   printf '%s  ----------------------------------------%s\n' "$C_DIM" "$C_OFF" >&2
-  log_err "fix the problem above, then re-run ./install.sh -- it resumes at this step (completed steps are skipped)."
+  log_err "fix the problem above, then re-run ./install.sh -- every step re-converges, so the re-run completes the install."
   rm -f "$log"
   exit 1
 }
 
-step_uv_sync() {
-  if [ -d "$SERVER_DIR/.venv" ]; then
-    log_skip "Python deps (uv sync) -- already done (server/.venv exists)"
-    return
-  fi
-  run_step "Install Python deps (cd server && uv sync)" "$SERVER_DIR" uv sync
-}
-
-step_npm_ci() {
-  if [ -d "$WEB_DIR/node_modules" ]; then
-    log_skip "Web deps (npm ci) -- already done (web/node_modules exists)"
-    return
-  fi
-  run_step "Install web deps (cd web && npm ci)" "$WEB_DIR" npm ci
-}
-
-step_npm_build() {
-  if [ -f "$WEB_DIR/dist/index.html" ]; then
-    log_skip "Web UI build (npm run build) -- already done (web/dist exists)"
-    return
-  fi
-  run_step "Build the web UI (cd web && npm run build)" "$WEB_DIR" npm run build
-}
-
+# The three build steps are plain run_step calls -- see ALWAYS-RUN above for why there is no
+# "already done" branch. Only the import has a branch, because --skip-import is a user choice.
 step_import() {
   if [ "$SKIP_IMPORT" -eq 1 ]; then
-    log_skip "First import -- skipped (--skip-import)"
+    log_skip "Import -- skipped (--skip-import)"
     return
   fi
-  if [ -f "$ARCHIVE_DB" ]; then
-    log_skip "First import -- already done (archive exists at $ARCHIVE_DB)"
-    return
-  fi
-  run_step "Run first import (cd server && uv run introspect import)" "$SERVER_DIR" uv run introspect import
+  run_step "Import transcripts (cd server && uv run introspect import)" "$SERVER_DIR" uv run introspect import
 }
 
 next_steps() {
@@ -249,9 +236,9 @@ main() {
   preflight
   echo
   log_step "Installing"
-  step_uv_sync
-  step_npm_ci
-  step_npm_build
+  run_step "Install Python deps (cd server && uv sync)" "$SERVER_DIR" uv sync
+  run_step "Install web deps (cd web && npm ci)" "$WEB_DIR" npm ci
+  run_step "Build the web UI (cd web && npm run build)" "$WEB_DIR" npm run build
   step_import
   next_steps
 }
