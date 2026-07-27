@@ -234,15 +234,23 @@ describe('SessionPage conversation-only toggle', () => {
     expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, chat_only: true })
   })
 
-  it('critique #6: keeps the UNFILTERED message_count and appends "· conversation only" while active', async () => {
+  it('critique #6: the count is the UNFILTERED total, labelled once and unchanged by toggling', async () => {
     fetchSession.mockResolvedValue(makeSession({ message_count: 42 }))
     fetchMessages.mockResolvedValue(pageOf(0, ['m1'], 1))
     renderAt(PATH)
 
-    expect(await screen.findByText('42 msgs')).toBeDefined()
+    // "total" states what the number MEANS, in both states. Because it never appears or
+    // disappears, toggling cannot reflow the row -- the count span keeps its width.
+    expect(await screen.findByText('42 msgs total')).toBeDefined()
     await userEvent.click(screen.getByRole('button', { name: 'conversation only' }))
-    // Still the unfiltered 42 — no second server count — now with the mist suffix.
-    expect(await screen.findByText('42 msgs · conversation only')).toBeDefined()
+    expect(await screen.findByText('42 msgs total')).toBeDefined()
+
+    // The phrase belongs to the BUTTON alone. Duplicating it as a count suffix is what read as a
+    // second highlighted control appearing at the far right: the suffix widened the count span by
+    // 132px, so the (correctly highlighted) toggle shifted right into empty space at the same
+    // instant the same words appeared where the eye already was.
+    const meta = document.querySelector('.session-meta')
+    expect(meta?.textContent?.match(/conversation only/g) ?? []).toHaveLength(1)
   })
 
   it('is sticky: a session opened while the stored flag is ON seeds filtered from first paint', async () => {

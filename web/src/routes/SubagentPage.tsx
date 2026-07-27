@@ -125,11 +125,11 @@ export function SubagentPage() {
               marginBottom: 14,
             }}
           >
-            {/* Mist suffix while conversation-only is active, mirroring SessionPage (critique #6). */}
-            <span>
-              {transcript.agent_hex_id?.slice(0, 8)}
-              {chatOnly ? ' · conversation only' : ''}
-            </span>
+            {/* No mode suffix here. SessionPage's marker exists to keep an UNFILTERED message
+              count honest (critique #6); this row has no count, so copying the marker only
+              painted "conversation only" twice inches apart — the toggle beside it already
+              carries the state, highlighted and aria-pressed. */}
+            <span>{transcript.agent_hex_id?.slice(0, 8)}</span>
             <ChatOnlyToggle chatOnly={chatOnly} setChatOnly={setChatOnly} />
           </div>
         </header>

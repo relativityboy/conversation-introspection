@@ -106,10 +106,12 @@ export function SessionPage() {
           >
             <span>{session.session_uuid.slice(0, 8)}</span>
             {/* Always the UNFILTERED archive count — never a second server count for the filtered
-              set (critique #6). While conversation-only is active, a mist suffix marks it. */}
-            <span>
-              {session.message_count} msgs{chatOnly ? ' · conversation only' : ''}
-            </span>
+              set (critique #6). "total" is what keeps that honest when conversation-only hides
+              rows, and it is UNCONDITIONAL on purpose: a suffix that appears on toggle widened
+              this span by 132px and shoved every control right, so the (correctly highlighted)
+              toggle jumped into empty space and read as a NEW button. The button says which mode
+              you are in; this says what the number means. One concept, one place, no reflow. */}
+            <span>{session.message_count} msgs total</span>
             {/* §17: the door back in. Archived sessions never render this page (§15.1 detail
               404), so no archived-branch is needed here — the hiding is structural. */}
             <ResumeButton sessionUuid={session.session_uuid} onDisk={session.on_disk} />
