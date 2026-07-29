@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
-from sqlalchemy import ColumnElement, func, or_, select, true
+from sqlalchemy import ColumnElement, and_, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from introspect.api.deps import get_db
@@ -219,7 +219,10 @@ def list_projects(db: Session = Depends(get_db)) -> list[ProjectOut]:
                 Project.resolved_cwd,
                 func.count(ChatSession.session_uuid),
             )
-            .outerjoin(ChatSession, ChatSession.project_id == Project.id)
+            .outerjoin(
+                ChatSession,
+                and_(ChatSession.project_id == Project.id, _not_archived()),
+            )
             .group_by(Project.id)
             .order_by(Project.id)
         )

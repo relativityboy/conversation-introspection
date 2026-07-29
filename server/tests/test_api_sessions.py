@@ -82,6 +82,20 @@ def test_projects_lists_session_counts(client: TestClient) -> None:
     assert by_slug[PROJECT_SLUG_1]["resolved_cwd"]  # populated from the transcript envelope
 
 
+def test_projects_session_counts_exclude_archived(client: TestClient) -> None:
+    """The tree's count badge must agree with the children a project shows (spec §6.1):
+    an archived session vanishes from the sessions list, so it must not be counted."""
+    before = {p["dir_slug"]: p["session_count"] for p in client.get("/api/v1/projects").json()}
+    resp = client.put(f"/api/v1/sessions/{SESSION_UUID_1}/archive")
+    assert resp.status_code == 204
+    after = {p["dir_slug"]: p["session_count"] for p in client.get("/api/v1/projects").json()}
+    assert after[PROJECT_SLUG_1] == before[PROJECT_SLUG_1] - 1
+    # Other projects untouched.
+    for slug, count in after.items():
+        if slug != PROJECT_SLUG_1:
+            assert count == before[slug]
+
+
 # --- Sessions list ----------------------------------------------------------------------
 
 
