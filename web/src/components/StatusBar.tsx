@@ -100,6 +100,8 @@ export function StatusBar() {
 
     queryClient.invalidateQueries({ queryKey: ['status'] })
     queryClient.invalidateQueries({ queryKey: ['sessions'] })
+    // A run can discover a new project -- the tree and chip bar must see it (Task 7, spec §6.2).
+    queryClient.invalidateQueries({ queryKey: ['projects'] })
     setPhase(!failed && run?.status === 'ok' ? { kind: 'success' } : { kind: 'error' })
   }, [phase, runQuery.data, runQuery.isError, queryClient])
 

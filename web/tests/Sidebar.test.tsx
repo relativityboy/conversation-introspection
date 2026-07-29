@@ -1,11 +1,16 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../src/api/client'
 import { ProjectFilterBar } from '../src/components/ProjectFilterBar'
 import { Sidebar } from '../src/components/Sidebar'
 import type { SessionSummary } from '../src/api/types'
+
+// Same key sidebarTree.ts writes to (mirrors sidebarTree.test.ts's own local KEY constant — the
+// module exports no public name for it, by design: it's an implementation detail of the ONE
+// owner hook, not a value other modules should import and depend on).
+const SIDEBAR_TREE_KEY = 'introspect.sidebarTree.v1'
 
 // Mocking the api client module (not global fetch) per the task contract — hooks.ts imports
 // these named functions directly, so replacing the module swaps out every hook's network layer
@@ -312,5 +317,75 @@ describe('title precedence', () => {
     renderSidebar()
 
     expect(await screen.findByText(SESSION_A.session_uuid.slice(0, 8))).toBeDefined()
+  })
+})
+
+// --- by-project toggle (Task 7): the toggle pill, the flat/tree body switch it drives, and the
+// localStorage persistence useSidebarTree already owns (this is Sidebar's ONE call site) --------
+
+describe('by-project toggle', () => {
+  afterEach(() => window.localStorage.removeItem(SIDEBAR_TREE_KEY))
+
+  it('renders the by-project toggle with aria-pressed from storage', async () => {
+    window.localStorage.setItem(SIDEBAR_TREE_KEY, '1')
+    fetchProjects.mockResolvedValue([])
+    fetchSessions.mockResolvedValue({ items: [SESSION_A], total: 1 })
+
+    const { container } = renderSidebar()
+
+    const toggle = screen.getByRole('button', { name: 'by project' })
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    await vi.waitFor(() => expect(fetchProjects).toHaveBeenCalledTimes(1))
+    // The tree body renders instead of the flat list -- SESSION_A resolves via fetchSessions
+    // (Sidebar's own hook call is unconditional) but must not appear as a flat row.
+    expect(container.querySelector('.convo-list')).toBeNull()
+    expect(screen.queryByText(SESSION_A.ai_title as string)).toBeNull()
+  })
+
+  it('toggle click flips mode, persists, and swaps the body', async () => {
+    fetchSessions.mockResolvedValue({ items: [], total: 0 })
+    fetchProjects.mockResolvedValue([])
+
+    const { container } = renderSidebar()
+    await screen.findByText('Archive is empty — run introspect import')
+    expect(fetchProjects).not.toHaveBeenCalled()
+    expect(container.querySelector('.convo-list')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'by project' }))
+
+    await vi.waitFor(() => expect(fetchProjects).toHaveBeenCalledTimes(1))
+    expect(window.localStorage.getItem(SIDEBAR_TREE_KEY)).toBe('1')
+    expect(container.querySelector('.convo-list')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'by project' }))
+
+    expect(window.localStorage.getItem(SIDEBAR_TREE_KEY)).toBeNull()
+    expect(container.querySelector('.convo-list')).not.toBeNull()
+  })
+
+  // Regression pin: flat mode (the toggle OFF, today's default) must render exactly as it did
+  // before this task -- adding the toggle button and the tree branch must not perturb the
+  // pre-existing flat list output in any way.
+  it('flat mode is byte-identical to today', async () => {
+    fetchSessions.mockResolvedValue({ items: [SESSION_A, SESSION_B], total: 2 })
+    const { container } = renderSidebar()
+    await screen.findByText(SESSION_B.ai_title as string)
+
+    const toggle = screen.getByRole('button', { name: 'by project' })
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(fetchProjects).not.toHaveBeenCalled()
+
+    const list = container.querySelector('.convo-list')
+    expect(list).not.toBeNull()
+    expect(list?.children).toHaveLength(2)
+
+    // Same snippet/mark assertions as the "content-match snippet hint" suite above, re-run here
+    // under the toggle's presence to prove the flat rendering path itself is untouched.
+    const marks = container.querySelectorAll('mark')
+    expect(marks).toHaveLength(1)
+    expect(marks[0].textContent).toBe('tidal')
+    expect(container.querySelector('.convo-snippet-hint')?.textContent).toBe(
+      'a tidal wave of changes',
+    )
   })
 })

@@ -123,10 +123,9 @@ export function useStatus() {
 }
 
 // Projects change only on explicit import/reparse, never mid-session, so a long staleTime
-// avoids refetching the list on every mount. There is no invalidation hookup from the import
-// pipeline yet (StatusBar's import-run success handler invalidates ['status'] and ['sessions']
-// only) -- a newly-imported project won't appear here until the QueryClient is recreated (i.e.
-// a page reload). Acceptable for now per the task contract; revisit if it matters in practice.
+// avoids refetching the list on every mount. Invalidation is hooked up at the two sites that can
+// change project counts or membership: StatusBar's import-run terminal handler and
+// useArchiveSession below, both of which invalidate ['projects'] alongside their existing keys.
 export function useProjects() {
   return useQuery({
     queryKey: projectsKey,
@@ -178,6 +177,8 @@ export function useArchiveSession() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
       queryClient.invalidateQueries({ queryKey: ['search'] })
+      // Archiving changes per-project counts (Task 7, spec §6.2).
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
     },
   })
 }

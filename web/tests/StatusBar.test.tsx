@@ -129,6 +129,8 @@ describe('terminal run states', () => {
     expect(await screen.findByText('imported ✓')).toBeDefined()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['status'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    // A run can discover a new project (Task 7, spec §6.2) -- the tree and chip bar must see it.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['projects'] })
   })
 
   it('shows "import failed" (ember) when the run finishes in an error status', async () => {

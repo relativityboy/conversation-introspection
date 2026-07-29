@@ -1,7 +1,9 @@
 import type { CSSProperties } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useSessions } from '../api/hooks'
+import { useSidebarTree } from '../lib/sidebarTree'
 import { readProjects, readSidebarParams, writeProjects, writeSidebarParams } from '../lib/urlState'
+import { ProjectTree } from './ProjectTree'
 import { SessionListItem } from './SessionListItem'
 
 const SKELETON_ROWS = 3
@@ -13,6 +15,9 @@ const MIST_TEXT: CSSProperties = { color: 'var(--mist)', padding: '10px 6px', fo
 export function Sidebar() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { filter, fav } = readSidebarParams(searchParams)
+  // The ONE call site (sidebarTree.ts's binding doc comment) -- treeMode/setTreeMode flow down
+  // as props/closures to whatever below needs them, never a second independent hook instance.
+  const [treeMode, setTreeMode] = useSidebarTree()
 
   function setFavorite(value: boolean) {
     setSearchParams((prev) => writeSidebarParams(prev, { fav: value }), { replace: true })
@@ -81,28 +86,41 @@ export function Sidebar() {
         >
           ★ Favorites
         </button>
+        <button
+          type="button"
+          className="tree-toggle"
+          aria-pressed={treeMode}
+          onClick={() => setTreeMode(!treeMode)}
+          style={{ ...chipStyle(treeMode), marginLeft: 'auto' }}
+        >
+          by project
+        </button>
       </div>
 
       {/* A plain div, not a nested <nav> — the app shell's own <nav aria-label="Conversation
           archive"> (App.tsx) is already the landmark for this whole region; a second nested
           nav here would create an ambiguous/duplicate "navigation" landmark. */}
-      <div className="convo-list" style={{ marginTop: 6 }}>
-        {isLoading && <SkeletonRows />}
-        {isError && <p style={MIST_TEXT}>archive offline</p>}
-        {isSuccess && data.items.length === 0 && (
-          <p style={MIST_TEXT}>
-            {hasFilter ? 'No conversations match' : 'Archive is empty — run introspect import'}
-          </p>
-        )}
-        {isSuccess &&
-          data.items.map((session) => (
-            <SessionListItem
-              key={session.session_uuid}
-              session={session}
-              search={search ? `?${search}` : ''}
-            />
-          ))}
-      </div>
+      {treeMode ? (
+        <ProjectTree q={filter} fav={fav} chips={projects} search={search ? `?${search}` : ''} />
+      ) : (
+        <div className="convo-list" style={{ marginTop: 6 }}>
+          {isLoading && <SkeletonRows />}
+          {isError && <p style={MIST_TEXT}>archive offline</p>}
+          {isSuccess && data.items.length === 0 && (
+            <p style={MIST_TEXT}>
+              {hasFilter ? 'No conversations match' : 'Archive is empty — run introspect import'}
+            </p>
+          )}
+          {isSuccess &&
+            data.items.map((session) => (
+              <SessionListItem
+                key={session.session_uuid}
+                session={session}
+                search={search ? `?${search}` : ''}
+              />
+            ))}
+        </div>
+      )}
     </>
   )
 }
