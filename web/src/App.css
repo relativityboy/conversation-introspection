@@ -9,11 +9,18 @@
   height: 100vh;
 }
 
-/* App chrome: a thin, quiet project-filter bar spanning the full width above sidebar+main.
-   The chip/input/listbox visuals are inline in the component (Sidebar convention); only the
-   grid placement and the bar's surface/hairline live here, matching nav/footer below. */
-.app > .project-filter-bar {
+/* App chrome: a thin, quiet topbar row spanning the full width above sidebar+main, holding the
+   content-filter box (TopbarSearch) and the project-filter chip bar. Both components' own
+   chip/input/listbox visuals are inline (Sidebar convention); only the grid placement and the
+   row's surface/hairline live here, matching nav/footer below. */
+.app > .topbar-row {
   grid-area: topbar;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--shore);
 }
 
 .project-filter-bar {
@@ -21,9 +28,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 7px 12px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--shore);
+  flex: 1;
 }
 
 .app > nav {

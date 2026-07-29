@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../src/api/client'
 import { ProjectFilterBar } from '../src/components/ProjectFilterBar'
 import { Sidebar } from '../src/components/Sidebar'
@@ -23,20 +23,6 @@ vi.mock('../src/api/client', async () => {
   const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client')
   return { ...actual, fetchSessions, putFavorite, deleteFavorite, fetchProjects }
 })
-
-// writeSidebarParams is spied (real implementation preserved) so the debounce test can count
-// URL WRITES, not just queries: react-router's setSearchParams is referentially unstable, and
-// the echo regression it caused (a second identical write ~250ms after the first) is invisible
-// to a fetch-count assertion because the second write doesn't change the query key.
-const writeSidebarParamsSpy = vi.hoisted(() => vi.fn())
-
-vi.mock('../src/lib/urlState', async () => {
-  const actual = await vi.importActual<typeof import('../src/lib/urlState')>('../src/lib/urlState')
-  writeSidebarParamsSpy.mockImplementation(actual.writeSidebarParams)
-  return { ...actual, writeSidebarParams: writeSidebarParamsSpy }
-})
-
-const DEBOUNCE_MS = 250
 
 const SESSION_A: SessionSummary = {
   session_uuid: '11111111-1111-1111-1111-111111111111',
@@ -95,67 +81,27 @@ beforeEach(() => {
   putFavorite.mockReset()
   deleteFavorite.mockReset()
   fetchProjects.mockReset()
-  // mockClear, NOT mockReset — reset would wipe the real implementation installed by the
-  // module-mock factory above.
-  writeSidebarParamsSpy.mockClear()
 })
 
-describe('content filter debounce', () => {
+// The debounce/echo-guard tests moved to TopbarSearch.test.tsx (Task 4) — TopbarSearch now owns
+// the input and every ?filter= write. Sidebar only READS ?filter= (readSidebarParams), so its
+// tests drive the query straight off the URL via initialEntries, with no debounce to wait out.
+describe('content filter (read from URL)', () => {
   beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
     fetchSessions.mockResolvedValue({ items: [], total: 0 })
   })
 
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  it('queries once and writes the URL exactly once, with the final filter, after typing settles', async () => {
-    renderSidebar()
-    await vi.waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
-    fetchSessions.mockClear()
-    writeSidebarParamsSpy.mockClear()
-
-    const input = screen.getByPlaceholderText('Filter by title or content…')
-    fireEvent.change(input, { target: { value: 'a' } })
-    fireEvent.change(input, { target: { value: 'ab' } })
-    fireEvent.change(input, { target: { value: 'abc' } })
-
-    // No query yet — each keystroke should have reset the debounce timer, not fired one.
-    expect(fetchSessions).not.toHaveBeenCalled()
-
-    // Advance well past 2x the debounce window: the echo regression (setSearchParams's unstable
-    // identity re-triggering the effect after its own write) produced a SECOND identical write
-    // at ~500ms, which a single 250ms advance could never observe.
-    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 4)
-
-    expect(fetchSessions).toHaveBeenCalledTimes(1)
-    // fetchSessions receives SessionFilters.q (the server-facing filter param, searching title
-    // OR content OR uuid) -- the URL param the input syncs to is a separate contract (`filter`,
-    // see urlState.ts and the writeSidebarParamsSpy assertion below).
-    expect(fetchSessions).toHaveBeenCalledWith(expect.objectContaining({ q: 'abc' }))
-    expect(writeSidebarParamsSpy).toHaveBeenCalledTimes(1)
-    expect(writeSidebarParamsSpy).toHaveBeenCalledWith(expect.anything(), { filter: 'abc' })
-  })
-
-  it('restores the content filter from the URL on mount without waiting for the debounce', async () => {
+  it('queries with the URL filter immediately on mount, no debounce wait', async () => {
     renderSidebar(['/?filter=zzz'])
-
-    const input = screen.getByPlaceholderText('Filter by title or content…') as HTMLInputElement
-    expect(input.value).toBe('zzz')
     await vi.waitFor(() =>
       expect(fetchSessions).toHaveBeenCalledWith(expect.objectContaining({ q: 'zzz' })),
     )
   })
 
-  // Zero-legacy ruling (relativityboy, ledger #4): the retired `?title=` key must NOT seed the input.
-  // A deep link built against the old contract lands on an unfiltered list, not a silently
-  // resurrected filter.
-  it('does not seed the input from the retired `?title=` param', async () => {
+  // Zero-legacy ruling (relativityboy, ledger #4): the retired `?title=` key must NOT resurrect a
+  // filter. A deep link built against the old contract queries unfiltered.
+  it('does not read the retired `?title=` param', async () => {
     renderSidebar(['/?title=zzz'])
-
-    const input = screen.getByPlaceholderText('Filter by title or content…') as HTMLInputElement
-    expect(input.value).toBe('')
     await vi.waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
     expect(fetchSessions).toHaveBeenCalledWith(expect.objectContaining({ q: undefined }))
   })

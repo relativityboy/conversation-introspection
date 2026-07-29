@@ -7,6 +7,7 @@ import { ProjectFilterBar } from './components/ProjectFilterBar'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TabBar } from './components/TabBar'
+import { TopbarSearch } from './components/TopbarSearch'
 import { SearchPage } from './routes/SearchPage'
 import { SessionPage } from './routes/SessionPage'
 import { SubagentPage } from './routes/SubagentPage'
@@ -30,7 +31,10 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <div className="app">
-          <ProjectFilterBar />
+          <div className="topbar-row">
+            <TopbarSearch />
+            <ProjectFilterBar />
+          </div>
           <nav aria-label="Conversation archive">
             <Sidebar />
           </nav>

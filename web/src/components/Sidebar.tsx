@@ -1,11 +1,9 @@
 import type { CSSProperties } from 'react'
-import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useSessions } from '../api/hooks'
 import { readProjects, readSidebarParams, writeProjects, writeSidebarParams } from '../lib/urlState'
 import { SessionListItem } from './SessionListItem'
 
-const DEBOUNCE_MS = 250
 const SKELETON_ROWS = 3
 
 // Styling is inline, mirroring the mockup vocabulary via className hooks only — same
@@ -14,34 +12,7 @@ const MIST_TEXT: CSSProperties = { color: 'var(--mist)', padding: '10px 6px', fo
 
 export function Sidebar() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const { filter: urlFilter, fav } = readSidebarParams(searchParams)
-
-  // The input's visible value is local state, synced to the URL and to the sessions query only
-  // after DEBOUNCE_MS of no typing (below). Both are seeded from the URL so a reload/deep-link
-  // restores the filter immediately, with no debounce wait on mount.
-  const [filterInput, setFilterInput] = useState(urlFilter)
-  const [debouncedFilter, setDebouncedFilter] = useState(urlFilter)
-
-  // Guards the debounced URL write. `setSearchParams` is referentially UNSTABLE (react-router
-  // hands out a new function whenever the URL changes), so it can't be trusted as an inert dep:
-  // without this guard the effect re-runs after its own write (and after every fav-chip click)
-  // and writes the same filter AGAIN 250ms later. Tracking the last filter actually written
-  // (seeded with the mount-time URL value) collapses that echo — and the redundant write-on-mount
-  // — to exactly one write per settled input.
-  const lastWrittenFilter = useRef(urlFilter)
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedFilter(filterInput)
-      if (filterInput !== lastWrittenFilter.current) {
-        lastWrittenFilter.current = filterInput
-        setSearchParams((prev) => writeSidebarParams(prev, { filter: filterInput }), {
-          replace: true,
-        })
-      }
-    }, DEBOUNCE_MS)
-    return () => clearTimeout(timer)
-  }, [filterInput, setSearchParams])
+  const { filter, fav } = readSidebarParams(searchParams)
 
   function setFavorite(value: boolean) {
     setSearchParams((prev) => writeSidebarParams(prev, { fav: value }), { replace: true })
@@ -54,7 +25,7 @@ export function Sidebar() {
   const projects = readProjects(searchParams)
 
   const { data, isLoading, isError, isSuccess } = useSessions({
-    q: debouncedFilter || undefined,
+    q: filter || undefined,
     favorite: fav || undefined,
     // Only present when non-empty — an empty `projects: []` key would still hash identically to
     // omitting it, but omitting keeps the filters object (and the wire call) honest: "no filter"
@@ -63,7 +34,7 @@ export function Sidebar() {
   })
 
   const search = searchParams.toString()
-  const hasFilter = debouncedFilter.length > 0 || fav
+  const hasFilter = filter.length > 0 || fav
 
   return (
     <>
@@ -88,22 +59,6 @@ export function Sidebar() {
       >
         conversation-introspection
       </Link>
-
-      <input
-        className="sw-input"
-        type="search"
-        placeholder="Filter by title or content…"
-        aria-label="Filter conversations by title or content"
-        value={filterInput}
-        onChange={(event) => setFilterInput(event.target.value)}
-        style={{
-          width: '100%',
-          fontFamily: 'var(--sans)',
-          fontSize: 13,
-          padding: '8px 10px',
-          borderRadius: 6,
-        }}
-      />
 
       <div
         role="group"
