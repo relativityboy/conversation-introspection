@@ -9,7 +9,9 @@ TUI with `/start-web`, or standalone with `uv run introspect serve`, then open
 
 ## Layout and routes
 
-- The **sidebar** (left) lists your conversations and holds the search box and the project filter.
+- The **topbar** (top) holds the search box and the project filter.
+- The **sidebar** (left) lists your conversations — a flat list, or grouped by project (see
+  below).
 - The **reader** (right) shows one conversation, windowed so even very long sessions scroll
   smoothly.
 
@@ -26,10 +28,10 @@ The URLs are shareable and encode where you are:
 Two query parameters ride along and survive navigation: `?filter=` (sidebar search) and
 `?projects=` (the project filter), so a link you copy reproduces exactly what you were looking at.
 
-## Sidebar content search
+## The search box
 
-The search box above the sidebar matches **as you type** (with a ~250 ms debounce) and scopes the
-list to three kinds of match, unified into one query:
+The search box in the topbar, to the left of the project chips, matches **as you type** (with a
+~250 ms debounce) and scopes the sidebar to three kinds of match, unified into one query:
 
 1. a case-insensitive **session-uuid** substring,
 2. the session **title** (its archive title or the one you gave it), and
@@ -41,8 +43,8 @@ in the URL as `?filter=`, so it's shareable and a deep link restores it instantl
 
 ## The project filter
 
-Above the sidebar is a chip bar that scopes the **whole app** — the sidebar, the global search, and
-the links it builds — to a chosen set of projects, reflected in the URL as
+Next to the search box, in the topbar, is a chip bar that scopes the **whole app** — the sidebar,
+the global search, and the links it builds — to a chosen set of projects, reflected in the URL as
 `?projects=slug1,slug2`. By default it shows a single "all projects" chip.
 
 It's keyboard-driven, and the Escape behavior is deliberately layered so it never destroys a
@@ -60,6 +62,26 @@ selection by accident:
 
 Selecting a project keeps the box focused so you can add several in a row; clicking away closes the
 list.
+
+## Grouping the sidebar by project
+
+A **`by project`** toggle sits at the right of the sidebar's All / ★ Favorites row. It switches the
+sidebar between two layouts and is sticky per-browser — it's remembered in local storage, not the
+URL, so it doesn't travel with a shared link, but it stays put on your machine until you flip it
+back.
+
+- **Off** (the default): the flat, most-recent-first list you already know.
+- **On, with no search text and ★ Favorites off:** every project, listed alphabetically, each
+  collapsed to a header showing its session count. Click a project to expand it — its sessions
+  load at that point, not before — and if there are more than fit, a `showing N of M` line appears
+  underneath.
+- **On, with a search query or ★ Favorites active:** the tree prunes itself to only the projects
+  with a match, each already expanded (there's nothing to toggle while filtering), sessions show
+  the same content-match snippet the flat list would, and a `showing N of M matches` line appears
+  if the match set is larger than what loaded.
+
+The All / ★ Favorites toggle and the project chip bar work identically either way — they decide
+*what* is shown; `by project` only decides *how* it's arranged.
 
 ## Editable titles
 

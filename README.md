@@ -138,14 +138,17 @@ together. (Standalone equivalent: `uv run introspect serve`.)
 A few things worth knowing about the reading room — full details in
 [`docs/user/reading-room.md`](docs/user/reading-room.md):
 
-- The **sidebar search box** matches a session's title, its message content, or a session-uuid
+- A **search box** in the topbar matches a session's title, its message content, or a session-uuid
   substring as you type; a content-only match shows a highlighted snippet under the title, and
   the query lives in the URL (`?filter=`) so it's shareable.
-- A **project chip bar** above the sidebar scopes the whole app — sidebar, search, and deep
+- A **project chip bar** next to the search box scopes the whole app — sidebar, search, and deep
   links — to the projects you choose (`?projects=slug1,slug2`). It's keyboard-driven: arrow-down
   opens the list, typing filters it, and Escape is layered so it never nukes a selection by
   accident — a single Escape closes the list only; a quick second Escape then clears your typed
   text (or, if the box was already empty and the list closed, clears the selected projects).
+- A **`by project`** toggle in the sidebar groups conversations by project (alphabetical, with
+  session counts and lazy-loaded children) instead of the flat, most-recent-first list; it's
+  sticky per-browser via local storage.
 - Click a session's title to **rename it inline** — Enter commits, Escape cancels, and a quick
   second Escape reverts to the original archive title; a small dot next to a renamed title reveals
   that original on hover.
