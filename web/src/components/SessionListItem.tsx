@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useFavorite } from '../api/hooks'
 import type { SessionSummary } from '../api/types'
+import { projectDisplayName } from '../lib/projectName'
 import { renderSnippet } from '../lib/snippet'
 import { displayTitle } from '../lib/titles'
 import { HorizonBand } from './HorizonBand'
@@ -11,6 +12,9 @@ export interface SessionListItemProps {
   /** Current sidebar query string (e.g. "?filter=foo&fav=1", or ""), preserved when navigating
    * into the session so returning to the list lands back on the same filter. */
   search: string
+  /** True when rendered under its project row in the tree view — the eyebrow would repeat the
+   * parent, so it's suppressed. Defaults to false (flat list, eyebrow shown). */
+  inTree?: boolean
 }
 
 // Styling is inline (not the mockup's CSS classes) — same call as HorizonBand (Task 3): the
@@ -67,7 +71,7 @@ const SNIPPET_HINT_STYLE: CSSProperties = {
 //     never runs under the overlaid star.
 // Active state moved off NavLink (the box isn't an anchor) onto a useLocation match that mirrors
 // NavLink's default end=false: active for this session's top AND any descendant (/m/, /a/…).
-export function SessionListItem({ session, search }: SessionListItemProps) {
+export function SessionListItem({ session, search, inTree = false }: SessionListItemProps) {
   const favoriteMutation = useFavorite()
   const { pathname } = useLocation()
 
@@ -129,11 +133,18 @@ export function SessionListItem({ session, search }: SessionListItemProps) {
             </div>
           ))}
         <Link to={sessionTop} style={SEGMENT_STYLE}>
-          <div
-            style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--mist)', marginTop: 5 }}
-          >
-            {projectEyebrow(session.project_slug)}
-          </div>
+          {!inTree && (
+            <div
+              style={{
+                fontFamily: 'var(--mono)',
+                fontSize: 10,
+                color: 'var(--mist)',
+                marginTop: 5,
+              }}
+            >
+              {projectDisplayName(session.project_slug)}
+            </div>
+          )}
           <div
             style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--mist)', marginTop: 3 }}
           >
@@ -167,17 +178,6 @@ export function SessionListItem({ session, search }: SessionListItemProps) {
       </button>
     </div>
   )
-}
-
-/** `project_slug` is the CLI's raw source-directory name, e.g. "-Users-x-proj" (see
- * server/src/introspect/ingest/discovery.py). The eyebrow is the tail after the last
- * "-Users-" — deliberately not a full path reconstruction (that would need to guess back the
- * original "/" and "@" characters the CLI collapsed into dashes, which isn't reliably
- * reversible); this is the simple, robust cut. */
-function projectEyebrow(slug: string): string {
-  const marker = '-Users-'
-  const idx = slug.lastIndexOf(marker)
-  return idx === -1 ? slug : slug.slice(idx + marker.length)
 }
 
 /** "today" / "yesterday" / short local date (e.g. "Jul 11"), compared by LOCAL calendar day

@@ -24,12 +24,12 @@ function withMatch(overrides: Partial<SessionSummary>): SessionSummary {
   return { ...BASE, ...overrides }
 }
 
-function renderItem(session: SessionSummary, search = '') {
+function renderItem(session: SessionSummary, search = '', inTree = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <SessionListItem session={session} search={search} />
+        <SessionListItem session={session} search={search} inTree={inTree} />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -95,6 +95,13 @@ describe('SessionListItem — snippet click deep-links to the matched message', 
     renderItem(session)
     const titleLink = screen.getByRole('link', { name: /Charting the estuary/ })
     expect(titleLink.getAttribute('href')).toBe(`/s/${session.session_uuid}`)
+  })
+})
+
+describe('SessionListItem — inTree', () => {
+  it('inTree suppresses the project eyebrow line', () => {
+    renderItem(withMatch({ project_slug: '-Users-x-proj' }), '', true)
+    expect(screen.queryByText('x-proj')).toBeNull()
   })
 })
 
