@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import { useState } from 'react'
 import { useProjects, useSessions } from '../api/hooks'
+import type { SessionSummary } from '../api/types'
 import { projectDisplayName } from '../lib/projectName'
 import { SessionListItem } from './SessionListItem'
 
@@ -34,6 +35,20 @@ const ROW_STYLE: CSSProperties = {
 const GLYPH_STYLE: CSSProperties = { color: 'var(--mist)' }
 
 const COUNT_STYLE: CSSProperties = { marginLeft: 'auto', color: 'var(--mist)', fontSize: 11 }
+
+// Shared "showing N of M" caption style — same mono/mist values Task 5 used inline for browse
+// mode's truncation line; hoisted here so filtered mode's version (below) doesn't repeat the
+// literal.
+const TRUNCATION_STYLE: CSSProperties = { color: 'var(--mist)', fontSize: 11, padding: '2px 6px' }
+
+// Filtered-mode group heading — mono/mist, matching the browse-mode row's typography (ROW_STYLE/
+// GLYPH_STYLE) without the interactive affordances a static heading doesn't have.
+const GROUP_HEADER_STYLE: CSSProperties = {
+  fontFamily: 'var(--mono)',
+  fontSize: 12,
+  color: 'var(--mist)',
+  padding: '6px 6px',
+}
 
 export function ProjectTree({ q, fav, chips, search }: ProjectTreeProps) {
   // Manual expand state survives filtered-mode roundtrips: FilteredTree never touches it (D3).
@@ -117,7 +132,7 @@ function ProjectChildren({ slug, search }: { slug: string; search: string }) {
         <SessionListItem key={s.session_uuid} session={s} search={search} inTree />
       ))}
       {data.total > data.items.length && (
-        <p style={{ color: 'var(--mist)', fontSize: 11, padding: '2px 6px' }}>
+        <p style={TRUNCATION_STYLE}>
           showing {data.items.length} of {data.total}
         </p>
       )}
@@ -125,9 +140,52 @@ function ProjectChildren({ slug, search }: { slug: string; search: string }) {
   )
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function FilteredTree(_props: ProjectTreeProps) {
-  return null // Task 6 un-stubs me
+function FilteredTree({ q, fav, chips, search }: ProjectTreeProps) {
+  // ONE flat query — never per-project — is the whole point of filtered mode (spec §4.5): a
+  // search or ★ Favorites toggle prunes the tree to matches across ALL projects at once, not
+  // project-by-project. `expanded` (browse mode's manual toggle state) is never touched here.
+  const { data, isLoading, isError } = useSessions({
+    q: q || undefined,
+    favorite: fav || undefined,
+    ...(chips.length > 0 ? { projects: chips } : {}),
+  })
+  if (isLoading) return <SkeletonRows />
+  if (isError) return <p style={MIST_TEXT}>archive offline</p>
+  // Exhaustiveness guard: isLoading/isError as separate booleans don't narrow `data` for TS
+  // (unlike a single discriminated `status` check) — this is the third, success case.
+  if (!data) return null
+  if (data.items.length === 0) return <p style={MIST_TEXT}>No conversations match</p>
+
+  const groups = new Map<string, SessionSummary[]>()
+  for (const item of data.items) {
+    const list = groups.get(item.project_slug) ?? []
+    list.push(item)
+    groups.set(item.project_slug, list)
+  }
+  const slugs = [...groups.keys()].sort((a, b) =>
+    projectDisplayName(a).localeCompare(projectDisplayName(b)),
+  )
+  return (
+    <>
+      {slugs.map((slug) => (
+        <div key={slug}>
+          {/* Static ▾ — auto-expanded groups are not collapsible while filtering (D3); a
+              disclosure that can't close would lie as a button, so this is a heading div. */}
+          <div style={GROUP_HEADER_STYLE}>▾ {projectDisplayName(slug)}</div>
+          <div style={{ paddingLeft: 14 }}>
+            {groups.get(slug)!.map((s) => (
+              <SessionListItem key={s.session_uuid} session={s} search={search} inTree />
+            ))}
+          </div>
+        </div>
+      ))}
+      {data.total > data.items.length && (
+        <p style={TRUNCATION_STYLE}>
+          showing {data.items.length} of {data.total} matches
+        </p>
+      )}
+    </>
+  )
 }
 
 // Static (no animation — Still Water is calm) placeholder rows, mirroring Sidebar's SkeletonRows.

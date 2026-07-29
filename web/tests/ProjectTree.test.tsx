@@ -60,13 +60,17 @@ function renderTree(overrides: Partial<ProjectTreeProps> = {}) {
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   })
   const props: ProjectTreeProps = { q: '', fav: false, chips: [], search: '', ...overrides }
-  return render(
+  const utils = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ProjectTree {...props} />
       </MemoryRouter>
     </QueryClientProvider>,
   )
+  // queryClient is exposed so a test can `rerender` the SAME provider/client across a props
+  // change (e.g. filtered → browse) — required for the "manual expand survives" test below,
+  // where ProjectTree's own useState must not be remounted out from under it.
+  return { ...utils, queryClient }
 }
 
 beforeEach(() => {
@@ -191,4 +195,124 @@ it('a failed children fetch shows an inline retry row without hiding siblings', 
   fireEvent.click(retry)
 
   await vi.waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
+})
+
+// --- filtered mode: q/fav prune to ONE flat query, grouped + auto-expanded client-side --------
+
+it('q or fav switches to ONE flat query grouped by project, auto-expanded, rows inTree', async () => {
+  const alphaSession = session('s-alpha-1', '-Users-x-alpha', { ai_title: 'Alpha horizon convo' })
+  const zetaSession = session('s-zeta-1', '-Users-x-zeta', { ai_title: 'Zeta horizon convo' })
+  fetchSessions.mockResolvedValue({ items: [alphaSession, zetaSession], total: 2 })
+
+  renderTree({ q: 'horizon' })
+
+  await screen.findByText('Alpha horizon convo')
+  expect(screen.getByText('Zeta horizon convo')).toBeDefined()
+
+  // fetchProjects is never consulted in filtered mode — BrowseTree doesn't mount.
+  expect(fetchProjects).not.toHaveBeenCalled()
+  // ONE flat query, not one per matched project.
+  expect(fetchSessions).toHaveBeenCalledTimes(1)
+  expect(fetchSessions).toHaveBeenCalledWith({ q: 'horizon' })
+
+  // both groups present and auto-expanded (children visible without any click).
+  expect(screen.getByText(/x-alpha/)).toBeDefined()
+  expect(screen.getByText(/x-zeta/)).toBeDefined()
+
+  // inTree: the session row's own eyebrow is suppressed, so each project name appears exactly
+  // once — the group header, not a duplicate on the row underneath it.
+  expect(screen.getAllByText(/x-alpha/)).toHaveLength(1)
+  expect(screen.getAllByText(/x-zeta/)).toHaveLength(1)
+})
+
+it('groups sort alphabetically and absent projects are pruned', async () => {
+  const zetaSession = session('s-zeta-1', '-Users-x-zeta')
+  const alphaSession = session('s-alpha-1', '-Users-x-alpha')
+  // Deliberately zeta-then-alpha in the response — a client-side sort must reorder to
+  // alpha-then-zeta; 'mid' never appears in the result, so it must never appear on screen.
+  fetchSessions.mockResolvedValue({ items: [zetaSession, alphaSession], total: 2 })
+
+  renderTree({ fav: true })
+
+  await screen.findByText(/x-alpha/)
+
+  const headers = screen.getAllByText(/^▾ /)
+  expect(headers.map((h) => h.textContent)).toEqual(['▾ x-alpha', '▾ x-zeta'])
+  expect(screen.queryByText(/x-mid/)).toBeNull()
+})
+
+it('snippets ride into the grouped rows', async () => {
+  const withSnippet = session('s-alpha-1', '-Users-x-alpha', {
+    match_snippet: 'a <mark>tidal</mark> wave',
+  })
+  fetchSessions.mockResolvedValue({ items: [withSnippet], total: 1 })
+
+  const { container } = renderTree({ q: 'tidal' })
+  await screen.findByText(withSnippet.ai_title as string)
+
+  // SessionListItem does the mark-splitting work — assert it rode through untouched.
+  const marks = container.querySelectorAll('mark')
+  expect(marks).toHaveLength(1)
+  expect(marks[0].textContent).toBe('tidal')
+})
+
+it('chips and fav thread into the query', async () => {
+  fetchSessions.mockResolvedValue({ items: [], total: 0 })
+
+  renderTree({ q: '', fav: true, chips: ['-Users-x-alpha'] })
+
+  await screen.findByText('No conversations match')
+  expect(fetchSessions).toHaveBeenCalledTimes(1)
+  expect(fetchSessions).toHaveBeenCalledWith({ favorite: true, projects: ['-Users-x-alpha'] })
+})
+
+it('truncation line renders when total > items', async () => {
+  const items = Array.from({ length: 12 }, (_, i) =>
+    session(`s-alpha-${i}`, '-Users-x-alpha', { ai_title: `Alpha convo ${i}` }),
+  )
+  fetchSessions.mockResolvedValue({ items, total: 80 })
+
+  renderTree({ q: 'x' })
+
+  await screen.findByText('showing 12 of 80 matches')
+})
+
+it('clearing the filter restores browse mode with manual expand state intact, no refetch', async () => {
+  fetchProjects.mockResolvedValue(PROJECTS)
+  const zetaSession = session('s-zeta-1', '-Users-x-zeta', { ai_title: 'Zeta convo one' })
+  fetchSessions.mockResolvedValue({ items: [zetaSession], total: 1 })
+
+  const { rerender, queryClient } = renderTree()
+  await screen.findByText('x-zeta')
+
+  fireEvent.click(screen.getByRole('button', { name: /x-zeta/ }))
+  await screen.findByText('Zeta convo one')
+  expect(fetchSessions).toHaveBeenCalledTimes(1)
+
+  // switch into filtered mode
+  fetchSessions.mockResolvedValueOnce({ items: [], total: 0 })
+  rerender(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ProjectTree q="x" fav={false} chips={[]} search="" />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+  await screen.findByText('No conversations match')
+
+  // clear the filter — back to browse mode
+  fetchSessions.mockClear()
+  rerender(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ProjectTree q="" fav={false} chips={[]} search="" />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+
+  // zeta's manual expand state survived the roundtrip, and its cached children render with no
+  // new network call (react-query cache, staleTime not elapsed).
+  await screen.findByText('Zeta convo one')
+  expect(fetchSessions).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: /x-zeta/ }).getAttribute('aria-expanded')).toBe('true')
 })
