@@ -37,6 +37,18 @@ export function TopbarSearch() {
     return () => clearTimeout(timer)
   }, [filterInput, setSearchParams])
 
+  // Adopts EXTERNAL URL changes — a navigation that drops ?filter= (TabBar tabs, the sidebar
+  // wordmark: both deliberately preserve only ?projects=) must clear this box too, or it keeps
+  // showing a filter the list is no longer applying. Guarded by the same ref the write effect
+  // uses: urlFilter only differs from lastWrittenFilter when something OTHER than this
+  // component's own debounced write changed the URL, so a self-write never bounces back here.
+  useEffect(() => {
+    if (urlFilter !== lastWrittenFilter.current) {
+      lastWrittenFilter.current = urlFilter // adopt an EXTERNAL change; never write back
+      setFilterInput(urlFilter)
+    }
+  }, [urlFilter])
+
   return (
     <input
       className="sw-input"

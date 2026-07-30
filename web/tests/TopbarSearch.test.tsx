@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TopbarSearch } from '../src/components/TopbarSearch'
 
@@ -92,6 +92,46 @@ describe('content filter debounce', () => {
 
     const input = screen.getByPlaceholderText('Filter by title or content…') as HTMLInputElement
     expect(input.value).toBe('')
+  })
+
+  // Reviewer-verified seam: type a filter (URL carries ?filter=), then navigate via any link
+  // that drops ?filter= (TabBar tabs, sidebar wordmark — both preserve only ?projects=). Before
+  // the fix, the input kept displaying the stale text while the list was already unfiltered.
+  it('adopts an external URL change that drops the filter, and does not write back', async () => {
+    // Stands in for the real drops-?filter= navigations (TabBar tabs, the sidebar wordmark
+    // link): both deliberately preserve only ?projects=, landing on a URL with no ?filter= key
+    // at all. Defined inline (not module-scope), mirroring LocationProbe's nesting above.
+    function NavigateToProjectsOnly() {
+      const navigate = useNavigate()
+      return (
+        <button type="button" onClick={() => navigate('/?projects=x')}>
+          navigate away
+        </button>
+      )
+    }
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <TopbarSearch />
+        <NavigateToProjectsOnly />
+      </MemoryRouter>,
+    )
+
+    const input = screen.getByPlaceholderText('Filter by title or content…') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'abc' } })
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 4)
+    expect(input.value).toBe('abc')
+    expect(writeSidebarParamsSpy).toHaveBeenCalledTimes(1) // the typed filter's own write landed
+
+    writeSidebarParamsSpy.mockClear()
+    fireEvent.click(screen.getByText('navigate away'))
+
+    // The seam: the input must clear to match the now-filterless URL, not keep showing 'abc'.
+    expect(input.value).toBe('')
+
+    // The adoption itself must never fire a write — it's reflecting the URL, not driving it.
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 4)
+    expect(writeSidebarParamsSpy).not.toHaveBeenCalled()
   })
 
   it('clearing the input writes a filter-delete', async () => {
