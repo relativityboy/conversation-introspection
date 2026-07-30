@@ -96,6 +96,24 @@ def test_projects_session_counts_exclude_archived(client: TestClient) -> None:
             assert count == before[slug]
 
 
+def test_projects_archiving_the_sole_session_keeps_the_project_at_zero(
+    client: TestClient,
+) -> None:
+    """Pins the ON-vs-WHERE choice in ``_not_archived()``'s use inside ``list_projects``' outer
+    join: archiving PROJECT_SLUG_2's only session (SESSION_UUID_3) must leave the project listed
+    at ``session_count`` 0, not drop the row entirely. A WHERE-clause "simplification" (moving the
+    exclusion out of the join's ON and onto the query as a whole) would turn the outer join into
+    an inner one in effect for this project, and the row would vanish -- exactly the regression
+    this test exists to catch.
+    """
+    resp = client.put(f"/api/v1/sessions/{SESSION_UUID_3}/archive")
+    assert resp.status_code == 204
+
+    by_slug = {p["dir_slug"]: p for p in client.get("/api/v1/projects").json()}
+    assert PROJECT_SLUG_2 in by_slug
+    assert by_slug[PROJECT_SLUG_2]["session_count"] == 0
+
+
 # --- Sessions list ----------------------------------------------------------------------
 
 

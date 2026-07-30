@@ -1,7 +1,8 @@
 /**
  * Pure `URLSearchParams` helpers for the sidebar's shareable filter state (`?filter=`, `?fav=1`).
  * Kept framework-free (no react-router import) so they're trivially unit-testable and reusable
- * from both the debounced content-filter effect and the favorites-chip click handler.
+ * from both TopbarSearch's debounced content-filter effect and Sidebar's favorites-chip click
+ * handler.
  */
 
 export interface SidebarParams {

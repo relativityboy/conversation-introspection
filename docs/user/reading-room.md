@@ -25,7 +25,7 @@ The URLs are shareable and encode where you are:
 | `/s/<uuid>/a/<agent-hex>` | A subagent (sub-session) transcript. |
 | `/s/<uuid>/a/<agent-hex>/m/<record-uuid>` | A subagent, deep-linked to one message. |
 
-Two query parameters ride along and survive navigation: `?filter=` (sidebar search) and
+Two query parameters ride along and survive navigation: `?filter=` (content search) and
 `?projects=` (the project filter), so a link you copy reproduces exactly what you were looking at.
 
 ## The search box

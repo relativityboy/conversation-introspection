@@ -159,6 +159,9 @@ def _not_archived() -> ColumnElement:
     session matched only by conversational content (§14.1) is still hidden. The messages/export
     read paths can't use this correlated form (they don't select ``ChatSession``) and instead
     probe ``archived_sessions`` directly -- see ``list_messages`` and the admin export route.
+    A third named use site, ``list_projects``, folds it into the outer join's ON clause (not a
+    WHERE) so a project whose sessions are all archived still lists at ``session_count`` 0
+    instead of disappearing from the response entirely.
     """
     return ~(
         select(ArchivedSession.session_uuid)
