@@ -75,7 +75,39 @@ function renderTree(overrides: Partial<ProjectTreeProps> = {}) {
 
 beforeEach(() => {
   fetchProjects.mockReset()
+  // Default resolves PROJECTS — final review D makes ProjectTree call useProjects() at the top
+  // level unconditionally (for the label map), so filtered-mode tests need SOME resolved value
+  // even though they never render BrowseTree; individual tests override this where the actual
+  // project list content matters (e.g. the resolved_cwd label tests below).
+  fetchProjects.mockResolvedValue(PROJECTS)
   fetchSessions.mockReset()
+})
+
+// --- empty states (final review B) -------------------------------------------------------
+
+it('BrowseTree shows the archive-empty line when there are no projects and no chips selected', async () => {
+  fetchProjects.mockResolvedValue([])
+  renderTree()
+
+  await screen.findByText('Archive is empty — run introspect import')
+})
+
+it('BrowseTree shows "No projects match" when chips select none of the known projects', async () => {
+  fetchProjects.mockResolvedValue(PROJECTS)
+  renderTree({ chips: ['-Users-x-nonexistent'] })
+
+  await screen.findByText('No projects match')
+})
+
+it('a 0-count project expands onto the archived-hidden empty line, not nothing', async () => {
+  fetchProjects.mockResolvedValue(PROJECTS)
+  fetchSessions.mockResolvedValue({ items: [], total: 0 })
+  renderTree()
+
+  await screen.findByText('x-mid')
+  fireEvent.click(screen.getByRole('button', { name: /x-mid/ }))
+
+  await screen.findByText('no conversations — archived ones are hidden')
 })
 
 it('renders every project alphabetically by display name with count badges', async () => {
@@ -94,6 +126,30 @@ it('renders every project alphabetically by display name with count badges', asy
   expect(rows[1].textContent).toContain('0')
   expect(rows[2].textContent).toContain('x-zeta')
   expect(rows[2].textContent).toContain('2')
+})
+
+// --- resolved_cwd labels (final review D) -------------------------------------------------
+
+it('BrowseTree rows render the resolved_cwd label and sort by label, not slug', async () => {
+  // Slug order would put '-Users-x-aaa' before '-Users-x-zzz' ('x-aaa' < 'x-zzz'); the pretty
+  // label 'apple' for the zzz-slugged project must instead sort it FIRST ('apple' < 'x-aaa').
+  const labeled: ProjectOut[] = [
+    project('-Users-x-zzz', {
+      id: 20,
+      resolved_cwd: '/Users/x/projects/@ai/apple',
+      session_count: 3,
+    }),
+    project('-Users-x-aaa', { id: 21, resolved_cwd: null, session_count: 1 }),
+  ]
+  fetchProjects.mockResolvedValue(labeled)
+  renderTree()
+
+  await screen.findByText('apple')
+
+  const rows = screen.getAllByRole('button')
+  expect(rows).toHaveLength(2)
+  expect(rows[0].textContent).toContain('apple')
+  expect(rows[1].textContent).toContain('x-aaa')
 })
 
 it('rows start collapsed; no sessions fetch fires until expand', async () => {
@@ -209,8 +265,9 @@ it('q or fav switches to ONE flat query grouped by project, auto-expanded, rows 
   await screen.findByText('Alpha horizon convo')
   expect(screen.getByText('Zeta horizon convo')).toBeDefined()
 
-  // fetchProjects is never consulted in filtered mode — BrowseTree doesn't mount.
-  expect(fetchProjects).not.toHaveBeenCalled()
+  // BrowseTree still doesn't mount, but ProjectTree's top-level label map (final review D)
+  // fetches /projects unconditionally now — once, not per matched project.
+  expect(fetchProjects).toHaveBeenCalledTimes(1)
   // ONE flat query, not one per matched project.
   expect(fetchSessions).toHaveBeenCalledTimes(1)
   expect(fetchSessions).toHaveBeenCalledWith({ q: 'horizon' })
@@ -239,6 +296,29 @@ it('groups sort alphabetically and absent projects are pruned', async () => {
   const headers = screen.getAllByText(/^▾ /)
   expect(headers.map((h) => h.textContent)).toEqual(['▾ x-alpha', '▾ x-zeta'])
   expect(screen.queryByText(/x-mid/)).toBeNull()
+})
+
+it('FilteredTree group headers render the resolved_cwd label and sort by label, not slug', async () => {
+  // Same slug-vs-label sort inversion as the BrowseTree case above.
+  const labeled: ProjectOut[] = [
+    project('-Users-x-zzz', {
+      id: 22,
+      resolved_cwd: '/Users/x/projects/@ai/apple',
+      session_count: 1,
+    }),
+    project('-Users-x-aaa', { id: 23, resolved_cwd: null, session_count: 1 }),
+  ]
+  fetchProjects.mockResolvedValue(labeled)
+  const zzzSession = session('s-zzz-1', '-Users-x-zzz')
+  const aaaSession = session('s-aaa-1', '-Users-x-aaa')
+  fetchSessions.mockResolvedValue({ items: [aaaSession, zzzSession], total: 2 })
+
+  renderTree({ fav: true })
+
+  await screen.findByText(/apple/)
+
+  const headers = screen.getAllByText(/^▾ /)
+  expect(headers.map((h) => h.textContent)).toEqual(['▾ apple', '▾ x-aaa'])
 })
 
 it('snippets ride into the grouped rows', async () => {
@@ -315,4 +395,28 @@ it('clearing the filter restores browse mode with manual expand state intact, no
   await screen.findByText('Zeta convo one')
   expect(fetchSessions).not.toHaveBeenCalled()
   expect(screen.getByRole('button', { name: /x-zeta/ }).getAttribute('aria-expanded')).toBe('true')
+})
+
+// --- sticky project headers (final review E) ----------------------------------------------
+
+it('BrowseTree project rows are sticky headers', async () => {
+  renderTree()
+
+  const row = await screen.findByRole('button', { name: /x-alpha/ })
+  expect(row.style.position).toBe('sticky')
+  expect(row.style.top).toBe('0px')
+  expect(row.style.zIndex).toBe('1')
+  expect(row.style.background).toBe('var(--depth)')
+})
+
+it('FilteredTree group headers are sticky', async () => {
+  fetchSessions.mockResolvedValue({ items: [session('s-alpha-1', '-Users-x-alpha')], total: 1 })
+
+  renderTree({ fav: true })
+
+  const header = await screen.findByText(/^▾ /)
+  expect(header.style.position).toBe('sticky')
+  expect(header.style.top).toBe('0px')
+  expect(header.style.zIndex).toBe('1')
+  expect(header.style.background).toBe('var(--depth)')
 })

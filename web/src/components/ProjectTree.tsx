@@ -1,8 +1,8 @@
 import type { CSSProperties } from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useProjects, useSessions } from '../api/hooks'
 import type { SessionSummary } from '../api/types'
-import { projectDisplayName } from '../lib/projectName'
+import { projectDisplayName, projectLabel } from '../lib/projectName'
 import { SessionListItem } from './SessionListItem'
 
 export interface ProjectTreeProps {
@@ -14,8 +14,19 @@ export interface ProjectTreeProps {
 
 const SKELETON_ROWS = 3
 
-// Same convention as Sidebar's MIST_TEXT (Task 3/4): inline styling, no new stylesheet.
+// Same convention as Sidebar's MIST_TEXT: inline styling, no new stylesheet.
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', padding: '10px 6px', fontSize: 13 }
+
+// Sticky project headers (final review E): the header stays pinned to the top of the nearest
+// scroll ancestor (the app shell's <nav>) while its children scroll underneath; consecutive
+// headers displace each other naturally as they meet. `background` must be opaque so the
+// scrolled-under rows don't show through.
+const STICKY_HEADER: CSSProperties = {
+  position: 'sticky',
+  top: 0,
+  background: 'var(--depth)',
+  zIndex: 1,
+}
 
 const ROW_STYLE: CSSProperties = {
   fontFamily: 'var(--mono)',
@@ -30,6 +41,7 @@ const ROW_STYLE: CSSProperties = {
   width: '100%',
   padding: '6px 6px',
   textAlign: 'left',
+  ...STICKY_HEADER,
 }
 
 const GLYPH_STYLE: CSSProperties = { color: 'var(--mist)' }
@@ -48,6 +60,7 @@ const GROUP_HEADER_STYLE: CSSProperties = {
   fontSize: 12,
   color: 'var(--mist)',
   padding: '6px 6px',
+  ...STICKY_HEADER,
 }
 
 export function ProjectTree({ q, fav, chips, search }: ProjectTreeProps) {
@@ -61,8 +74,37 @@ export function ProjectTree({ q, fav, chips, search }: ProjectTreeProps) {
       return next
     })
 
-  if (q.length > 0 || fav) return <FilteredTree q={q} fav={fav} chips={chips} search={search} />
-  return <BrowseTree chips={chips} search={search} expanded={expanded} onToggle={toggle} />
+  // ONE label map (final review D), built here so BrowseTree rows and FilteredTree group headers
+  // never compute labels independently and drift apart. react-query's cache (staleTime: Infinity)
+  // makes this call free once BrowseTree has already fetched projects; in a pure filtered-mode
+  // mount it adds the one cached /projects fetch that powers correct naming there too.
+  const { data: projects } = useProjects()
+  const labels = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const p of projects ?? []) {
+      map.set(p.dir_slug, projectLabel(p.dir_slug, p.resolved_cwd))
+    }
+    return map
+  }, [projects])
+
+  if (q.length > 0 || fav)
+    return <FilteredTree q={q} fav={fav} chips={chips} search={search} labels={labels} />
+  return (
+    <BrowseTree
+      chips={chips}
+      search={search}
+      expanded={expanded}
+      onToggle={toggle}
+      labels={labels}
+    />
+  )
+}
+
+// Falls back to the slug-tail cut when `labels` doesn't have an entry — either the project list
+// hasn't loaded yet, or (filtered mode only) a session references a project slug the cached
+// /projects list doesn't know about yet (final review D).
+function labelFor(labels: ReadonlyMap<string, string>, slug: string): string {
+  return labels.get(slug) ?? projectDisplayName(slug)
 }
 
 interface BrowseTreeProps {
@@ -70,20 +112,29 @@ interface BrowseTreeProps {
   search: string
   expanded: ReadonlySet<string>
   onToggle: (slug: string) => void
+  labels: ReadonlyMap<string, string>
 }
 
-function BrowseTree({ chips, search, expanded, onToggle }: BrowseTreeProps) {
+function BrowseTree({ chips, search, expanded, onToggle, labels }: BrowseTreeProps) {
   const { data, isLoading, isError } = useProjects()
 
   if (isLoading) return <SkeletonRows />
   if (isError) return <p style={MIST_TEXT}>archive offline</p>
-  // Exhaustiveness guard: isLoading/isError as separate booleans don't narrow `data` for
-  // TS (unlike a single discriminated `status` check) — this is the third, success case.
+  // unreachable in success flow, but REAL offline: networkMode 'online' mounts land here paused;
+  // blank matches the flat list's behavior.
   if (!data) return null
 
   const rows = (chips.length ? data.filter((p) => chips.includes(p.dir_slug)) : data)
     .slice()
-    .sort((a, b) => projectDisplayName(a.dir_slug).localeCompare(projectDisplayName(b.dir_slug)))
+    .sort((a, b) => labelFor(labels, a.dir_slug).localeCompare(labelFor(labels, b.dir_slug)))
+
+  if (rows.length === 0) {
+    return (
+      <p style={MIST_TEXT}>
+        {chips.length ? 'No projects match' : 'Archive is empty — run introspect import'}
+      </p>
+    )
+  }
 
   return (
     <>
@@ -98,7 +149,7 @@ function BrowseTree({ chips, search, expanded, onToggle }: BrowseTreeProps) {
               style={ROW_STYLE}
             >
               <span style={GLYPH_STYLE}>{open ? '▾' : '▸'}</span>
-              {projectDisplayName(p.dir_slug)}
+              {labelFor(labels, p.dir_slug)}
               <span style={COUNT_STYLE}>{p.session_count}</span>
             </button>
             {open && (
@@ -124,7 +175,11 @@ function ProjectChildren({ slug, search }: { slug: string; search: string }) {
       </button>
     )
   }
+  // unreachable in success flow, but REAL offline: networkMode 'online' mounts land here paused;
+  // blank matches the flat list's behavior.
   if (!data) return null
+  if (data.items.length === 0)
+    return <p style={MIST_TEXT}>no conversations — archived ones are hidden</p>
 
   return (
     <>
@@ -140,7 +195,11 @@ function ProjectChildren({ slug, search }: { slug: string; search: string }) {
   )
 }
 
-function FilteredTree({ q, fav, chips, search }: ProjectTreeProps) {
+interface FilteredTreeProps extends ProjectTreeProps {
+  labels: ReadonlyMap<string, string>
+}
+
+function FilteredTree({ q, fav, chips, search, labels }: FilteredTreeProps) {
   // ONE flat query — never per-project — is the whole point of filtered mode (spec §4.5): a
   // search or ★ Favorites toggle prunes the tree to matches across ALL projects at once, not
   // project-by-project. `expanded` (browse mode's manual toggle state) is never touched here.
@@ -151,8 +210,8 @@ function FilteredTree({ q, fav, chips, search }: ProjectTreeProps) {
   })
   if (isLoading) return <SkeletonRows />
   if (isError) return <p style={MIST_TEXT}>archive offline</p>
-  // Exhaustiveness guard: isLoading/isError as separate booleans don't narrow `data` for TS
-  // (unlike a single discriminated `status` check) — this is the third, success case.
+  // unreachable in success flow, but REAL offline: networkMode 'online' mounts land here paused;
+  // blank matches the flat list's behavior.
   if (!data) return null
   if (data.items.length === 0) return <p style={MIST_TEXT}>No conversations match</p>
 
@@ -163,7 +222,7 @@ function FilteredTree({ q, fav, chips, search }: ProjectTreeProps) {
     groups.set(item.project_slug, list)
   }
   const slugs = [...groups.keys()].sort((a, b) =>
-    projectDisplayName(a).localeCompare(projectDisplayName(b)),
+    labelFor(labels, a).localeCompare(labelFor(labels, b)),
   )
   return (
     <>
@@ -171,7 +230,7 @@ function FilteredTree({ q, fav, chips, search }: ProjectTreeProps) {
         <div key={slug}>
           {/* Static ▾ — auto-expanded groups are not collapsible while filtering (D3); a
               disclosure that can't close would lie as a button, so this is a heading div. */}
-          <div style={GROUP_HEADER_STYLE}>▾ {projectDisplayName(slug)}</div>
+          <div style={GROUP_HEADER_STYLE}>▾ {labelFor(labels, slug)}</div>
           <div style={{ paddingLeft: 14 }}>
             {groups.get(slug)!.map((s) => (
               <SessionListItem key={s.session_uuid} session={s} search={search} inTree />
