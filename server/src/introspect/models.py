@@ -163,6 +163,9 @@ class Message(Base):
 
 class ContentBlock(Base):
     __tablename__ = "content_blocks"
+    __table_args__ = (
+        Index("ix_content_blocks_message_id", "message_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"))
