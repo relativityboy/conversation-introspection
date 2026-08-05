@@ -427,9 +427,10 @@ describe('top / end reader controls', () => {
   })
 })
 
-// §15.2: each row's `{}` opens the reader-level raw-record inspector, seeded on that row's uuid and
-// reading the loaded window as its traversal order. This is the wiring check; the modal's own
-// behavior matrix lives in RawRecordInspector.test.tsx.
+// §15.2: each row's speaker-name button opens the reader-level raw-record inspector, seeded on
+// that row's uuid and reading the loaded window as its traversal order (§5/§6 rework: the name
+// replaced the retired `{}` as the trigger). This is the wiring check; the modal's own behavior
+// matrix lives in RawRecordInspector.test.tsx.
 describe('raw-record inspector wiring', () => {
   it('opens the inspector on the clicked row, seeded with that row’s uuid', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 3, 3))
@@ -437,7 +438,7 @@ describe('raw-record inspector wiring', () => {
     renderView()
     await screen.findAllByTestId('row')
 
-    const inspectButtons = screen.getAllByRole('button', { name: 'Inspect raw record' })
+    const inspectButtons = screen.getAllByRole('button', { name: /view raw record/ })
     await userEvent.click(inspectButtons[0])
 
     expect(await screen.findByRole('dialog')).toBeDefined()

@@ -1,4 +1,6 @@
-import type { CSSProperties } from 'react'
+import type { CSSProperties, MouseEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useParams } from 'react-router-dom'
 import type { BlockOut, MessageOut } from '../../api/types'
 import { isChatOnlyVisible } from '../../lib/chatOnly'
 import { ImageBlock } from './ImageBlock'
@@ -6,6 +8,7 @@ import { MarkdownProse } from './MarkdownProse'
 import { SubagentChip } from './SubagentChip'
 import { ThinkingGlyph } from './ThinkingGlyph'
 import { ToolBlock } from './ToolBlock'
+import './eyebrow.css'
 
 // NOTE(claude): speaker labels are deliberately generic — "YOU" / "CLAUDE" / "SYSTEM", never
 // personal names. This repo is public and reads whatever archive it's pointed at; other
@@ -40,19 +43,18 @@ function voiceOf(message: MessageOut): Voice {
   return 'system'
 }
 
-// A quiet mono `{}` in the eyebrow that opens the raw-record inspector (§15.2). Mist-toned, no
-// chrome — the calmest possible affordance, one per row, wired only when the reader supplies an
-// onInspect (SubagentPage/SessionPage readers do; the un-virtualized MessageTurn unit tests don't).
-const INSPECT_BUTTON_STYLE: CSSProperties = {
+const EYEBROW_STYLE: CSSProperties = {
   fontFamily: 'var(--mono)',
   fontSize: 10,
-  lineHeight: 1.2,
-  letterSpacing: '.06em',
-  background: 'none',
-  border: 'none',
-  padding: 0,
-  cursor: 'pointer',
+  letterSpacing: '.14em',
   color: 'var(--mist)',
+}
+
+// route context → this row's shareable path; null outside a session route (bare unit renders)
+function useEntryHref(recordUuid: string): string | null {
+  const { uuid, agentHex } = useParams()
+  if (!uuid) return null
+  return agentHex ? `/s/${uuid}/a/${agentHex}/m/${recordUuid}` : `/s/${uuid}/m/${recordUuid}`
 }
 
 export interface MessageTurnProps {
@@ -60,12 +62,37 @@ export interface MessageTurnProps {
   /** Conversation-only mode: hide tool_use / tool_result blocks (and the subagent chips that ride
    * tool_use) — see `Block`. Owned by the page via useChatOnly; false when omitted. */
   chatOnly?: boolean
-  /** Opens the raw-record inspector for this row (§15.2). Supplied by the reader (MessageStream);
-   * absent in the un-virtualized unit tests, where the `{}` affordance simply isn't rendered. */
+  /** Opens the raw-record inspector for this row (§15.2), wired to the speaker-name button.
+   * Supplied by the reader (MessageStream); absent in the un-virtualized unit tests, where the
+   * name renders as plain text instead. */
   onInspect?: (recordUuid: string) => void
 }
 
 export function MessageTurn({ message, chatOnly = false, onInspect }: MessageTurnProps) {
+  const href = useEntryHref(message.record_uuid)
+  const [copied, setCopied] = useState(false)
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current)
+    }
+  }, [])
+
+  // Deliberate new-tab/copy-link gestures stay native (spec §5): only a plain primary click
+  // copies. Middle-click/right-click never reach onClick.
+  function handleTimeClick(e: MouseEvent<HTMLAnchorElement>) {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !href) return
+    e.preventDefault()
+    void navigator.clipboard?.writeText(window.location.origin + href).catch(() => {})
+    setCopied(true)
+    if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current)
+    copiedTimerRef.current = setTimeout(() => {
+      copiedTimerRef.current = null
+      setCopied(false)
+    }, 1600)
+  }
+
   // Conversation-only mode hides harness-furniture attachment stubs (Task P4-F1): the ~800
   // zero-block deferred_tools_delta / skill_listing / task_reminder rows collapse to nothing,
   // while a block-bearing attachment (a rescued human queued prompt) stays. `isChatOnlyVisible` is
@@ -88,33 +115,43 @@ export function MessageTurn({ message, chatOnly = false, onInspect }: MessageTur
           style={{
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
             gap: 8,
             marginBottom: 8,
           }}
         >
-          <span
-            className="turn-eyebrow mono"
-            style={{
-              fontFamily: 'var(--mono)',
-              fontSize: 10,
-              letterSpacing: '.14em',
-              color: 'var(--mist)',
-            }}
-          >
-            {time ? `${SPEAKER[voice]} · ${time}` : SPEAKER[voice]}
+          <span className="turn-eyebrow mono" style={EYEBROW_STYLE}>
+            {onInspect ? (
+              <button
+                type="button"
+                className="turn-speaker sw-tip"
+                data-tip="view raw record"
+                aria-label={`view raw record — ${SPEAKER[voice]}`}
+                onClick={() => onInspect(message.record_uuid)}
+              >
+                {SPEAKER[voice]}
+              </button>
+            ) : (
+              SPEAKER[voice]
+            )}
+            {time && (
+              <>
+                {' · '}
+                {href ? (
+                  <a
+                    className="turn-time sw-tip"
+                    data-tip="click to copy deeplink"
+                    href={href}
+                    onClick={handleTimeClick}
+                  >
+                    {time}
+                  </a>
+                ) : (
+                  time
+                )}
+                {copied && <span className="turn-copied">copied</span>}
+              </>
+            )}
           </span>
-          {onInspect && (
-            <button
-              type="button"
-              className="raw-record-open mono"
-              aria-label="Inspect raw record"
-              onClick={() => onInspect(message.record_uuid)}
-              style={INSPECT_BUTTON_STYLE}
-            >
-              {'{}'}
-            </button>
-          )}
         </div>
         {blocks.map((block) => (
           <Block key={block.block_index} block={block} chatOnly={chatOnly} />

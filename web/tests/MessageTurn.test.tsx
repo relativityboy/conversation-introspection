@@ -1,7 +1,7 @@
-import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import type { ReactElement } from 'react'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BlockOut, MessageOut, TranscriptInfo } from '../src/api/types'
 import { MessageTurn } from '../src/components/reader/MessageTurn'
 import { TranscriptsProvider } from '../src/components/reader/transcripts-context'
@@ -9,6 +9,20 @@ import { TranscriptsProvider } from '../src/components/reader/transcripts-contex
 // MessageTurn is deliberately tested UN-virtualized (plain render, no Virtuoso) — jsdom has no
 // layout engine, so these assertions stay honest: class names, DOM order, and markdown output
 // are all real; nothing depends on measured heights.
+
+// Route context is now a real dependency of the component (useEntryHref reads useParams), so
+// every render needs a Router with a matched Route — bare MemoryRouter no longer suffices once a
+// test cares about the resulting href.
+const SESSION_UUID = 'sess-1234'
+function renderTurn(ui: ReactElement, path = `/s/${SESSION_UUID}`, pattern = '/s/:uuid') {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path={pattern} element={ui} />
+      </Routes>
+    </MemoryRouter>,
+  )
+}
 
 function textBlock(index: number, text: string): BlockOut {
   return {
@@ -41,30 +55,44 @@ function turnOf(container: HTMLElement): HTMLElement {
 
 describe('voice accents', () => {
   it('marks user turns with the dawn accent class', () => {
-    const { container } = render(<MessageTurn message={message({ type: 'user' })} />)
+    const { container } = renderTurn(<MessageTurn message={message({ type: 'user' })} />)
     expect(turnOf(container).classList.contains('turn-user')).toBe(true)
   })
 
   it('marks assistant turns with the dragonfly accent class', () => {
-    const { container } = render(<MessageTurn message={message({ type: 'assistant' })} />)
+    const { container } = renderTurn(<MessageTurn message={message({ type: 'assistant' })} />)
     expect(turnOf(container).classList.contains('turn-assistant')).toBe(true)
   })
 
   it('marks system turns with the mist accent class', () => {
-    const { container } = render(<MessageTurn message={message({ type: 'system' })} />)
+    const { container } = renderTurn(<MessageTurn message={message({ type: 'system' })} />)
     expect(turnOf(container).classList.contains('turn-system')).toBe(true)
   })
 
   it('treats unknown record types as system-accented', () => {
-    const { container } = render(<MessageTurn message={message({ type: 'summary' })} />)
+    const { container } = renderTurn(<MessageTurn message={message({ type: 'summary' })} />)
     expect(turnOf(container).classList.contains('turn-system')).toBe(true)
   })
 })
 
+// §5/§6 rework: the `{}` inspect button is retired. The speaker NAME is now the raw-record
+// trigger (same onInspect wiring), and HH:MM is a copy-on-click deeplink anchor. Six contract
+// cases from the task brief, each pinned as its own test.
 describe('eyebrow', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    // @ts-expect-error - deleting a stubbed test-only global
+    delete navigator.clipboard
+  })
+
   it('renders "SPEAKER · HH:MM" with the local time', () => {
     const iso = '2026-07-19T14:03:00Z'
-    const { container } = render(
+    const { container } = renderTurn(
       <MessageTurn message={message({ type: 'user', timestamp: iso })} />,
     )
     const local = new Date(iso)
@@ -76,14 +104,95 @@ describe('eyebrow', () => {
   })
 
   it('labels assistant turns CLAUDE and system turns SYSTEM', () => {
-    const a = render(<MessageTurn message={message({ type: 'assistant' })} />)
+    const a = renderTurn(<MessageTurn message={message({ type: 'assistant' })} />)
     expect(a.container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^CLAUDE · /)
-    const s = render(<MessageTurn message={message({ type: 'system' })} />)
+    const s = renderTurn(<MessageTurn message={message({ type: 'system' })} />)
     expect(s.container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM · /)
   })
 
-  it('omits the time (no separator) when the timestamp is absent', () => {
-    const { container } = render(<MessageTurn message={message({ timestamp: null })} />)
+  // Case 1: the `{}` affordance no longer exists anywhere, even when onInspect is wired.
+  it('never renders the retired {} inspect button, even with onInspect supplied', () => {
+    renderTurn(<MessageTurn message={message()} onInspect={vi.fn()} />)
+    expect(screen.queryByText('{}')).toBeNull()
+  })
+
+  // Case 2: the speaker name is the raw-record trigger when onInspect is wired; plain text
+  // (no button role) in the un-wired unit-test case — same conditional the `{}` had.
+  it('makes the speaker name a button that calls onInspect with the record uuid', () => {
+    const onInspect = vi.fn()
+    renderTurn(
+      <MessageTurn message={message({ type: 'assistant', record_uuid: 'rec-42' })} onInspect={onInspect} />,
+    )
+    const btn = screen.getByRole('button', { name: /view raw record — CLAUDE/ })
+    fireEvent.click(btn)
+    expect(onInspect).toHaveBeenCalledWith('rec-42')
+  })
+
+  it('renders the speaker name as plain text (no button role) when onInspect is absent', () => {
+    const { container } = renderTurn(<MessageTurn message={message({ type: 'assistant' })} />)
+    expect(screen.queryByRole('button', { name: /view raw record/ })).toBeNull()
+    // Bare text node (no wrapping element), same as the pre-rework un-wired case — assert via
+    // the eyebrow's textContent rather than getByText, which can't isolate text diluted by the
+    // adjacent " · HH:MM" sibling content.
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^CLAUDE · /)
+  })
+
+  // Case 3: the time is a deeplink anchor scoped to the current route — session-level under
+  // /s/:uuid, nested under the agent segment on the subagent route.
+  it('renders the time as a.turn-time deeplinking to this record under the session route', () => {
+    const { container } = renderTurn(<MessageTurn message={message({ record_uuid: 'rec-7' })} />)
+    const anchor = container.querySelector('a.turn-time')
+    expect(anchor).not.toBeNull()
+    expect(anchor?.getAttribute('href')).toBe(`/s/${SESSION_UUID}/m/rec-7`)
+  })
+
+  it('nests the deeplink under the agent segment on the subagent route', () => {
+    const { container } = renderTurn(
+      <MessageTurn message={message({ record_uuid: 'rec-7' })} />,
+      '/s/sess-1234/a/beef42',
+      '/s/:uuid/a/:agentHex',
+    )
+    const anchor = container.querySelector('a.turn-time')
+    expect(anchor?.getAttribute('href')).toBe('/s/sess-1234/a/beef42/m/rec-7')
+  })
+
+  // Case 4: a plain primary click copies the absolute deeplink, prevents the native navigation,
+  // and flashes a "copied" whisper that clears itself after 1600ms.
+  it('plain left-click copies the deeplink, prevents default, and flashes "copied"', () => {
+    const { container } = renderTurn(<MessageTurn message={message({ record_uuid: 'rec-7' })} />)
+    const anchor = container.querySelector<HTMLAnchorElement>('a.turn-time')
+    expect(anchor).not.toBeNull()
+    const href = anchor!.getAttribute('href')!
+
+    // fireEvent.click's return value is the DOM dispatchEvent result: false means some handler
+    // called preventDefault() on the (cancelable) click event — i.e. no native navigation.
+    const notPrevented = fireEvent.click(anchor!)
+    expect(notPrevented).toBe(false)
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(window.location.origin + href)
+    expect(container.querySelector('.turn-copied')?.textContent).toBe('copied')
+
+    act(() => {
+      vi.advanceTimersByTime(1600)
+    })
+    expect(container.querySelector('.turn-copied')).toBeNull()
+  })
+
+  // Case 5: modified clicks stay native — only a plain primary click copies.
+  it('does not copy on ctrl-click or meta-click', () => {
+    const { container } = renderTurn(<MessageTurn message={message({ record_uuid: 'rec-7' })} />)
+    const anchor = container.querySelector<HTMLAnchorElement>('a.turn-time')!
+
+    fireEvent.click(anchor, { ctrlKey: true })
+    fireEvent.click(anchor, { metaKey: true })
+
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+  })
+
+  // Case 6: absent timestamp — no anchor, no ` · ` separator, speaker alone (re-pinned).
+  it('omits the time (no anchor, no separator) when the timestamp is absent', () => {
+    const { container } = renderTurn(<MessageTurn message={message({ timestamp: null })} />)
+    expect(container.querySelector('a.turn-time')).toBeNull()
     expect(container.querySelector('.turn-eyebrow')?.textContent).toBe('YOU')
   })
 })
@@ -93,7 +202,7 @@ describe('block ordering and dispatch', () => {
     const shuffled = message({
       blocks: [textBlock(2, 'third'), textBlock(0, 'first'), textBlock(1, 'second')],
     })
-    const { container } = render(<MessageTurn message={shuffled} />)
+    const { container } = renderTurn(<MessageTurn message={shuffled} />)
     const paragraphs = [...container.querySelectorAll('.markdown-prose p')].map(
       (p) => p.textContent,
     )
@@ -122,13 +231,9 @@ describe('block ordering and dispatch', () => {
       ],
     })
     // No TranscriptsProvider here, so the unmatched tool_use degrades to a plain ToolBlock.
-    // MemoryRouter is still required, though: SubagentChip (Task 9) reads the current
+    // The router wrapper is still required, though: SubagentChip (Task 9) reads the current
     // ?projects= via useSearchParams() unconditionally, before the no-match check runs.
-    const { container } = render(
-      <MemoryRouter>
-        <MessageTurn message={toolMsg} />
-      </MemoryRouter>,
-    )
+    const { container } = renderTurn(<MessageTurn message={toolMsg} />)
     expect(container.querySelector('.tool-block')).not.toBeNull()
     expect(container.querySelector('.block-stub')).toBeNull()
     expect(container.querySelector('.thinking-glyph')).not.toBeNull()
@@ -172,11 +277,7 @@ describe('conversation-only block hiding (chatOnly prop)', () => {
         },
       ],
     })
-    const { container } = render(
-      <MemoryRouter>
-        <MessageTurn message={msg} chatOnly />
-      </MemoryRouter>,
-    )
+    const { container } = renderTurn(<MessageTurn message={msg} chatOnly />)
     // tool_use (as ToolBlock, no transcript match) and tool_result both vanish.
     expect(container.querySelector('.tool-block')).toBeNull()
     // conversational blocks remain.
@@ -195,12 +296,10 @@ describe('conversation-only block hiding (chatOnly prop)', () => {
       parent_tool_use_id: 'tu-1',
     }
     const msg = message({ blocks: [toolBlock(0)] })
-    render(
-      <MemoryRouter>
-        <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
-          <MessageTurn message={msg} chatOnly />
-        </TranscriptsProvider>
-      </MemoryRouter>,
+    renderTurn(
+      <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
+        <MessageTurn message={msg} chatOnly />
+      </TranscriptsProvider>,
     )
     expect(screen.queryByRole('link', { name: /view transcript/ })).toBeNull()
     expect(screen.queryByText(/subagent/)).toBeNull()
@@ -208,11 +307,7 @@ describe('conversation-only block hiding (chatOnly prop)', () => {
 
   it('renders tool blocks normally when chatOnly is off (default, no prop)', () => {
     const msg = message({ blocks: [toolBlock(0, { block_kind: 'tool_result', text_content: 'x' })] })
-    const { container } = render(
-      <MemoryRouter>
-        <MessageTurn message={msg} />
-      </MemoryRouter>,
-    )
+    const { container } = renderTurn(<MessageTurn message={msg} />)
     expect(container.querySelector('.tool-block')).not.toBeNull()
   })
 })
@@ -229,7 +324,7 @@ describe('attachment voice (rescued queued commands)', () => {
 
   it('labels a block-bearing attachment SYSTEM (YOU) with the dawn accent', () => {
     const msg = message({ type: 'attachment', blocks: [textBlock(0, 'queued human words')] })
-    const { container } = render(<MessageTurn message={msg} />)
+    const { container } = renderTurn(<MessageTurn message={msg} />)
     expect(turnOf(container).classList.contains('turn-attachment')).toBe(true)
     expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM \(YOU\) · /)
     expect(accentOf(container)).toContain('var(--dawn)')
@@ -238,7 +333,7 @@ describe('attachment voice (rescued queued commands)', () => {
 
   it('keeps a zero-block attachment as plain SYSTEM in full mode (mist accent)', () => {
     const msg = message({ type: 'attachment', blocks: [] })
-    const { container } = render(<MessageTurn message={msg} />)
+    const { container } = renderTurn(<MessageTurn message={msg} />)
     expect(turnOf(container).classList.contains('turn-system')).toBe(true)
     expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM · /)
     expect(accentOf(container)).toContain('var(--mist)')
@@ -246,41 +341,23 @@ describe('attachment voice (rescued queued commands)', () => {
 
   it('hides a zero-block attachment entirely when chatOnly is on', () => {
     const msg = message({ type: 'attachment', blocks: [] })
-    const { container } = render(<MessageTurn message={msg} chatOnly />)
+    const { container } = renderTurn(<MessageTurn message={msg} chatOnly />)
     expect(container.querySelector('.message-turn')).toBeNull()
     expect(container.textContent).toBe('')
   })
 
   it('keeps a block-bearing attachment visible when chatOnly is on', () => {
     const msg = message({ type: 'attachment', blocks: [textBlock(0, 'still a human turn')] })
-    const { container } = render(<MessageTurn message={msg} chatOnly />)
+    const { container } = renderTurn(<MessageTurn message={msg} chatOnly />)
     expect(container.querySelector('.message-turn')).not.toBeNull()
     expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM \(YOU\) · /)
     expect(container.textContent).toContain('still a human turn')
   })
 })
 
-// §15.2: a quiet `{}` in the eyebrow opens the raw-record inspector. Gated on `onInspect` so the
-// un-virtualized unit renders (which never supply it) keep a text-only eyebrow.
-describe('raw-record inspect affordance', () => {
-  it('renders a {} button that calls onInspect with the record uuid when supplied', async () => {
-    const onInspect = vi.fn()
-    render(<MessageTurn message={message({ record_uuid: 'rec-42' })} onInspect={onInspect} />)
-
-    await userEvent.click(screen.getByRole('button', { name: 'Inspect raw record' }))
-    expect(onInspect).toHaveBeenCalledWith('rec-42')
-  })
-
-  it('omits the affordance and keeps the eyebrow text-only when no onInspect is supplied', () => {
-    const { container } = render(<MessageTurn message={message({ timestamp: null })} />)
-    expect(screen.queryByRole('button', { name: 'Inspect raw record' })).toBeNull()
-    expect(container.querySelector('.turn-eyebrow')?.textContent).toBe('YOU')
-  })
-})
-
 describe('markdown prose', () => {
   it('renders bold and inline code', () => {
-    const { container } = render(
+    const { container } = renderTurn(
       <MessageTurn message={message({ blocks: [textBlock(0, '**bold** and `inline`')] })} />,
     )
     expect(container.querySelector('.markdown-prose strong')?.textContent).toBe('bold')
@@ -291,7 +368,7 @@ describe('markdown prose', () => {
     const hostile = message({
       blocks: [textBlock(0, 'before\n\n<script>window.pwned = true</script>\n\nafter')],
     })
-    const { container } = render(<MessageTurn message={hostile} />)
+    const { container } = renderTurn(<MessageTurn message={hostile} />)
     expect(container.querySelector('script')).toBeNull()
     expect(container.textContent).toContain('before')
     expect(container.textContent).toContain('after')
@@ -301,7 +378,7 @@ describe('markdown prose', () => {
     const fenced = message({
       blocks: [textBlock(0, '```notalang\nweird ~~ stuff <<>>\n```')],
     })
-    const { container } = render(<MessageTurn message={fenced} />)
+    const { container } = renderTurn(<MessageTurn message={fenced} />)
     const code = container.querySelector('.markdown-prose pre code')
     expect(code).not.toBeNull()
     expect(code?.textContent).toContain('weird ~~ stuff <<>>')
@@ -311,7 +388,7 @@ describe('markdown prose', () => {
     const fenced = message({
       blocks: [textBlock(0, '```js\nconst x = "still water"\n```')],
     })
-    const { container } = render(<MessageTurn message={fenced} />)
+    const { container } = renderTurn(<MessageTurn message={fenced} />)
     expect(container.querySelector('.markdown-prose pre code .hljs-keyword')).not.toBeNull()
   })
 })
