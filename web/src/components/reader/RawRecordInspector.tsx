@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRawRecord } from '../../api/hooks'
 import type { MessageOut } from '../../api/types'
 import { isChatOnlyVisible } from '../../lib/chatOnly'
+import { MarkdownProse } from './MarkdownProse'
 
 // Still Water styling: a depth-toned backdrop over the reader, a lifted surface panel, mono
 // content. The fade-in lives on the `.raw-record-overlay` CSS class (theme.css) so reduced-motion
@@ -322,5 +323,14 @@ function RawContent({ isPending, isError, text, showRaw }: RawContentProps) {
       </>
     )
   }
-  return <pre className="raw-record-pretty mono" style={PRE_STYLE}>{pretty}</pre>
+  // NOTE(claude): the pretty JSON rides the EXISTING MarkdownProse pipeline (react-markdown +
+  // rehype-highlight) as a fenced block — zero new deps, and the one Still-Water hljs theme in
+  // markdown-prose.css applies untouched (spec §7). The 4-backtick fence cannot be escaped by
+  // content: JSON.stringify(…, null, 2) output lines always start with whitespace, a quote, a
+  // bracket/brace, a digit/minus, or t/f/n — never a backtick at line start.
+  return (
+    <div className="raw-record-json">
+      <MarkdownProse markdown={'````json\n' + pretty + '\n````'} />
+    </div>
+  )
 }

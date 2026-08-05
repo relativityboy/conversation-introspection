@@ -75,7 +75,9 @@ function dialog(): HTMLElement {
 }
 
 function preText(): string {
-  return within(dialog()).getByText(/./, { selector: 'pre' }).textContent ?? ''
+  // Supports both raw bytes (<pre> with direct text) and pretty mode (<pre><code> nested).
+  const pre = dialog().querySelector('pre')
+  return pre?.textContent ?? ''
 }
 
 beforeEach(() => {
@@ -201,6 +203,34 @@ describe('navigation', () => {
     await open()
     // Last row: no next.
     expect((screen.getByRole('button', { name: 'Next record' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+// --- hotkey scoping + esc isolation -------------------------------------------------------
+
+// --- JSON colorization via the prose pipeline -----------------------------------------------
+
+describe('JSON colorization', () => {
+  it('pretty mode colorizes JSON tokens via the prose pipeline; raw bytes stays plain', async () => {
+    fetchRawRecord.mockResolvedValue('{"a": 1, "b": "two", "c": true}')
+    render(<Harness items={[msg('uuid-0')]} initialUuid="uuid-0" />)
+    await open()
+
+    // Pretty (default): token spans exist inside the prose-scoped wrapper.
+    const wrapper = document.querySelector('.raw-record-json')
+    expect(wrapper).not.toBeNull()
+    // Check for at least one of the hljs token classes that rehype-highlight produces.
+    await waitFor(() => {
+      const hasTokens = wrapper?.querySelector('.hljs-attr, .hljs-string, .hljs-number')
+      expect(hasTokens).not.toBeNull()
+    })
+
+    // Toggle raw bytes: plain pre, no token spans.
+    await userEvent.click(screen.getByRole('button', { name: 'raw bytes' }))
+    await waitFor(() => {
+      expect(document.querySelector('.raw-record-bytes')).not.toBeNull()
+      expect(document.querySelector('.raw-record-json')).toBeNull()
+    })
   })
 })
 

@@ -103,3 +103,15 @@
 .markdown-prose .hljs-deletion {
   color: var(--ember);
 }
+
+/* ---- raw-record inspector's pretty-JSON (rides the prose pipeline, spec §7) ---- */
+/* The modal wraps long lines (horizontal scroll in a dialog is hostile) and keeps the
+   inspector's quieter 12px mono — both narrower than the prose defaults above. */
+.raw-record-json .markdown-prose pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+}
+.raw-record-json .markdown-prose code {
+  font-size: 12px;
+}
