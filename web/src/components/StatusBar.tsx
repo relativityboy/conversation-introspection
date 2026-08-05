@@ -78,6 +78,13 @@ export function StatusBar() {
         }
         await new Promise((r) => setTimeout(r, 1000))
       }
+    } catch {
+      // Normalizes BOTH the run-status throw above (already 'import failed') and a raw poll
+      // failure (fetchImportRun rejecting, e.g. a network error) to the same message — without
+      // this, ActionButton's `title`/`aria-label` would leak the underlying fetch error instead
+      // of the constraint's exact copy. The visible label is unaffected either way: ActionButton
+      // always renders its own fixed `⚠ {text} failed` regardless of the thrown message.
+      throw new Error('import failed')
     } finally {
       // Terminal either way (ok, failed run, dead poll): a failed poll may hide a run that
       // completed server-side, so refetched truth beats the cache — same reasoning as the old

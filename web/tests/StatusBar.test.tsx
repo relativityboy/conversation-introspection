@@ -182,6 +182,9 @@ describe('import trigger', () => {
     fireEvent.click(btn)
 
     await waitFor(() => expect(btn.textContent).toContain('⚠ import failed'))
+    // The raw poll error ('down') must NOT leak into the button's title/aria-label — it has to
+    // be normalized to the exact same 'import failed' message a run-status failure produces.
+    expect(btn.getAttribute('title')).toBe('import failed')
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['status'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['projects'] })
