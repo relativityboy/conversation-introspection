@@ -152,11 +152,12 @@ describe('SessionPage header wiring', () => {
     expect(input.value).toBe('AI Title')
   })
 
-  it('renders the archive affordance in the header meta row (§15.1)', async () => {
+  it('renders the archive affordance inside the actions ▾ menu (§15.1)', async () => {
     fetchSession.mockResolvedValue(makeSession())
     renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
 
-    expect(await screen.findByRole('button', { name: 'archive' })).toBeDefined()
+    await userEvent.click(await screen.findByRole('button', { name: 'actions ▾' }))
+    expect(screen.getByRole('button', { name: 'archive' })).toBeDefined()
   })
 })
 
@@ -196,7 +197,8 @@ describe('SessionPage archive navigation', () => {
       </QueryClientProvider>,
     )
 
-    await userEvent.click(await screen.findByRole('button', { name: 'archive' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'actions ▾' }))
+    await userEvent.click(screen.getByRole('button', { name: 'archive' }))
 
     expect(putArchive).toHaveBeenCalledWith('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
     await waitFor(() =>

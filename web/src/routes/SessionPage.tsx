@@ -7,9 +7,8 @@ import {
   ConversationSearch,
   ConversationSearchResults,
 } from '../components/search/ConversationSearch'
-import { ArchiveButton } from '../components/ArchiveButton'
+import { ActionsMenu } from '../components/ActionsMenu'
 import { ChatOnlyToggle } from '../components/reader/ChatOnlyToggle'
-import { ResumeButton } from '../components/ResumeButton'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
 import { TitleEditor } from '../components/TitleEditor'
@@ -113,20 +112,13 @@ export function SessionPage() {
               you are in; this says what the number means. One concept, one place, no reflow. */}
             <span>{session.message_count} msgs total</span>
             {/* §17: the door back in. Archived sessions never render this page (§15.1 detail
-              404), so no archived-branch is needed here — the hiding is structural. */}
-            <ResumeButton sessionUuid={session.session_uuid} onDisk={session.on_disk} />
-            {/* The archive's headline capability, one glance from every conversation: the raw
-              records back out as JSONL. Plain <a> (not router Link) — it's an API endpoint. */}
-            <a
-              href={`/api/v1/sessions/${session.session_uuid}/export.jsonl`}
-              style={{ color: 'var(--dragonfly)', textDecoration: 'none' }}
-            >
-              ↓ .jsonl
-            </a>
+              404), so no archived-branch is needed here — the hiding is structural. §15.1: the
+              archive affordance inside this menu has no confirm dialog — the action is
+              reversible out-of-band (`introspect unarchive`). Resume, the .jsonl export, and
+              archive all live inside this actions ▾ panel now (spec §3.1) — see ActionsMenu for
+              the per-item detail. */}
+            <ActionsMenu session={session} backSearch={backToArchiveSearch} />
             <ChatOnlyToggle chatOnly={chatOnly} setChatOnly={setChatOnly} />
-            {/* §15.1: a quiet archive affordance. On success the session vanishes from every
-              read surface and the reader navigates home. No confirm dialog -- CLI restores. */}
-            <ArchiveButton sessionUuid={session.session_uuid} backSearch={backToArchiveSearch} />
           </div>
           <div style={{ margin: '14px 0 6px' }}>
             <HorizonBand start={session.started_at} end={session.last_activity_at} variant="full" />
