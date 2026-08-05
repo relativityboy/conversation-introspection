@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react'
-import { useCallback, useRef, useState } from 'react'
-import { Virtuoso } from 'react-virtuoso'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { ApiError, fetchMessages } from '../../api/client'
 import { useMessages } from '../../api/hooks'
 import type { MessageList, MessageOut } from '../../api/types'
@@ -248,20 +248,57 @@ function MessageStream({
 
   // Array index (virtuoso interprets initialTopMostItemIndex in list space, not absolute
   // space) of the around-target within the seeded page; top of the stream when absent.
-  // NOTE(claude): the target is CENTERED (2026-07-20 walk finding — top-edge landing hid the
-  // context above the highlighted message and read as "not what I hoped for").
-  const [initialTopMostItemIndex] = useState<
-    number | { index: number; align: 'center' | 'end' }
-  >(() => {
-    // End re-seed lands on the LAST message of the last page; align 'end' pins it to the bottom
-    // of the viewport (vs the top-edge landing a bare index would give).
-    if (landAtEnd) {
-      return seed.items.length > 0 ? { index: seed.items.length - 1, align: 'end' } : 0
-    }
+  //
+  // NOTE(claude): PLAIN NUMBER only — deliberately not the `{index, align}` object form (walk fix
+  // 9b, 2026-08-05). That object form asks virtuoso to resolve alignment as part of its INITIAL
+  // measure-and-correct pass, and on at least one profile-dependent Chrome configuration (dpr 2,
+  // specific font metrics — plausibly a fractional-height measure/correct oscillation, the same
+  // race-condition class as react-virtuoso#91/#883) that pass never converges: a main-thread
+  // livelock, zero rows ever paint. A plain number can't oscillate — it's a stable top-edge
+  // landing with no alignment resolution involved. The centering this reader wants (still wanted
+  // — see the 2026-07-20 finding below) happens one tick later, imperatively, via the
+  // `scrollToIndex` effect below, once virtuoso has already mounted on solid ground.
+  const [initialTopMostItemIndex] = useState<number>(() => {
+    // End re-seed lands on the LAST message of the last page (bare top-edge index for now — the
+    // bottom pin below applies the same as the around-target center pin).
+    if (landAtEnd) return seed.items.length > 0 ? seed.items.length - 1 : 0
     if (!initialAroundUuid) return 0
     const index = seed.items.findIndex((m) => m.record_uuid === initialAroundUuid)
-    return index === -1 ? 0 : { index, align: 'center' }
+    return index === -1 ? 0 : index
   })
+
+  // One-shot post-mount align correction — the imperative counterpart to the plain-number landing
+  // above. NOTE(claude): the target is still CENTERED (2026-07-20 walk finding — top-edge landing
+  // hid the context above the highlighted message and read as "not what I hoped for"); it just
+  // gets there via `scrollToIndex` on the virtuoso ref instead of as part of the initial-prop
+  // resolution (walk fix 9b). `scrolledRef` fires this at most once per MessageStream mount (also
+  // absorbs React StrictMode's dev double-invoke) — a no-op when there's no target to align to,
+  // since a bare top landing is already correct in that case. `behavior: 'auto'` is an instant
+  // jump, not a smooth-scroll animation: the point is to land, not to visibly travel there.
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
+  const scrolledRef = useRef(false)
+  useEffect(() => {
+    if (scrolledRef.current) return
+    scrolledRef.current = true
+    if (landAtEnd) {
+      if (seed.items.length > 0) {
+        virtuosoRef.current?.scrollToIndex({
+          index: seed.items.length - 1,
+          align: 'end',
+          behavior: 'auto',
+        })
+      }
+      return
+    }
+    if (!initialAroundUuid) return
+    const index = seed.items.findIndex((m) => m.record_uuid === initialAroundUuid)
+    if (index === -1) return
+    virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' })
+    // Deliberately mount-only: `seed`/`initialAroundUuid`/`landAtEnd` are stable for this
+    // instance's lifetime (ConversationView remounts MessageStream via its `key` on any change
+    // that would otherwise require re-seeding — see that component's key comment).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Deep-link arrival glow. A ref callback (not a post-render querySelector) fires exactly when
   // the target row's element mounts — robust against virtuoso's async measure-then-render and
@@ -331,6 +368,7 @@ function MessageStream({
   return (
     <>
       <Virtuoso
+        ref={virtuosoRef}
         style={{ height: '100%' }}
         totalCount={stream.items.length}
         firstItemIndex={stream.firstItemIndex}
