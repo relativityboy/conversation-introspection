@@ -1,15 +1,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../src/api/client'
-import { useImportRun } from '../src/api/hooks'
 import { StatusBar } from '../src/components/StatusBar'
 import type { ImportRun, StatusOut } from '../src/api/types'
 
 // Same convention as the rest of the suite (Sidebar/search/ConversationView tests): mock the api
-// client module — hooks.ts imports these named functions directly, so this swaps the network
-// layer for useStatus/useTriggerImport/useImportRun in one place.
+// client module — StatusBar now imports `triggerImport`/`fetchImportRun` directly (Task 2 folded
+// the old useTriggerImport/useImportRun hooks into StatusBar's own `runImport`), and useStatus
+// still goes through hooks.ts -> client.ts, so mocking the client module covers all three.
 const { fetchStatus, triggerImport, fetchImportRun } = vi.hoisted(() => ({
   fetchStatus: vi.fn(),
   triggerImport: vi.fn(),
@@ -97,76 +96,16 @@ describe('renders status', () => {
   })
 })
 
-// --- import trigger -------------------------------------------------------------------------
+// --- import trigger (ActionButton's onClick is StatusBar's `runImport`) --------------------
+// The Phase machine is gone: ActionButton owns pending/success/error UI on its own, driven
+// entirely by what `runImport` resolves or throws. These four cases pin that contract (task
+// brief Step 1).
 
 describe('import trigger', () => {
-  it('calls the trigger mutation and shows "importing…" while the run polls running', async () => {
-    fetchStatus.mockResolvedValue(makeStatus())
-    triggerImport.mockResolvedValueOnce({ run_id: 7 })
-    fetchImportRun.mockResolvedValue(makeImportRun({ id: 7, status: 'running' }))
-    setup()
-
-    fireEvent.click(await screen.findByRole('button', { name: '● import' }))
-
-    expect(await screen.findByText('importing…')).toBeDefined()
-    expect(triggerImport).toHaveBeenCalledTimes(1)
-    await waitFor(() => expect(fetchImportRun).toHaveBeenCalledWith(7))
-  })
-})
-
-// --- terminal run states --------------------------------------------------------------------
-
-describe('terminal run states', () => {
-  it('shows "imported ✓" and invalidates status+sessions when the run finishes ok', async () => {
-    fetchStatus.mockResolvedValue(makeStatus())
-    triggerImport.mockResolvedValueOnce({ run_id: 8 })
-    fetchImportRun.mockResolvedValueOnce(makeImportRun({ id: 8, status: 'ok' }))
-    const { queryClient } = setup()
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    fireEvent.click(await screen.findByRole('button', { name: '● import' }))
-
-    expect(await screen.findByText('imported ✓')).toBeDefined()
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['status'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
-    // A run can discover a new project (Task 7, spec §6.2) -- the tree and chip bar must see it.
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['projects'] })
-  })
-
-  it('shows "import failed" (ember) when the run finishes in an error status', async () => {
-    fetchStatus.mockResolvedValue(makeStatus())
-    triggerImport.mockResolvedValueOnce({ run_id: 9 })
-    fetchImportRun.mockResolvedValueOnce(makeImportRun({ id: 9, status: 'errors' }))
-    setup()
-
-    fireEvent.click(await screen.findByRole('button', { name: '● import' }))
-
-    const failed = await screen.findByText('import failed')
-    expect(failed.style.color).toBe('var(--ember)')
-  })
-
-  it('shows "already running" on a 409 from the trigger mutation, without polling any run', async () => {
-    fetchStatus.mockResolvedValue(makeStatus())
-    triggerImport.mockRejectedValueOnce(new ApiError(409, 'import already running', 'conflict'))
-    setup()
-
-    fireEvent.click(await screen.findByRole('button', { name: '● import' }))
-
-    expect(await screen.findByText('already running')).toBeDefined()
-    expect(fetchImportRun).not.toHaveBeenCalled()
-  })
-})
-
-// --- poll failure is terminal, never a wedge --------------------------------------------------
-// The regression these pin: the phase machine treated ONLY a terminal run status as an exit from
-// 'running'. A failed poll (data undefined forever, or stale 'running' data + isError) left the
-// bar stuck on "importing…" with the button hidden and no recovery.
-
-describe('poll failure recovery', () => {
-  // shouldAdvanceTime keeps testing-library's own setTimeout-based waitFor polling alive while
-  // still letting the test fast-forward the 1s refetch interval and the 4s message revert —
-  // same convention as Sidebar.test.tsx's debounce suite.
   beforeEach(() => {
+    // shouldAdvanceTime keeps testing-library's own setTimeout-based findBy/waitFor polling
+    // alive while still letting the test fast-forward the 1s poll interval — same convention as
+    // the old poll-failure-recovery suite this replaces.
     vi.useFakeTimers({ shouldAdvanceTime: true })
   })
 
@@ -174,63 +113,78 @@ describe('poll failure recovery', () => {
     vi.useRealTimers()
   })
 
-  it('recovers when the FIRST poll fails: "import failed", then the button returns', async () => {
+  it('ok run: pending during poll, then "imported ✓" flash + status/sessions/projects invalidated', async () => {
     fetchStatus.mockResolvedValue(makeStatus())
-    triggerImport.mockResolvedValueOnce({ run_id: 10 })
-    fetchImportRun.mockRejectedValue(new Error('boom'))
-    setup()
+    triggerImport.mockResolvedValue({ run_id: 7 })
+    fetchImportRun
+      .mockResolvedValueOnce(makeImportRun({ status: 'running' }))
+      .mockResolvedValueOnce(makeImportRun({ status: 'ok' }))
+    const { queryClient } = setup()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
-    fireEvent.click(await screen.findByRole('button', { name: '● import' }))
+    const btn = await screen.findByRole('button', { name: '● import' })
+    fireEvent.click(btn)
 
-    const failed = await screen.findByText('import failed')
-    expect(failed.style.color).toBe('var(--ember)')
+    expect(btn.getAttribute('aria-busy')).toBe('true')
 
-    // Past the 4s transient-message window the machine must be back at idle: button restored.
-    await vi.advanceTimersByTimeAsync(4100)
-    expect(await screen.findByRole('button', { name: '● import' })).toBeDefined()
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(btn.textContent).toContain('imported ✓')
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['status'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['projects'] })
   })
 
-  it('recovers when the server dies MID-run (stale running data + error) and stops polling', async () => {
+  it('409 on trigger: neutral "already running" flash, NO invalidations', async () => {
     fetchStatus.mockResolvedValue(makeStatus())
-    triggerImport.mockResolvedValueOnce({ run_id: 11 })
-    fetchImportRun
-      .mockResolvedValueOnce(makeImportRun({ id: 11, status: 'running' }))
-      .mockRejectedValue(new Error('server gone'))
-    setup()
+    triggerImport.mockRejectedValue(new ApiError(409, 'Conflict', 'import already running'))
+    const { queryClient } = setup()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
-    fireEvent.click(await screen.findByRole('button', { name: '● import' }))
-    expect(await screen.findByText('importing…')).toBeDefined()
+    const btn = await screen.findByRole('button', { name: '● import' })
+    fireEvent.click(btn)
 
-    // Advance past the 1s refetch interval so the second (failing) poll fires. react-query keeps
-    // the STALE data (status 'running') — isError is what must flip the machine to 'error'.
-    await vi.advanceTimersByTimeAsync(1100)
-    expect(await screen.findByText('import failed')).toBeDefined()
-
-    // Polling must stop dead: the call count stabilizes across several more would-be intervals.
-    const settledCalls = fetchImportRun.mock.calls.length
-    await vi.advanceTimersByTimeAsync(3000)
-    expect(fetchImportRun.mock.calls.length).toBe(settledCalls)
+    await waitFor(() => expect(btn.textContent).toContain('already running'))
+    expect(btn.className).toContain('is-success') // neutral flash, not the error styling
+    expect(fetchImportRun).not.toHaveBeenCalled()
+    expect(invalidateSpy).not.toHaveBeenCalled()
   })
 
-  it('useImportRun itself stops the 1s interval once the query errors (stale running data)', async () => {
-    // Hook-level pin, independent of StatusBar's phase gating: even a consumer that keeps the id
-    // non-null forever must not poll a dead server every 1s off the stale 'running' data.
-    fetchImportRun
-      .mockResolvedValueOnce(makeImportRun({ id: 5, status: 'running' }))
-      .mockRejectedValue(new Error('gone'))
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    renderHook(() => useImportRun(5), {
-      wrapper: ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-      ),
-    })
+  it('failed run: sticky "⚠ import failed", invalidations still fire', async () => {
+    fetchStatus.mockResolvedValue(makeStatus())
+    triggerImport.mockResolvedValue({ run_id: 8 })
+    fetchImportRun.mockResolvedValue(makeImportRun({ status: 'error' }))
+    const { queryClient } = setup()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
-    await waitFor(() => expect(fetchImportRun).toHaveBeenCalledTimes(1))
-    await vi.advanceTimersByTimeAsync(1100) // the failing second poll
-    await waitFor(() => expect(fetchImportRun).toHaveBeenCalledTimes(2))
+    const btn = await screen.findByRole('button', { name: '● import' })
+    fireEvent.click(btn)
 
-    await vi.advanceTimersByTimeAsync(3000) // three more would-be intervals
-    expect(fetchImportRun).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(btn.textContent).toContain('⚠ import failed'))
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['status'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['projects'] })
+
+    // sticky: unlike a success flash, it must NOT auto-clear as time passes.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(btn.textContent).toContain('⚠ import failed')
+  })
+
+  it('poll network error: sticky error, invalidations still fire', async () => {
+    fetchStatus.mockResolvedValue(makeStatus())
+    triggerImport.mockResolvedValue({ run_id: 9 })
+    fetchImportRun.mockRejectedValue(new Error('down'))
+    const { queryClient } = setup()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    const btn = await screen.findByRole('button', { name: '● import' })
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(btn.textContent).toContain('⚠ import failed'))
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['status'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['projects'] })
   })
 })
 

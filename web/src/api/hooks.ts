@@ -8,7 +8,6 @@ import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/re
 import {
   ApiError,
   deleteFavorite,
-  fetchImportRun,
   fetchMessages,
   fetchProjects,
   fetchRawRecord,
@@ -20,7 +19,6 @@ import {
   putArchive,
   putFavorite,
   putSessionTitle,
-  triggerImport,
   type MessagesOptions,
   type SessionFilters,
 } from './client'
@@ -51,7 +49,6 @@ const searchKey = (
 ) => ['search', q, scope, sessionUuid, projects] as const
 const rawRecordKey = (uuid: string) => ['rawRecord', uuid] as const
 const statusKey = ['status'] as const
-const importRunKey = (id: number) => ['importRuns', id] as const
 const projectsKey = ['projects'] as const
 
 // --- reads ------------------------------------------------------------------------------
@@ -124,7 +121,7 @@ export function useStatus() {
 
 // Projects change only on explicit import/reparse, never mid-session, so a long staleTime
 // avoids refetching the list on every mount. Invalidation is hooked up at the two sites that can
-// change project counts or membership: StatusBar's import-run terminal handler and
+// change project counts or membership: StatusBar's `runImport` (its `finally` block) and
 // useArchiveSession below, both of which invalidate ['projects'] alongside their existing keys.
 export function useProjects() {
   return useQuery({
@@ -189,25 +186,5 @@ export function useResumeSession() {
     mutationFn: (uuid: string) => postResume(uuid),
     // ['sessions'] prefixes the detail key ['sessions', uuid] — a restore flips on_disk.
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sessions'] }),
-  })
-}
-
-export function useTriggerImport() {
-  return useMutation({
-    mutationFn: triggerImport,
-  })
-}
-
-/** Polls every 1s while the run's `status === 'running'`; pass `null` to skip fetching entirely. */
-export function useImportRun(id: number | null) {
-  return useQuery({
-    queryKey: importRunKey(id ?? -1),
-    queryFn: () => fetchImportRun(id as number),
-    enabled: id !== null,
-    // Stop on query error too, not just on a terminal run status: a failed refetch keeps the
-    // STALE data (status still 'running'), so without the error check a mid-run server death
-    // would poll a dead server every 1s forever.
-    refetchInterval: (query) =>
-      query.state.status !== 'error' && query.state.data?.status === 'running' ? 1000 : false,
   })
 }
