@@ -32,7 +32,7 @@ from tests.conftest import (
 )
 from tests.fixtures.records import (
     make_assistant_line,
-    make_attachment_line,
+    make_queued_command_line,
     make_session_file,
     make_system_line,
     make_user_line,
@@ -637,7 +637,11 @@ def _chat_only_line(kind: str, index: int) -> bytes:
             content=f"chat-only system note {index}", sessionId=_CHAT_ONLY_SESSION_UUID
         )
     if kind == "attachment":
-        return make_attachment_line(sessionId=_CHAT_ONLY_SESSION_UUID)
+        # A human-origin queued_command: the ONE attachment shape `AttachmentRecord.blocks()`
+        # rescues into a content block (Task 5 refinements spec §4) -- a content-less
+        # attachment (e.g. the default deferred_tools_delta furniture) would now correctly
+        # trim under chat_only, so the "attachment stays IN" exemplar must carry content.
+        return make_queued_command_line(sessionId=_CHAT_ONLY_SESSION_UUID)
     line_fn = make_user_line if kind == "user" else make_assistant_line
     return line_fn(text=f"chat-only message {index}", sessionId=_CHAT_ONLY_SESSION_UUID)
 
@@ -755,3 +759,136 @@ def test_messages_chat_only_absent_defaults_to_unfiltered(
     assert body["total"] == len(record_uuids)
     assert [m["record_uuid"] for m in body["items"]] == record_uuids
     assert any(m["type"] == "system" for m in body["items"])
+
+
+# --- Transcript messages -- chat_only= content-emptiness trim (Task 5, refinements spec §4) --
+#
+# Layered on top of the type filter tested above: `chat_only=1` additionally hides rows whose
+# blocks carry no visible content in conversation-only mode (tool-only, thinking-only, empty
+# text). A dedicated small tree isolates the content dimension from the type dimension already
+# covered by `_build_chat_only_tree` above, so this fixture doesn't disturb that tree's pinned
+# row-count/ordinal assertions.
+
+_CHAT_ONLY_TRIM_SESSION_UUID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+
+
+def _trim_control_line() -> bytes:
+    return make_assistant_line(
+        text="chat-only trim control reply", sessionId=_CHAT_ONLY_TRIM_SESSION_UUID
+    )
+
+
+def _trim_tool_only_line() -> bytes:
+    tuid = "toolu_trim_only"
+    return make_assistant_line(
+        text="",
+        with_tool_use=True,
+        tool_use_id=tuid,
+        extra_blocks=[
+            {
+                "type": "tool_result",
+                "tool_use_id": tuid,
+                "content": "synthetic result",
+                "is_error": False,
+            }
+        ],
+        sessionId=_CHAT_ONLY_TRIM_SESSION_UUID,
+    )
+
+
+def _trim_thinking_only_line() -> bytes:
+    return make_assistant_line(
+        text="", with_thinking=True, sessionId=_CHAT_ONLY_TRIM_SESSION_UUID
+    )
+
+
+def _trim_empty_text_line() -> bytes:
+    return make_user_line(
+        content=[{"type": "text", "text": ""}], sessionId=_CHAT_ONLY_TRIM_SESSION_UUID
+    )
+
+
+def _trim_unknown_kind_line() -> bytes:
+    return make_assistant_line(
+        text="",
+        extra_blocks=[{"type": "futurekind", "note": "forward-tolerant block"}],
+        sessionId=_CHAT_ONLY_TRIM_SESSION_UUID,
+    )
+
+
+def _build_chat_only_trim_tree(
+    db: Session, tmp_path: Path
+) -> tuple[int, str, str, str, str, str]:
+    """Capture one message per Spec §4 emptiness case into a fresh transcript; return
+    ``(transcript_id, control_uuid, tool_only_uuid, thinking_only_uuid, empty_text_uuid,
+    unknown_kind_uuid)`` in insertion (== id) order."""
+    root = tmp_path / "chat_only_trim_tree"
+    proj = root / "-Users-x-chatonlytrim"
+    proj.mkdir(parents=True)
+    lines = [
+        _trim_control_line(),
+        _trim_tool_only_line(),
+        _trim_thinking_only_line(),
+        _trim_empty_text_line(),
+        _trim_unknown_kind_line(),
+    ]
+    (proj / f"{_CHAT_ONLY_TRIM_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
+    _capture(db, root)
+
+    tid = _main_transcript_id(db, _CHAT_ONLY_TRIM_SESSION_UUID)
+    uuids = [
+        u
+        for (u,) in db.query(Message.record_uuid)
+        .filter(Message.transcript_id == tid)
+        .order_by(Message.id)
+        .all()
+    ]
+    control_uuid, tool_only_uuid, thinking_only_uuid, empty_text_uuid, unknown_kind_uuid = uuids
+    return tid, control_uuid, tool_only_uuid, thinking_only_uuid, empty_text_uuid, unknown_kind_uuid
+
+
+def test_chat_only_trims_content_empty_rows(db_session: Session, tmp_path: Path) -> None:
+    """PARITY PIN: mirrors web/tests/chatOnly.test.ts::trim fixtures — change both together.
+    Spec §4: visible iff type qualifies AND ≥1 block shows content in conversation-only mode
+    (non-empty text, image, or unknown kind). tool-only / thinking-only / empty-text rows trim."""
+    (
+        tid,
+        control_uuid,
+        tool_only_uuid,
+        thinking_only_uuid,
+        empty_text_uuid,
+        unknown_kind_uuid,
+    ) = _build_chat_only_trim_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    all_rows = client.get(f"/api/v1/transcripts/{tid}/messages").json()
+    filtered = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"chat_only": 1}
+    ).json()
+    filtered_uuids = {m["record_uuid"] for m in filtered["items"]}
+
+    assert tool_only_uuid not in filtered_uuids
+    assert thinking_only_uuid not in filtered_uuids
+    assert empty_text_uuid not in filtered_uuids
+    assert unknown_kind_uuid in filtered_uuids
+    assert control_uuid in filtered_uuids
+    # totals agree with the trimmed item set, and the unfiltered view is untouched
+    assert filtered["total"] == len(filtered_uuids)
+    assert {m["record_uuid"] for m in all_rows["items"]} >= {tool_only_uuid, thinking_only_uuid}
+
+
+def test_chat_only_around_trimmed_target_is_404(db_session: Session, tmp_path: Path) -> None:
+    """Deep link into a trimmed row under the filter → 404 (the reader's recovery banner path);
+    the same around succeeds unfiltered."""
+    tid, _control, tool_only_uuid, _thinking, _empty, _unknown = _build_chat_only_trim_tree(
+        db_session, tmp_path
+    )
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    r = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"chat_only": 1, "around": tool_only_uuid},
+    )
+    assert r.status_code == 404
+    r = client.get(f"/api/v1/transcripts/{tid}/messages", params={"around": tool_only_uuid})
+    assert r.status_code == 200

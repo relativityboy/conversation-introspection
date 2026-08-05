@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
-from sqlalchemy import ColumnElement, and_, func, or_, select, true
+from sqlalchemy import ColumnElement, and_, exists, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from introspect.api.deps import get_db
@@ -369,6 +369,33 @@ def get_session(
 #: `("user", "assistant")`, that was a stale draft.
 _CHAT_ONLY_TYPES = ("user", "assistant", "attachment")
 
+#: Kinds with dedicated renderers, used to spot UNKNOWN kinds by exclusion (an unknown kind
+#: renders a visible UnknownChip client-side, so it counts as content -- forward-tolerance).
+_KNOWN_BLOCK_KINDS = ("text", "thinking", "tool_use", "tool_result", "image")
+
+
+def _chat_only_filter() -> ColumnElement:
+    """Spec §4 (2026-08-04 refinements): conversation-only shows a row only when its TYPE
+    qualifies AND at least one block renders content in that mode. thinking (the ◌ glyph),
+    tool_use, tool_result and empty text don't count; images and unknown kinds do. Built once
+    per request and applied at all four query sites -- same discipline as the original
+    type-only filter (see the note on `type_filter` below)."""
+    has_content = exists(
+        select(1).where(
+            ContentBlock.message_id == Message.id,
+            or_(
+                and_(
+                    ContentBlock.block_kind == "text",
+                    ContentBlock.text_content.is_not(None),
+                    ContentBlock.text_content != "",
+                ),
+                ContentBlock.block_kind == "image",
+                ContentBlock.block_kind.not_in(_KNOWN_BLOCK_KINDS),
+            ),
+        )
+    )
+    return and_(Message.type.in_(_CHAT_ONLY_TYPES), has_content)
+
 
 @router.get("/transcripts/{transcript_id}/messages", response_model=MessageList)
 def list_messages(
@@ -393,10 +420,10 @@ def list_messages(
     # Built ONCE, applied at all four query sites below (total, around-target resolution,
     # around ordinal count, page fetch) -- missing any one desyncs totals/offsets/centering
     # (see module docstring + task-p4-5-brief.md). `True` (no-op filter) when chat_only is
-    # off, so the default path's generated SQL/results are unchanged.
-    type_filter: ColumnElement = (
-        Message.type.in_(_CHAT_ONLY_TYPES) if chat_only else true()
-    )
+    # off, so the default path's generated SQL/results are unchanged. `_chat_only_filter()`'s
+    # EXISTS-over-blocks clause rides along automatically since the filter is still built once
+    # here and reused at all four sites (refinements spec §4, Task 5).
+    type_filter: ColumnElement = _chat_only_filter() if chat_only else true()
 
     total = db.scalar(
         select(func.count(Message.id)).where(
