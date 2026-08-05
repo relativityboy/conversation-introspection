@@ -1,9 +1,36 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useChatOnly, type UseChatOnly } from '../src/lib/chatOnly'
+import { isChatOnlyVisible, useChatOnly, type UseChatOnly } from '../src/lib/chatOnly'
 
 // The single localStorage key that makes the toggle sticky across sessions and readers.
 const KEY = 'introspect.chatOnly.v1'
+
+// PARITY PIN: mirrors server/tests/test_api_sessions.py::test_chat_only_trims_content_empty_rows
+// — change both together. One rule, two implementations (spec §4).
+const text = (s: string | null) => ({ block_kind: 'text', text_content: s })
+const kind = (k: string) => ({ block_kind: k, text_content: null })
+
+const CASES: Array<
+  [string, { type: string; blocks: { block_kind: string; text_content: string | null }[] }, boolean]
+> = [
+  ['assistant, tool blocks only', { type: 'assistant', blocks: [kind('tool_use'), kind('tool_result')] }, false],
+  ['assistant, thinking only (◌)', { type: 'assistant', blocks: [kind('thinking')] }, false],
+  ['user, empty text', { type: 'user', blocks: [text('')] }, false],
+  ['user, null text', { type: 'user', blocks: [text(null)] }, false],
+  ['assistant, unknown kind', { type: 'assistant', blocks: [kind('futurekind')] }, true],
+  ['assistant, real text', { type: 'assistant', blocks: [text('hello')] }, true],
+  ['assistant, image only', { type: 'assistant', blocks: [kind('image')] }, true],
+  ['attachment, zero blocks (furniture)', { type: 'attachment', blocks: [] }, false],
+  ['attachment, rescued prompt', { type: 'attachment', blocks: [text('queued words')] }, true],
+  ['system, real text (type-excluded)', { type: 'system', blocks: [text('x')] }, false],
+  ['assistant, zero blocks', { type: 'assistant', blocks: [] }, false],
+]
+
+describe('isChatOnlyVisible — trim rule parity', () => {
+  it.each(CASES)('%s', (_name, message, visible) => {
+    expect(isChatOnlyVisible(message)).toBe(visible)
+  })
+})
 
 beforeEach(() => {
   window.localStorage.clear()

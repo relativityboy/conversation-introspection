@@ -1,8 +1,8 @@
 /**
  * The conversation-only reader mode: hide tool_use / tool_result blocks (and the subagent chips
- * that ride them) and, when the seed goes through the API, filter the server response to
- * `type IN ('user','assistant','attachment')`. Sticky across sessions and readers via a single
- * localStorage key; default off.
+ * that ride them) and, when the seed goes through the API, filter the server response to rows
+ * whose type qualifies AND that show content in that mode (spec §4) — see `isChatOnlyVisible`.
+ * Sticky across sessions and readers via a single localStorage key; default off.
  *
  * STATE MODEL (plan critique F4, binding): this hook is the ONE owner per reader page — each
  * `SessionPage` / `SubagentPage` calls it exactly once and threads `[chatOnly, setChatOnly]` down
@@ -21,20 +21,32 @@ const STORAGE_KEY = 'introspect.chatOnly.v1'
 // conversation-only view" lives in one place.
 const CHAT_ONLY_TYPES = new Set(['user', 'assistant', 'attachment'])
 
-/**
- * True when a message is shown in conversation-only mode. The single source of truth shared by
- * MessageTurn's row-level hiding AND the raw inspector's prev/next navigation, so the two can
- * never drift on WHICH rows count as "hidden": a `system`-type row is out (server-filtered), and
- * a zero-block attachment is harness furniture the reader hides even though its type qualifies
- * (MessageTurn returns null for it). Everything else the human said or pasted stays in.
- */
+// Mirror of the server's known-kinds list (routes/sessions.py `_KNOWN_BLOCK_KINDS`): unknown
+// kinds render a visible UnknownChip, so they count as content.
+const KNOWN_BLOCK_KINDS = new Set(['text', 'thinking', 'tool_use', 'tool_result', 'image'])
+
+interface ChatOnlyBlock {
+  block_kind: string
+  text_content: string | null
+}
+
+/** Spec §4 (2026-08-04 refinements): visible in conversation-only iff the TYPE qualifies AND at
+ * least one block shows content there — non-empty text, an image, or an unknown kind. thinking
+ * (◌), tool blocks and empty text don't count. The single source of truth shared by MessageTurn's
+ * row hiding AND the raw inspector's prev/next; the server applies the SAME rule (parity-pinned
+ * by tests on both sides), so counts/centering and what the reader shows can never drift. */
 export function isChatOnlyVisible(message: {
   type: string
-  blocks: readonly unknown[]
+  blocks: readonly ChatOnlyBlock[]
 }): boolean {
   if (!CHAT_ONLY_TYPES.has(message.type)) return false
-  if (message.type === 'attachment' && message.blocks.length === 0) return false
-  return true
+  return message.blocks.some(blockShowsContent)
+}
+
+function blockShowsContent(block: ChatOnlyBlock): boolean {
+  if (block.block_kind === 'text') return block.text_content !== null && block.text_content !== ''
+  if (block.block_kind === 'image') return true
+  return !KNOWN_BLOCK_KINDS.has(block.block_kind)
 }
 
 // localStorage can throw on read (SecurityError in some private-mode configs) and on write

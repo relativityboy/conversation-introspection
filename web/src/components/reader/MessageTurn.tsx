@@ -93,10 +93,11 @@ export function MessageTurn({ message, chatOnly = false, onInspect }: MessageTur
     }, 1600)
   }
 
-  // Conversation-only mode hides harness-furniture attachment stubs (Task P4-F1): the ~800
-  // zero-block deferred_tools_delta / skill_listing / task_reminder rows collapse to nothing,
-  // while a block-bearing attachment (a rescued human queued prompt) stays. `isChatOnlyVisible` is
-  // the SAME predicate the raw inspector's prev/next uses (lib/chatOnly), so the rows this reader
+  // Conversation-only mode hides rows whose type doesn't qualify OR that show no content there
+  // (spec §4): thinking-only / tool-only / empty-text rows collapse to nothing, including the
+  // ~800 zero-block deferred_tools_delta / skill_listing / task_reminder attachment stubs, while a
+  // block-bearing attachment (a rescued human queued prompt) stays. `isChatOnlyVisible` is the
+  // SAME predicate the raw inspector's prev/next uses (lib/chatOnly), so the rows this reader
   // hides and the rows that navigation skips can never drift.
   if (chatOnly && !isChatOnlyVisible(message)) return null
 
