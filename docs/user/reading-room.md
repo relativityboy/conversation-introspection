@@ -96,6 +96,16 @@ Space open the editor too). The box prefills with the current title.
 A small dot next to a renamed title marks that it's been changed; hover it to see the original
 archive title.
 
+## Session header
+
+The reader's header holds the conversation title, a message count, and an **`actions ▾`** dropdown menu. The conversation-only toggle sits beside the menu, outside it.
+
+The **actions menu** contains three controls, each with status feedback:
+
+- **Resume** — `⟲ resume` (or `⟲ restore & resume` if the transcript was restored from archive). Clicking opens a terminal in the session's original project directory with `claude --resume <session-id>` already running. If the original directory is missing or you're not on macOS, the button shows the command as selectable text instead. Status appears inside the button: idle label, then a spinning icon while running, then a success flash (`resumed ✓` or `restored & resumed ✓`) which auto-clears after 2 seconds. If something goes wrong (missing path, terminal app not found, platform unsupported), the button enters a sticky error state with the runnable command displayed in a detail line inside the panel — this preserves what the UI knows and never swallows a recovery path.
+- **`↓ .jsonl`** — Download the byte-identical transcript as a `.jsonl` file (works with right-click and save-as).
+- **Archive** — Removes the session from all read paths (sidebar, search, deep links) and drops you back at the home view. There's no confirmation dialog and no separate "archived" list; archived sessions are only recoverable via CLI with `introspect unarchive <uuid>` (you need to know the uuid — it's never listed anywhere).
+
 ## Conversation-only mode
 
 The reader's header has a **"conversation only"** toggle. On, it strips the transcript down to the
@@ -106,15 +116,24 @@ back-and-forth and hides the machinery:
 - **Hidden:** `system` records, and the tool-call / tool-result blocks inside messages (so subagent
   chips vanish along with the tool call that spawned them).
 
+In conversation-only mode, entire message rows **disappear** if all their blocks render nothing there — rows containing only tool calls, thinking-only content, or empty text. Full mode always shows every row and every block, including the machinery and the thinking marker (◌).
+
+If a shared deep link targets a row that's been trimmed, the "view from the beginning" recovery also offers a "show all message types" option to disable the filter and bring the trimmed row back into view.
+
 The toggle is **sticky across sessions** — it's remembered in your browser's local storage, not in
 the URL — so once you turn it on it stays on until you turn it off.
 
+## Sharing a moment
+
+Each entry's timestamp (the `HH:MM` in the eyebrow) is a clickable link. **Click it** to copy a deep link to that specific message — the clipboard gets the full shareable URL. A transient `copied` whisper confirms the action.
+
+You can also use **cmd/ctrl/shift/middle-click** or **right-click** for standard link behaviors — open in new tab, copy link, etc. The tooltip says "click to copy deeplink."
+
 ## The raw-record inspector
 
-Every message row carries a small monospace **`{}`** button ("Inspect raw record"). It opens the
-exact stored transcript line for that message:
+Click the **speaker name** in the message eyebrow to open the exact stored transcript line for that message:
 
-- **Pretty-printed** JSON by default, with a **"raw bytes"** toggle that shows the line verbatim.
+- **Pretty-printed** JSON by default (with syntax colorizing), plus a **"raw bytes"** toggle that shows the line verbatim.
   (If a line isn't valid JSON, it falls back to raw under a "Not valid JSON" notice.)
 - **◀ / ▶** buttons — or the **Left / Right arrow keys** — step through neighbouring records without
   leaving the inspector.
@@ -184,6 +203,16 @@ The app never pretends. Unknown or missing things get honest, recoverable states
 - A **raw record that's gone** → "Couldn't load this record."
 - **Empty or offline** lists render calm states rather than errors: "archive offline," "Archive is
   empty — run `introspect import`," "No conversations match," "No matches for …".
+
+## Footer status bar
+
+The bottom of the reading room shows archive stats (last import time, session/record counts, anomaly badge) and an **import** button. When you click it, the button shows live feedback:
+
+- Idle: "import"
+- Running: a spinning icon inside the button
+- Success: a brief flash of `imported ✓` (then clears back to idle)
+- Already running: a neutral flash of `already running ✓` (another import process is already in progress)
+- Failed: a sticky `⚠ import failed` state; hover the button to see the reason in the tooltip, or click it again to retry.
 
 <!-- SCREENSHOTS: this page is text-only for V1. If screenshots are added later they must be
      generated from the SYNTHETIC fixture archive only (build a scratch DB from server/tests

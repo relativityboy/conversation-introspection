@@ -178,6 +178,8 @@ Semantics:
 
 ### 14.4 Conversation-only toggle
 One sticky toggle ("conversation only") hiding non-chat material. **Scope (approved): full prose mode** — hides system-type message rows AND tool_use/tool_result blocks inside kept messages; keeps prose and thinking glyphs. **Attachments: IN — `type IN ('user','assistant','attachment')` (relativityboy ruling 2026-07-19: pasted things are things a human said).**
+
+*(2026-08-04: conversation-only additionally trims content-empty rows — see docs/superpowers/specs/2026-08-04-conversation-view-refinements-design.md §4.)*
 - Message-row filtering is **server-side** (windowing correctness: totals/offsets/around must be computed within the filtered set): `GET /transcripts/{id}/messages` gains `chat_only=1` → `type IN ('user','assistant','attachment')` (bullet aligned to the attachments-IN ruling, 2026-07-19 — was stale pre-ruling text; caught by the T5 reviewer).
 - Block-level hiding (tool blocks within assistant messages) is client-side presentation (no pagination impact).
 - Sticky via localStorage key `introspect.chatOnly.v1`; applies in main and subagent readers. Toggle lives in the conversation header, mist styling. Header keeps the unfiltered `message_count` and appends mist "· conversation only" while active (no second server count — critique #6 resolution).
@@ -191,6 +193,8 @@ User-data table `archived_sessions(session_uuid PK/FK, created_at)` (favorites-f
 
 ### 15.2 Raw-record inspector
 Per-message expand affordance (mono `{}` button in the row gutter/eyebrow) → modal over the reader showing the record's exact `raw_line` (server: `GET /records/{record_uuid}/raw` → the stored bytes; render pretty-printed JSON with a raw-bytes toggle; byte-faithful source, never re-serialized for the raw view). Navigation: ◀/▶ buttons + Left/Right hotkeys for previous/next record **in the parent reader's current traversal** — inherits conversation-only filtering when active, with an in-modal enable/disable toggle for that filter. Esc closes. Reduced-motion respected; focus trapped in modal, returned on close.
+
+*(2026-08-04: the inspector's trigger is the speaker name, not a `{}` glyph, and pretty JSON is colorized — refinements spec §6/§7. The Phase-4 "¶ anchor" backlog item is superseded by the timestamp deeplink, refinements spec §5.)*
 
 ## 16. TUI — the base interface (added 2026-07-20, relativityboy's spec; step 1 of ≥2)
 
