@@ -1,0 +1,19 @@
+/* ActionButton phase styling. Base chrome (ghost pill vs bare menu item) belongs to consumers;
+   only the phase states and the pending spin live here. */
+.action-button.is-success { color: var(--dragonfly); transition: color 0.3s ease-in-out; }
+.action-button.is-error { color: var(--ember); }
+.action-button.is-pending { cursor: default; }
+
+.action-button-glyph { display: inline-block; }
+
+@keyframes action-button-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.action-button.is-pending .action-button-glyph {
+  animation: action-button-spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .action-button.is-pending .action-button-glyph { animation: none; }
+  /* the `…` pending label carries the signal without motion */
+}
