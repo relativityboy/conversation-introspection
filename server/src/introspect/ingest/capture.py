@@ -13,11 +13,14 @@ Two invariants make that safe:
   can never roll back a captured line.
 * **Byte-faithful resume.** Export is pure concatenation of stored ``raw_line`` bytes in
   ``line_number`` order, so those bytes must equal the file. We only advance the checkpoint
-  past lines we have durably stored (or deliberately skipped as duplicates), and a trailing
-  newline-less chunk is captured only if it is valid JSON — otherwise it is a torn write in
-  progress and the checkpoint stays before it for next run. ``prefix_hash`` is the sha256 of
-  the FILE's ingested prefix (bytes ``[0:checkpoint]``) — Task 7 detects divergence by
-  comparing it against a fresh hash of the same byte range.
+  past lines we have durably stored (or deliberately skipped as duplicates). The torn-tail
+  rule — a trailing chunk still being written must not be captured until the writer catches
+  up — is the reader's job, not capture's: ``read_complete_units``
+  (:mod:`introspect.ingest.reader`) defers a newline-less trailing line AND an EOF-open
+  pretty-JSON reassembly buffer alike, so every unit this module receives is already
+  complete. ``prefix_hash`` is the sha256 of the FILE's ingested prefix (bytes
+  ``[0:checkpoint]``) — Task 7 detects divergence by comparing it against a fresh hash of the
+  same byte range.
 """
 
 from __future__ import annotations
