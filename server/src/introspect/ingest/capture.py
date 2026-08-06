@@ -23,7 +23,6 @@ Two invariants make that safe:
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from introspect.ingest import interpret
 from introspect.ingest.discovery import DiscoveredFile
-from introspect.ingest.reader import RawLine, read_complete_lines
+from introspect.ingest.reader import RawUnit, read_complete_units
 from introspect.models import (
     ChatSession,
     ParseAnomaly,
@@ -100,18 +99,17 @@ def capture_file(db: Session, f: DiscoveredFile) -> CaptureStats:
         _reactivate_source_file(db, source_file)
 
     stats = CaptureStats(0, 0, 0)
-    lines = read_complete_lines(f.path, from_offset=source_file.byte_offset_checkpoint)
+    # NOTE(claude): the torn-tail guard that used to live here (a trailing newline-less
+    # chunk kept only if valid JSON) is now the reader's job — read_complete_units defers
+    # (never yields) a torn tail OR an EOF-open reassembly buffer, so every unit reaching
+    # this loop is already complete. See reader.py's module + read_complete_units docstrings.
+    units = read_complete_units(f.path, from_offset=source_file.byte_offset_checkpoint)
     exhausted = False
     while not exhausted:
-        chunk: list[RawLine] = []
-        for line in lines:
-            if not line.data.endswith(b"\n") and not _is_json(line.data):
-                # Trailing newline-less chunk that is not valid JSON: a torn write in
-                # progress. Leave the checkpoint before it and retry on the next run.
-                exhausted = True
-                break
-            chunk.append(line)
-            if len(chunk) >= CHUNK_SIZE:
+        chunk: list[RawUnit] = []
+        for unit in units:
+            chunk.append(unit)
+            if len(chunk) >= CHUNK_SIZE:  # CHUNK_SIZE now counts units, not raw lines
                 break
         else:
             exhausted = True
@@ -162,7 +160,7 @@ def _capture_chunk(
     project: Project,
     transcript: Transcript,
     source_file: SourceFile,
-    chunk: list[RawLine],
+    chunk: list[RawUnit],
     running: "hashlib._Hash",
     file_line_number: int,
     size_at_start: int,
@@ -181,13 +179,17 @@ def _capture_chunk(
     """
     captured: list[tuple[object, RawRecord, list[tuple]]] = []
 
-    for line in chunk:
-        # NOTE(claude): line_number is the 1-based FILE-position ordinal — skipped (deduped)
-        # lines consume one too, so stored line_numbers may have gaps. Export ORDER BY
-        # line_number is unaffected by gaps, and the uuid-less dedup key (transcript, sha,
-        # line_number) then means "same content at the same file position" on both sides.
-        file_line_number += 1
-        raw = line.data
+    for unit in chunk:
+        # NOTE(claude): line_number is the 1-based FILE-position ordinal of the unit's FIRST
+        # file line — skipped (deduped) units consume their ordinal(s) too, so stored
+        # line_numbers may have gaps. Export ORDER BY line_number is unaffected by gaps, and
+        # the uuid-less dedup key (transcript, sha, line_number) then means "same content at
+        # the same file position" on both sides. A reassembled unit additionally consumes
+        # `line_span` ordinals in one jump — its interior lines never get a row of their own,
+        # so the NEXT unit's line_number picks up right after them, gap-free.
+        line_no = file_line_number + 1
+        file_line_number += unit.line_span
+        raw = unit.data
         sha = hashlib.sha256(raw).hexdigest()
         # prefix_hash covers EVERY byte read from the file — stored and dedup-skipped alike:
         # it is the hash of file[0:checkpoint], which is what Task 7's divergence check
@@ -197,7 +199,7 @@ def _capture_chunk(
 
         if not bypass_dedup:
             is_dup, conflict_spec = _dedup_or_conflict(
-                db, transcript.id, source_file, record_uuid, sha, file_line_number
+                db, transcript.id, source_file, record_uuid, sha, line_no
             )
             if is_dup:
                 stats.records_skipped_duplicate += 1
@@ -208,8 +210,8 @@ def _capture_chunk(
         record = RawRecord(
             source_file_id=source_file.id,
             transcript_id=transcript.id,
-            line_number=file_line_number,
-            byte_offset=line.start_offset,
+            line_number=line_no,
+            byte_offset=unit.start_offset,
             raw_line=raw,
             line_sha256=sha,
             record_type=record_type,
@@ -217,13 +219,14 @@ def _capture_chunk(
             detected_cli_version=version,
             parsed_with_schema_version=None,  # stamped by the real interpret.apply (Task 8)
             parse_status=parse_status,
+            reassembled=unit.reassembled,
             ingested_at=utcnow(),
         )
         db.add(record)
         _backfill_project_cwd(project, pr)
         captured.append((pr, record, anomaly_specs))
 
-    checkpoint = chunk[-1].end_offset  # every line in the chunk was consumed (stored or skipped)
+    checkpoint = chunk[-1].end_offset  # every unit in the chunk was consumed (stored or skipped)
 
     db.flush()  # assign RawRecord ids so anomalies can link to them
     for _pr, record, specs in captured:
@@ -375,14 +378,6 @@ def _dedup_or_conflict(
         .first()
     )
     return dup is not None, None
-
-
-def _is_json(raw: bytes) -> bool:
-    try:
-        json.loads(raw)
-    except (ValueError, TypeError):
-        return False
-    return True
 
 
 def _backfill_project_cwd(project: Project, pr) -> None:

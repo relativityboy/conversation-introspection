@@ -19,6 +19,7 @@ from tests.conftest import (
     AGENT_TYPE,
     PROJECT_SLUG_1,
     PROJECT_SLUG_2,
+    SESSION_UUID_1,
     SESSION_UUID_2,
     TOTAL_FIXTURE_LINES,
 )
@@ -73,6 +74,30 @@ def test_raw_bytes_stored_exactly(db_session, fixture_tree):
             .filter(SourceFile.path == str(main.path))
             .order_by(RawRecord.line_number).all())
     assert b"".join(r.raw_line for r in rows) == src
+
+
+def test_capture_compact_rows_golden(db_session, fixture_tree):
+    """Fast-path conservation pin (compat spec §2): switching capture to unit
+    iteration must not move a single byte, boundary, or hash for compact files."""
+    _capture_all(db_session, fixture_tree)
+    rows = (
+        db_session.query(
+            RawRecord.line_number, RawRecord.byte_offset,
+            RawRecord.line_sha256, RawRecord.reassembled,
+        )
+        .join(SourceFile)
+        .filter(SourceFile.path.like(f"%{SESSION_UUID_1}.jsonl"))
+        .order_by(RawRecord.line_number)
+        .all()
+    )
+    assert all(r.reassembled is False for r in rows)
+    assert [r.line_number for r in rows] == list(range(1, len(rows) + 1))
+    # byte_offset of row N+1 == byte_offset of row N + len(raw_line N): arithmetic pin
+    raws = [r for (r,) in db_session.query(RawRecord.raw_line).join(SourceFile)
+            .filter(SourceFile.path.like(f"%{SESSION_UUID_1}.jsonl"))
+            .order_by(RawRecord.line_number)]
+    offs = [r.byte_offset for r in rows]
+    assert offs == [sum(len(x) for x in raws[:i]) for i in range(len(raws))]
 
 
 # --- Supplementary coverage of the remaining binding semantics --------------------------
