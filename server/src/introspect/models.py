@@ -20,6 +20,7 @@ from sqlalchemy import (
     LargeBinary,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -115,6 +116,7 @@ class RawRecord(Base):
     detected_cli_version: Mapped[str | None]
     parsed_with_schema_version: Mapped[str | None]
     parse_status: Mapped[str]  # 'ok' | 'partial' | 'anomaly'
+    reassembled: Mapped[bool] = mapped_column(default=False, server_default=false())  # spec §2 provenance marker
     ingested_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
