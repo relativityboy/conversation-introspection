@@ -72,7 +72,7 @@ def test_thin_meta_records_parse():
 
 
 def test_schema_version_constant():
-    assert SCHEMA_VERSION == "introspect-schema/4"
+    assert SCHEMA_VERSION == "introspect-schema/5"
 
 
 def test_anomaly_severity_is_warn_for_unknown_type():
@@ -560,3 +560,41 @@ def test_file_history_delta_record_parses_ok():
     assert r.record is not None and r.record_type == "file-history-delta"
     assert r.status == "ok" and r.anomalies == []
     assert r.record.blocks() == []
+
+
+# --- Schema v5: third production-drift pass (CLI ~2.1.219-2.1.220) ----------
+# Positions verified read-only against the 2026-08-05 anomaly census (24 unknown_field).
+# Each test carries the newly-declared field(s) at the real location and asserts a clean parse
+# (status "ok", zero anomalies).
+
+
+def test_user_record_drift_fields_parse_ok():
+    # UserRecord family (schema/5): interruptedByShutdown, source, userFeedback (opaque),
+    # logicalParentUuid, compactMetadata (opaque), isVisibleInTranscriptOnly, isCompactSummary.
+    r = parse_line(
+        make_user_line(
+            extra={
+                "interruptedByShutdown": True,
+                "source": "system",
+                "userFeedback": {"rating": 5, "comment": "synthetic feedback"},
+                "logicalParentUuid": "c67b666f-80b3-4a5d-8c85-d6bfb75decfc",
+                "compactMetadata": {"archived": True, "tag": "important"},
+                "isVisibleInTranscriptOnly": False,
+                "isCompactSummary": True,
+            }
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []
+
+
+def test_assistant_record_drift_fields_parse_ok():
+    # AssistantRecord family (schema/5): isAbortedMidStream, pendingWorkflowCount.
+    r = parse_line(
+        make_assistant_line(
+            extra={
+                "isAbortedMidStream": False,
+                "pendingWorkflowCount": 3,
+            }
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []

@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag
 # NOTE(claude): the module name (v1) is code organization; this constant tracks the
 # registry GENERATION stamped on parsed rows. They diverge by design — bumping the
 # generation does not require forking a new module.
-SCHEMA_VERSION = "introspect-schema/4"
+SCHEMA_VERSION = "introspect-schema/5"
 
 # Per-generation, human-readable old-vs-new summaries. This is the runtime source of truth
 # the ``schema_versions`` provenance table self-populates from (see
@@ -72,6 +72,13 @@ DIFF_NOTES: dict[str, str] = {
         "the ModelFallbackBlock content block (type 'fallback', opaque from/to) and the "
         "FileHistoryDeltaRecord type (file-history-delta, opaque backup). Drove the info "
         "anomaly floor from ~3,596 to ~0. (task-p4-f7-report.md)"
+    ),
+    "introspect-schema/5": (
+        "Third production-drift pass (CLI ~2.1.219-2.1.220). Declared: interruptedByShutdown, "
+        "source, userFeedback (opaque), logicalParentUuid, compactMetadata (opaque), "
+        "isVisibleInTranscriptOnly and isCompactSummary on UserRecord; isAbortedMidStream and "
+        "pendingWorkflowCount on AssistantRecord. Census-driven; expected to drive the "
+        "unknown_field floor from 24 to ~0. (2026-08-05 anomaly census)"
     ),
 }
 
@@ -365,6 +372,17 @@ class UserRecord(Envelope):
     interruptedMessageId: str | None = None
     toolDenialKind: str | None = None
     classifierMetaLines: str | None = None
+    # Third production-drift family (schema/5, CLI ~2.1.219-2.1.220), user-record-only:
+    # interruptedByShutdown flags an aborted turn; source notes its origin; userFeedback and
+    # compactMetadata are opaque payloads; logicalParentUuid is a parent reference; the
+    # visibility/summary flags mark presentation.
+    interruptedByShutdown: bool | None = None
+    source: str | None = None
+    userFeedback: Any | None = None
+    logicalParentUuid: str | None = None
+    compactMetadata: Any | None = None
+    isVisibleInTranscriptOnly: bool | None = None
+    isCompactSummary: bool | None = None
 
     def blocks(self) -> list[NormalizedBlock]:
         return _normalize_content(self.message.content)
@@ -393,6 +411,10 @@ class AssistantRecord(Envelope):
     isApiErrorMessage: bool | None = None
     apiErrorStatus: int | None = None
     supersedesUuids: Any | None = None
+    # Third production-drift family (schema/5, CLI ~2.1.219-2.1.220), assistant-record-only:
+    # isAbortedMidStream flags incomplete turns; pendingWorkflowCount records async workflows.
+    isAbortedMidStream: bool | None = None
+    pendingWorkflowCount: int | None = None
 
     def blocks(self) -> list[NormalizedBlock]:
         return _normalize_content(self.message.content)
