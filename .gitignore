@@ -13,3 +13,7 @@ claude_notes/
 # Controller walk screenshots — real conversation content, never committed
 # (docs screenshots are generated from the synthetic fixture archive only)
 walk-*.png
+repro-*.png
+
+# Editor project files — never repo content
+.idea/
