@@ -49,6 +49,18 @@ prior (shattered) rows must never dedup-skip its own correctly-bounded replaceme
 restored: ``_capture_chunk`` recomputes them exactly as it always does, and because the gate
 already proved the re-split bytes are identical to what was stored, those recomputed values
 land back on the exact same numbers. There is nothing to protect.
+
+**Interpretation isolation.** ``_capture_chunk``'s own interpretation step
+(``capture._interpret_chunk``) contains a failing record's exception, but its containment is
+CHUNK-WIDE: on one record's failure it ``db.rollback()``s the whole in-progress chunk, which
+discards every OTHER not-yet-committed record's successful interpretation in that same chunk
+too (their ``parsed_with_schema_version`` stamp reverts to NULL along with it). A normal
+``import`` run tolerates this because :func:`introspect.ingest.run._sweep_unparsed` cleans up
+any NULL-stamped survivor on the NEXT run; recapture calls ``_capture_chunk`` directly, outside
+that orchestration, so it must provide its own equivalent -- :func:`_sweep_unparsed_for_file`,
+run immediately after the re-insertion loop, re-interprets this file's still-NULL-stamped
+records one at a time inside a SAVEPOINT (the same ``reparse._reparse_one`` idiom), so a single
+genuinely-bad record can no longer take its chunk-mates' healed interpretation down with it.
 """
 
 from __future__ import annotations
@@ -73,6 +85,7 @@ from introspect.models import (
     RawRecord,
     Transcript,
 )
+from introspect.schema import SCHEMA_VERSION, parse_line
 
 
 @dataclass
@@ -158,11 +171,26 @@ def recapture_file(
     # --- The swap: torn down here, rebuilt by _capture_chunk below -- staged in the ONE
     # transaction _capture_chunk's own sacred commit finalizes (see module docstring).
     interpret.remove_interpretation_for_source_file(db, source_file.id)
+    # NOTE(claude): scoped to interpretation-class kinds only (never source_diverged /
+    # source_reappeared / file_ingest_failure / uuid_content_conflict -- capture-phase history
+    # recapture cannot regenerate). uuid_content_conflict is the one bookkeeping kind that
+    # carries a raw_record_id INSIDE this file (a census of production data found zero rows of
+    # this kind, but it is possible in principle: two source files disagreeing about the same
+    # record_uuid's content). If such a row exists for a record about to be deleted below,
+    # PRAGMA foreign_keys=ON (see db.py) means that delete raises IntegrityError and the whole
+    # swap rolls back -- a safe hard stop, not corruption, but a stop. Converting it instead
+    # (e.g. re-linking it file-level with its detail preserved) is a real design decision an
+    # owner should make deliberately, not something to improvise here.
     db.query(ParseAnomaly).filter(
         ParseAnomaly.source_file_id == source_file.id,
         ParseAnomaly.kind.in_(_INTERPRETATION_ANOMALY_KINDS),
     ).delete(synchronize_session=False)
     _reset_session_cache_for_transcript(db, transcript)
+    # NOTE(claude): see the NOTE above the anomaly delete -- a surviving uuid_content_conflict
+    # anomaly whose raw_record_id points into THIS file's about-to-be-deleted rows raises
+    # IntegrityError here under PRAGMA foreign_keys=ON, aborting the swap (transaction rolls
+    # back to the pre-recapture shattered state; see the module docstring's "one transaction"
+    # discussion). Not reachable by any of the 5 binding tests; flagged for the archive owner.
     db.query(RawRecord).filter(RawRecord.source_file_id == source_file.id).delete(
         synchronize_session=False
     )
@@ -177,6 +205,12 @@ def recapture_file(
             db, project, transcript, source_file, chunk, running,
             file_line_number, size_at_start, stats, bypass_dedup=True,
         )
+
+    # _capture_chunk's own interpretation step can lose a chunk-mate's successful
+    # interpretation to a sibling's failure (see module docstring's "Interpretation isolation").
+    # recapture doesn't go through run_import's next-run self-healing sweep, so it provides its
+    # own, immediately, via a per-record SAVEPOINT (the reparse._reparse_one idiom).
+    _sweep_unparsed_for_file(db, source_file.id)
 
     this_run_anomalies = db.query(ParseAnomaly).filter(ParseAnomaly.id > baseline_anomaly_id)
     anomaly_count = this_run_anomalies.count()
@@ -229,6 +263,88 @@ def _resplit_within_checkpoint(path: Path, checkpoint: int) -> tuple[list[RawUni
 def _anomaly_count_for_file(db: Session, source_file_id: int) -> int:
     """Every ``parse_anomalies`` row scoped to this source file, any kind."""
     return db.query(ParseAnomaly).filter(ParseAnomaly.source_file_id == source_file_id).count()
+
+
+def _sweep_unparsed_for_file(db: Session, source_file_id: int) -> None:
+    """Re-interpret this file's still-NULL-stamped records, one at a time, isolated.
+
+    The scoped, immediate analogue of :func:`introspect.ingest.run._sweep_unparsed` -- needed
+    because :func:`recapture_file` drives ``_capture_chunk`` directly rather than through
+    ``run_import``'s orchestration, which normally provides this self-healing pass on the NEXT
+    import. Mirrors that function's retry policy too: a NULL-stamped record that ALREADY carries
+    an ``interpret_failure`` anomaly (i.e. ``_capture_chunk``'s own ``_interpret_chunk`` already
+    tried and failed it) is excluded -- its failure is deterministic under the current schema,
+    so retrying it here would just churn a duplicate anomaly; :func:`_reinterpret_one` handles
+    a record failing for the FIRST time in this sweep.
+    """
+    has_prior_failure = (
+        db.query(ParseAnomaly.id)
+        .filter(
+            ParseAnomaly.raw_record_id == RawRecord.id,
+            ParseAnomaly.kind == "interpret_failure",
+        )
+        .exists()
+    )
+    raw_ids = [
+        rid
+        for (rid,) in db.query(RawRecord.id)
+        .filter(
+            RawRecord.source_file_id == source_file_id,
+            RawRecord.parsed_with_schema_version.is_(None),
+            ~has_prior_failure,
+        )
+        .order_by(RawRecord.line_number)
+        .all()
+    ]
+    for start in range(0, len(raw_ids), CHUNK_SIZE):
+        for raw_id in raw_ids[start : start + CHUNK_SIZE]:
+            raw = db.get(RawRecord, raw_id)
+            if raw is not None:
+                _reinterpret_one(db, raw)
+        db.commit()
+
+
+def _reinterpret_one(db: Session, raw: RawRecord) -> None:
+    """Re-interpret a single raw record inside a SAVEPOINT -- verbatim the
+    ``reparse._reparse_one`` idiom (reparse.py:129-168), so a failure here rolls back only
+    THIS record and can never discard a chunk-mate's already-staged interpretation.
+    """
+    if interpret.is_whitespace_line(raw.raw_line):
+        interpret.grade_whitespace_line(db, raw)
+        return
+
+    pr = parse_line(raw.raw_line)
+    try:
+        with db.begin_nested():  # SAVEPOINT: a failure here rolls back only this record
+            interpret.apply(db, pr, raw)
+    except Exception as exc:  # noqa: BLE001 -- must never abort the rest of the sweep
+        raw.parsed_with_schema_version = SCHEMA_VERSION
+        raw.parse_status = "anomaly"
+        db.add(
+            ParseAnomaly(
+                raw_record_id=raw.id,
+                source_file_id=raw.source_file_id,
+                severity="error",
+                kind="interpret_failure",
+                detail={"error": str(exc)},
+                schema_version=SCHEMA_VERSION,
+                created_at=utcnow(),
+            )
+        )
+        return
+
+    for anomaly in pr.anomalies:
+        db.add(
+            ParseAnomaly(
+                raw_record_id=raw.id,
+                source_file_id=raw.source_file_id,
+                severity=anomaly.severity,
+                kind=anomaly.kind,
+                detail=anomaly.detail,
+                schema_version=SCHEMA_VERSION,
+                created_at=utcnow(),
+            )
+        )
 
 
 def _reset_session_cache_for_transcript(db: Session, transcript: Transcript) -> None:

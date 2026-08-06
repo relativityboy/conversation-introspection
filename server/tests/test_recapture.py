@@ -8,11 +8,18 @@ that exact incident shape by driving capture's own private helpers with per-line
 same "reach into capture internals" pattern test_capture.py's ``_capture_all`` already uses.
 
 The five tests below are the binding contract (task-5-brief.md Step 1, written in full; the
-comments there are their contracts).
+comments there are their contracts). The sixth (review round 1, finding 1) is a regression
+test for a bug the reviewer reproduced: ``_capture_chunk``'s own interpretation step rolls
+back its WHOLE in-progress chunk on one record's failure, discarding sibling records'
+already-successful interpretation too -- recapture must heal that itself since it doesn't go
+through ``run_import``'s next-run self-healing sweep.
 """
+
+import json
 
 from introspect.export import export_transcript
 from introspect.ingest import capture as capture_mod
+from introspect.ingest import interpret as interpret_mod
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
 from introspect.ingest.reader import RawUnit, read_complete_lines
@@ -258,3 +265,69 @@ def test_recapture_records_run_row(db_session, tmp_path):
     assert run.status == "ok"
     assert run.records_added == result.records_after
     assert run.anomaly_count == 0  # clean heal: this run introduced no new anomalies
+
+
+def test_recapture_isolates_a_failing_record_without_losing_sibling_units(
+    db_session, tmp_path, monkeypatch
+):
+    """Regression (review round 1, finding 1): the reviewer reproduced a 2-unit chunk where
+    the second unit's interpretation raises -> Message count 0, i.e. the FIRST unit's already-
+    successful interpretation was silently discarded too. That's ``_capture_chunk``'s own
+    interpretation step (``capture._interpret_chunk``): it contains a failing record, but by
+    ``db.rollback()``-ing the WHOLE in-progress chunk, which wipes out every not-yet-committed
+    sibling's successful work in that same chunk along with it (their
+    ``parsed_with_schema_version`` stamp reverts to NULL too). A normal ``import`` run shrugs
+    this off because ``run_import``'s ``_sweep_unparsed`` cleans up any NULL-stamped survivor on
+    the NEXT run; recapture calls ``_capture_chunk`` directly, outside that orchestration, so it
+    must heal this itself, immediately, via a per-record SAVEPOINT sweep.
+
+    Three native (non-pretty) units land in ONE chunk (chunk size 500 >> 3); the MIDDLE one's
+    interpretation is monkeypatched to raise, keyed by its own record_uuid (not a call counter)
+    so a retry of the SAME record still deterministically fails while its siblings deterministically
+    succeed. Assert: the sibling BEFORE the failure and the sibling AFTER it both end up with a
+    Message (the fix), the failing record ends up with exactly one ``interpret_failure`` anomaly
+    (no duplicate-anomaly churn from the sweep retrying an already-failed record), and no Message
+    exists for the failing record.
+    """
+    root = tmp_path / "r"
+    slug = root / "-Users-x-isolate"
+    slug.mkdir(parents=True)
+    uuid = "c2c2c2c2-0000-4000-8000-00000000000c"
+    first = make_user_line(text="first survives", sessionId=uuid)
+    second = make_user_line(text="second boom", sessionId=uuid)
+    third = make_user_line(text="third survives", sessionId=uuid)
+    first_uuid = json.loads(first)["uuid"]
+    boom_uuid = json.loads(second)["uuid"]
+    third_uuid = json.loads(third)["uuid"]
+    content = first + second + third
+    (slug / f"{uuid}.jsonl").write_bytes(content)
+    for f in discover(root):
+        capture_file(db_session, f)
+    db_session.commit()
+    assert db_session.query(Message).count() == 3  # sanity: normal capture interpreted cleanly
+
+    real_apply = interpret_mod.apply
+
+    def flaky(db, pr, raw):
+        if pr is not None and pr.record_uuid == boom_uuid:
+            raise RuntimeError("synthetic interpret failure")
+        return real_apply(db, pr, raw)
+
+    monkeypatch.setattr(interpret_mod, "apply", flaky)
+
+    result = recapture_file(db_session, uuid)
+    assert result.reconciled is True
+
+    messages_by_uuid = {m.record_uuid: m for m in db_session.query(Message).all()}
+    assert first_uuid in messages_by_uuid  # the sibling BEFORE the failing record survives
+    assert third_uuid in messages_by_uuid  # the sibling AFTER the failing record survives
+    assert boom_uuid not in messages_by_uuid
+
+    failing_raw = db_session.query(RawRecord).filter_by(record_uuid=boom_uuid).one()
+    assert failing_raw.parse_status == "anomaly"
+    assert (
+        db_session.query(ParseAnomaly)
+        .filter_by(raw_record_id=failing_raw.id, kind="interpret_failure")
+        .count()
+        == 1
+    )
