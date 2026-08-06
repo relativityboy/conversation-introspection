@@ -72,7 +72,7 @@ def test_thin_meta_records_parse():
 
 
 def test_schema_version_constant():
-    assert SCHEMA_VERSION == "introspect-schema/5"
+    assert SCHEMA_VERSION == "introspect-schema/6"
 
 
 def test_anomaly_severity_is_warn_for_unknown_type():
@@ -595,6 +595,62 @@ def test_assistant_record_drift_fields_parse_ok():
                 "isAbortedMidStream": False,
                 "pendingWorkflowCount": 3,
             }
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []
+
+
+# --- Schema v6: final-review residual 1 — three schema/5 census mis-attributions corrected --
+# The 2026-08-05 census placed `source` on UserRecord and `pendingWorkflowCount` on
+# AssistantRecord, and `logicalParentUuid`/`compactMetadata` on UserRecord; a live-record
+# re-verification found `source` actually belongs to a "document" content block, and the other
+# three belong to SystemRecord (pendingWorkflowCount on the turn_duration payload,
+# logicalParentUuid/compactMetadata on a new compact_boundary payload). schema/5's UserRecord/
+# AssistantRecord declarations of these names are kept (harmless, optional) — only the new,
+# verified locations are asserted here.
+
+
+def test_document_content_block_parses_ok():
+    # `source` is an opaque base64 payload (e.g. a transcribed PDF/image) on a "document"
+    # content block riding in a user turn's content list — not a UserRecord top-level field.
+    r = parse_line(
+        make_user_line(
+            content=[{"type": "document", "source": {"type": "base64", "data": "synthetic=="}}]
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []
+    block = r.record.blocks()[0]
+    assert block.kind == "document"
+    assert block.payload["source"] == {"type": "base64", "data": "synthetic=="}
+
+
+def test_system_turn_duration_pending_workflow_count_parses_ok():
+    # pendingWorkflowCount rides on SystemRecord's turn_duration payload beside
+    # pendingBackgroundAgentCount — not on AssistantRecord.
+    r = parse_line(
+        make_system_line(
+            "turn_duration",
+            content=None,
+            level=None,
+            durationMs=75779,
+            messageCount=42,
+            pendingBackgroundAgentCount=1,
+            pendingWorkflowCount=2,
+        )
+    )
+    assert r.status == "ok" and r.anomalies == []
+
+
+def test_system_compact_boundary_fields_parse_ok():
+    # logicalParentUuid + compactMetadata (opaque) form a new SystemRecord subtype payload,
+    # "compact_boundary" — not UserRecord top-level fields.
+    r = parse_line(
+        make_system_line(
+            "compact_boundary",
+            content=None,
+            level=None,
+            logicalParentUuid="c67b666f-80b3-4a5d-8c85-d6bfb75decfc",
+            compactMetadata={"archived": True, "tag": "important"},
         )
     )
     assert r.status == "ok" and r.anomalies == []

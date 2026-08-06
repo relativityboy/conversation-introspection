@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag
 # NOTE(claude): the module name (v1) is code organization; this constant tracks the
 # registry GENERATION stamped on parsed rows. They diverge by design — bumping the
 # generation does not require forking a new module.
-SCHEMA_VERSION = "introspect-schema/5"
+SCHEMA_VERSION = "introspect-schema/6"
 
 # Per-generation, human-readable old-vs-new summaries. This is the runtime source of truth
 # the ``schema_versions`` provenance table self-populates from (see
@@ -79,6 +79,18 @@ DIFF_NOTES: dict[str, str] = {
         "isVisibleInTranscriptOnly and isCompactSummary on UserRecord; isAbortedMidStream and "
         "pendingWorkflowCount on AssistantRecord. Census-driven; expected to drive the "
         "unknown_field floor from 24 to ~0. (2026-08-05 anomaly census)"
+    ),
+    "introspect-schema/6": (
+        "Final-review correction (residual 1): the schema/5 census mis-attributed four fields "
+        "to the wrong record. Verified against live records: `source` is not a UserRecord "
+        "field at all — it belongs to a new `document` content block (opaque base64 payload, "
+        "the DocumentBlock/'document' tag added to the Block union); `pendingWorkflowCount` "
+        "belongs on SystemRecord's turn_duration payload, not AssistantRecord; "
+        "`logicalParentUuid`/`compactMetadata` belong on a new SystemRecord subtype payload, "
+        "compact_boundary, not UserRecord. schema/5's UserRecord/AssistantRecord declarations "
+        "of these four names are left in place (harmless, optional) — this bump adds their "
+        "verified locations rather than removing the earlier, wrong ones. Drives the "
+        "unknown_field floor to 0."
     ),
 }
 
@@ -173,13 +185,28 @@ class ModelFallbackBlock(_Block):
     to: Any | None = None
 
 
+class DocumentBlock(_Block):
+    """A document content block the CLI persists inline in a user turn (schema/6).
+
+    Shape on disk: ``{"type": "document", "source": {...}}`` — ``source`` is an opaque
+    base64-encoded payload (e.g. a PDF or image transcribed into the API's document
+    content-block shape). Declared opaque ``Any`` per the caller/snapshot/fallback
+    precedent: preserved verbatim, never interpreted nor recursed for extras.
+    """
+
+    type: Literal["document"] = "document"
+    source: Any | None = None
+
+
 class UnknownBlock(_Block):
     """Fallback for a content block whose ``type`` this schema version does not know."""
 
     type: str
 
 
-_KNOWN_BLOCK_TYPES = frozenset({"text", "thinking", "tool_use", "tool_result", "fallback"})
+_KNOWN_BLOCK_TYPES = frozenset(
+    {"text", "thinking", "tool_use", "tool_result", "fallback", "document"}
+)
 
 
 def _block_discriminator(value: Any) -> str:
@@ -198,6 +225,7 @@ Block = Annotated[
         Annotated[ToolUseBlock, Tag("tool_use")],
         Annotated[ToolResultBlock, Tag("tool_result")],
         Annotated[ModelFallbackBlock, Tag("fallback")],
+        Annotated[DocumentBlock, Tag("document")],
         Annotated[UnknownBlock, Tag("unknown")],
     ],
     Discriminator(_block_discriminator),
@@ -429,6 +457,9 @@ class SystemRecord(Envelope):
     durationMs: int | None = None
     messageCount: int | None = None
     pendingBackgroundAgentCount: int | None = None
+    # schema/6: verified as SystemRecord's, not AssistantRecord's (the schema/5 census
+    # mis-attributed it — see DIFF_NOTES[SCHEMA_VERSION]).
+    pendingWorkflowCount: int | None = None
     # -- subtype "stop_hook_summary" payload --
     hookCount: int | None = None
     # NOTE(claude): hookInfos/hookErrors/hookAdditionalContext are lists of structured
@@ -465,6 +496,13 @@ class SystemRecord(Envelope):
     apiRefusalExplanation: str | None = None
     retractedMessageUuids: Any | None = None
     refusedUserMessageUuid: str | None = None
+    # -- subtype "compact_boundary" payload --
+    # schema/6: verified as SystemRecord's, not UserRecord's (the schema/5 census
+    # mis-attributed both — see DIFF_NOTES[SCHEMA_VERSION]). `logicalParentUuid` links back
+    # across a compaction boundary; `compactMetadata` is an opaque payload, preserved verbatim
+    # per the snapshot/toolUseResult precedent.
+    logicalParentUuid: str | None = None
+    compactMetadata: Any | None = None
 
 
 class AttachmentRecord(Envelope):
