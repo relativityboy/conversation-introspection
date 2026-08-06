@@ -170,6 +170,9 @@ def read_complete_units(path: Path, from_offset: int = 0) -> Iterator[RawUnit]:
                 # Unindented and independently valid on its own: the signature of a
                 # native record, never a pretty-printed continuation line (those are
                 # always indented). Don't swallow it — give up and replay it fresh.
+                # Precondition: native records start at column 0, pretty continuations
+                # are indented (json.dumps(indent=2) output) — see this function's
+                # docstring, third give-up trigger.
                 pending.appendleft(nxt)
                 giveup = True
                 break
