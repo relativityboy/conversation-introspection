@@ -267,6 +267,45 @@ def test_recapture_records_run_row(db_session, tmp_path):
     assert run.anomaly_count == 0  # clean heal: this run introduced no new anomalies
 
 
+def test_recapture_run_row_counts_this_files_anomalies_despite_rowid_reuse(db_session, tmp_path):
+    """Regression (final review I-1): the run row's ``anomaly_count``/``status`` used to be
+    computed from ``baseline_anomaly_id = max(ParseAnomaly.id)`` taken BEFORE the swap's delete,
+    then ``ParseAnomaly.id > baseline_anomaly_id`` after. ``parse_anomalies.id`` is a SQLite
+    rowid alias (``INTEGER PRIMARY KEY``, no ``AUTOINCREMENT`` -- see migration 0001), so once
+    the swap deletes every one of THIS file's interpretation-class anomalies -- which, for a
+    file recaptured before any other archive activity, ARE the table's current max-id rows --
+    SQLite is free to reissue ids at or below that watermark for the anomalies the swap creates
+    fresh. A watermark comparison then silently undercounts (production run 1421 recorded
+    anomaly_count=0/status=ok for a heal that actually introduced 28 errors). The fix: count
+    THIS file's own interpretation-class anomalies directly (scoped by source_file_id + kind),
+    never a table-wide id-ordering assumption -- exact by construction, since the swap deleted
+    every interpretation-class row for this file and bypass_dedup means no uuid_content_conflict
+    was minted to pollute the scope.
+
+    Fixture: a pretty-printed head that reassembles cleanly (0 anomalies) plus one genuinely
+    invalid line (the review's residual-2 shape: a stray `}` opens the line, so the reader's
+    opener heuristic refuses reassembly and the line is captured, and stays, invalid) -- the
+    ONE new anomaly the heal actually introduces.
+    """
+    root = tmp_path / "r"
+    slug = root / "-Users-x-residual"
+    slug.mkdir(parents=True)
+    uuid = "b1b1b1b1-0000-4000-8000-00000000000b"
+    head = make_pretty(make_user_line(text="reassembles cleanly", sessionId=uuid))
+    broken = b"}{ genuinely invalid mid-line boundary }\n"
+    content = head + broken
+    (slug / f"{uuid}.jsonl").write_bytes(content)
+    _capture_shattered(db_session, root)
+
+    result = recapture_file(db_session, uuid)
+    assert result.reconciled is True
+
+    run = db_session.query(ImportRun).order_by(ImportRun.id.desc()).first()
+    assert run is not None
+    assert run.anomaly_count == 1
+    assert run.status == "errors"
+
+
 def test_recapture_isolates_a_failing_record_without_losing_sibling_units(
     db_session, tmp_path, monkeypatch
 ):

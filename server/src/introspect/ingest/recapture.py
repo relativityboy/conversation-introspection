@@ -69,7 +69,6 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from introspect.export import _resolve_source_file
@@ -165,7 +164,6 @@ def recapture_file(
 
     transcript = db.get(Transcript, source_file.transcript_id)
     project = db.get(Project, source_file.project_id)
-    baseline_anomaly_id = db.query(func.max(ParseAnomaly.id)).scalar() or 0
     started_at = utcnow()
 
     # --- The swap: torn down here, rebuilt by _capture_chunk below -- staged in the ONE
@@ -212,7 +210,18 @@ def recapture_file(
     # own, immediately, via a per-record SAVEPOINT (the reparse._reparse_one idiom).
     _sweep_unparsed_for_file(db, source_file.id)
 
-    this_run_anomalies = db.query(ParseAnomaly).filter(ParseAnomaly.id > baseline_anomaly_id)
+    # NOTE(claude): scoped by source_file_id + kind, NOT a max(id)-before/id>watermark
+    # comparison (final review I-1). parse_anomalies.id is a SQLite rowid alias (INTEGER
+    # PRIMARY KEY, no AUTOINCREMENT -- migration 0001), so once the swap above deletes every
+    # interpretation-class anomaly for THIS file, a freshly-inserted anomaly can be issued an id
+    # at or below any watermark taken before that delete -- SQLite reuses low rowids once the
+    # rows that held them are gone. The file+kind scope is exact by construction instead: the
+    # swap deleted every interpretation-class row for this file, and bypass_dedup means no
+    # uuid_content_conflict was minted to pollute it.
+    this_run_anomalies = db.query(ParseAnomaly).filter(
+        ParseAnomaly.source_file_id == source_file.id,
+        ParseAnomaly.kind.in_(_INTERPRETATION_ANOMALY_KINDS),
+    )
     anomaly_count = this_run_anomalies.count()
     has_errors = this_run_anomalies.filter(ParseAnomaly.severity == "error").count() > 0
     status = "errors" if has_errors else "ok"
