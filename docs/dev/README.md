@@ -99,15 +99,30 @@ to a handful.
 
 Pretty-printed hand-edited transcripts are tolerated by the capture reader and exported byte-identically,
 but a file that's already in the archive as a series of broken fragments can be healed with
-`introspect recapture <session-uuid>`. The command re-runs the tolerant capture reader over the source
-file and swaps the shattered records for properly reassembled ones — but *only* if the stored archive
-bytes reconcile exactly with the re-split bytes (a gate that prevents mutation on source divergence).
-Unlike `reparse`, which operates on *interpretation* (re-parsing raw records under a new schema version),
-`recapture` operates on *record boundaries* — it redefines where one record ends and the next begins,
-then re-interprets the new records in the same transaction. Reassembly is bounded by three give-up
-triggers: a per-record cap (1,000 lines or 1 MiB), a negative brace-balance (unmatched closing), or
-an unindented independently-valid next line (native records start at column 0, continuations are
-indented per `json.dumps(indent=2)`).
+`introspect recapture <session-uuid>` (add `--dry-run` to preview the would-be before/after record and
+anomaly counts without mutating anything). The command re-runs the tolerant capture reader over the
+source file and swaps the shattered records for properly reassembled ones — but *only* if the stored
+archive bytes reconcile exactly with the re-split bytes (a gate that prevents mutation on source
+divergence). Unlike `reparse`, which operates on *interpretation* (re-parsing raw records under a new
+schema version), `recapture` operates on *record boundaries* — it redefines where one record ends and
+the next begins, then re-interprets the new records in the same transaction. Reassembly is bounded by
+four give-up triggers: a per-record cap (1,000 lines or 1 MiB), a negative brace-balance (unmatched
+closing), an unindented independently-valid next line (native records start at column 0, continuations
+are indented per `json.dumps(indent=2)`), or the accumulated buffer being balanced but still not valid
+JSON (e.g. two records concatenated on one line, `{...}{...}` — that shape is out of tolerance, not
+reassembled).
+
+Two operational rules follow from the byte-reconciliation gate and the transcript-scoped cache reset:
+
+- **Recapture cannot heal a hand-repaired source file.** If the file on disk no longer matches the bytes
+  the archive already captured (someone edited the source directly to fix it), the gate refuses — it
+  never reconciles changed bytes to a stale stored generation. Re-running `introspect import` instead
+  mints a new generation from the edited file, the same way any other source-file divergence does.
+- **After recapturing a transcript that belongs to a multi-transcript session (a main transcript plus
+  one or more subagents), run `introspect reparse` afterward.** Recapture resets and re-folds the
+  session's cached title/time bounds from only the transcript it just healed; a bound that came from a
+  *different* transcript of the same session is dropped until that other transcript is also recaptured,
+  reparsed, or re-imported.
 
 ## House rules
 
