@@ -1,7 +1,9 @@
 /* ActionButton phase styling. Base chrome (ghost pill vs bare menu item) belongs to consumers;
    only the phase states and the pending spin live here. */
-.action-button.is-success { color: var(--dragonfly); transition: color 0.3s ease-in-out; }
-.action-button.is-error { color: var(--ember); }
+/* NOTE(claude): success/error TEXT COLOR is not set here (final review fix) — it lives inline in
+   ActionButton.tsx instead, merged over the consumer's own `style.color` (StatusBar's GHOST_BTN,
+   ActionsMenu's ITEM_STYLE both set one), since a class-selector color rule can never win against
+   a later-applied inline style on the same element. */
 .action-button.is-pending { cursor: default; }
 
 .action-button-glyph { display: inline-block; }

@@ -71,11 +71,21 @@ export function ActionButton({ glyph, text, onClick, style, className, title }: 
   const classes = ['action-button', 'mono', className, phase.kind !== 'idle' ? `is-${phase.kind}` : null]
     .filter(Boolean).join(' ')
 
+  // NOTE(claude): phase color lives HERE, inline, not in the CSS class rules (final review fix).
+  // Consumers (StatusBar's GHOST_BTN, ActionsMenu's ITEM_STYLE) pass their own inline
+  // `style.color` — a later-applied inline style always beats a CSS class selector on the same
+  // element, so `.is-success`/`.is-error` color rules never actually rendered. Merging the phase
+  // color into the style object (after the consumer's `style`) is what makes it win instead.
+  const phaseStyle =
+    phase.kind === 'success' ? { color: 'var(--dragonfly)' }
+    : phase.kind === 'error' ? { color: 'var(--ember)' }
+    : null
+
   return (
     <button
       type="button"
       className={classes}
-      style={style}
+      style={{ ...style, ...phaseStyle }}
       onClick={handleClick}
       aria-busy={phase.kind === 'pending' || undefined}
       title={isError ? phase.message : title}

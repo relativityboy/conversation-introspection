@@ -84,4 +84,37 @@ describe('ActionButton', () => {
     await act(async () => d.resolve()) // must be a silent no-op
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  // final review fix: consumers (StatusBar's GHOST_BTN, ActionsMenu's ITEM_STYLE) pass an inline
+  // style.color of their own, which — as a later-applied inline style — beat the CSS class rules
+  // for is-success/is-error, so the phase colors never actually rendered. ActionButton now merges
+  // its own phase color over the consumer's style when phase !== idle.
+  describe('phase color wins over consumer style.color', () => {
+    it('idle keeps the consumer style color untouched', () => {
+      render(
+        <ActionButton glyph="●" text="import" onClick={vi.fn()} style={{ color: 'var(--mist)' }} />,
+      )
+      expect(screen.getByRole('button').style.color).toBe('var(--mist)')
+    })
+
+    it('success overrides the consumer style color with dragonfly', async () => {
+      const onClick = vi.fn().mockResolvedValue(undefined)
+      render(
+        <ActionButton glyph="●" text="import" onClick={onClick} style={{ color: 'var(--mist)' }} />,
+      )
+      const btn = screen.getByRole('button')
+      await act(async () => btn.click())
+      expect(btn.style.color).toBe('var(--dragonfly)')
+    })
+
+    it('error overrides the consumer style color with ember', async () => {
+      const onClick = vi.fn().mockRejectedValueOnce(new Error('boom'))
+      render(
+        <ActionButton glyph="⟲" text="resume" onClick={onClick} style={{ color: 'var(--dragonfly)' }} />,
+      )
+      const btn = screen.getByRole('button')
+      await act(async () => btn.click())
+      expect(btn.style.color).toBe('var(--ember)')
+    })
+  })
 })
