@@ -816,12 +816,28 @@ def _trim_unknown_kind_line() -> bytes:
     )
 
 
+def _trim_image_only_line() -> bytes:
+    # `block_kind == "image"` is its OWN OR-branch in `_chat_only_filter` (sessions.py), separate
+    # from the unknown-kind fallback branch -- "image" is a KNOWN kind (`_KNOWN_BLOCK_KINDS`), so
+    # without this dedicated branch it would fall neither into the text case nor the unknown-kind
+    # case and would trim despite being visible content client-side. No server test exercised this
+    # branch before (final review finding 5) -- mirrors the client parity table's
+    # 'assistant, image only' case (web/tests/chatOnly.test.ts).
+    return make_assistant_line(
+        text="",
+        extra_blocks=[
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": ""}}
+        ],
+        sessionId=_CHAT_ONLY_TRIM_SESSION_UUID,
+    )
+
+
 def _build_chat_only_trim_tree(
     db: Session, tmp_path: Path
-) -> tuple[int, str, str, str, str, str]:
+) -> tuple[int, str, str, str, str, str, str]:
     """Capture one message per Spec §4 emptiness case into a fresh transcript; return
     ``(transcript_id, control_uuid, tool_only_uuid, thinking_only_uuid, empty_text_uuid,
-    unknown_kind_uuid)`` in insertion (== id) order."""
+    unknown_kind_uuid, image_only_uuid)`` in insertion (== id) order."""
     root = tmp_path / "chat_only_trim_tree"
     proj = root / "-Users-x-chatonlytrim"
     proj.mkdir(parents=True)
@@ -831,6 +847,7 @@ def _build_chat_only_trim_tree(
         _trim_thinking_only_line(),
         _trim_empty_text_line(),
         _trim_unknown_kind_line(),
+        _trim_image_only_line(),
     ]
     (proj / f"{_CHAT_ONLY_TRIM_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
     _capture(db, root)
@@ -843,8 +860,23 @@ def _build_chat_only_trim_tree(
         .order_by(Message.id)
         .all()
     ]
-    control_uuid, tool_only_uuid, thinking_only_uuid, empty_text_uuid, unknown_kind_uuid = uuids
-    return tid, control_uuid, tool_only_uuid, thinking_only_uuid, empty_text_uuid, unknown_kind_uuid
+    (
+        control_uuid,
+        tool_only_uuid,
+        thinking_only_uuid,
+        empty_text_uuid,
+        unknown_kind_uuid,
+        image_only_uuid,
+    ) = uuids
+    return (
+        tid,
+        control_uuid,
+        tool_only_uuid,
+        thinking_only_uuid,
+        empty_text_uuid,
+        unknown_kind_uuid,
+        image_only_uuid,
+    )
 
 
 def test_chat_only_trims_content_empty_rows(db_session: Session, tmp_path: Path) -> None:
@@ -858,6 +890,7 @@ def test_chat_only_trims_content_empty_rows(db_session: Session, tmp_path: Path)
         thinking_only_uuid,
         empty_text_uuid,
         unknown_kind_uuid,
+        image_only_uuid,
     ) = _build_chat_only_trim_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
@@ -871,6 +904,7 @@ def test_chat_only_trims_content_empty_rows(db_session: Session, tmp_path: Path)
     assert thinking_only_uuid not in filtered_uuids
     assert empty_text_uuid not in filtered_uuids
     assert unknown_kind_uuid in filtered_uuids
+    assert image_only_uuid in filtered_uuids
     assert control_uuid in filtered_uuids
     # totals agree with the trimmed item set, and the unfiltered view is untouched
     assert filtered["total"] == len(filtered_uuids)
@@ -880,7 +914,7 @@ def test_chat_only_trims_content_empty_rows(db_session: Session, tmp_path: Path)
 def test_chat_only_around_trimmed_target_is_404(db_session: Session, tmp_path: Path) -> None:
     """Deep link into a trimmed row under the filter → 404 (the reader's recovery banner path);
     the same around succeeds unfiltered."""
-    tid, _control, tool_only_uuid, _thinking, _empty, _unknown = _build_chat_only_trim_tree(
+    tid, _control, tool_only_uuid, _thinking, _empty, _unknown, _image = _build_chat_only_trim_tree(
         db_session, tmp_path
     )
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
