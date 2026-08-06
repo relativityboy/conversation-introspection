@@ -134,30 +134,57 @@ describe('initial load without around', () => {
 })
 
 describe('around-seeded load', () => {
-  it('seeds firstItemIndex from the response offset and lands at the plain top-edge index', async () => {
+  it('seeds firstItemIndex from the response offset and lands at the array-local target index', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
     renderView('uuid-90')
 
     expect(await screen.findAllByTestId('row')).toHaveLength(100)
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { around: 'uuid-90', limit: 100 })
     expect(virtuosoProps.current?.firstItemIndex).toBe(40)
-    // uuid-90 sits at array index 50 within the seeded page (items are uuid-40..uuid-139).
-    // A plain number, not {index, align: 'center'} (walk fix 9b) — the object form livelocked
-    // the main thread on at least one profile-dependent Chrome configuration.
+    // uuid-90 sits at array index 50 within the seeded page (items are uuid-40..uuid-139). A
+    // plain number, not the object form (walk fix 9b round 3 — that livelocked at least one
+    // Chrome profile), and ARRAY-LOCAL, not offset-adjusted (walk fix 9b round 4 — see the NOTE
+    // at ConversationView.tsx's `targetIndex`: an offset-adjusted ("absolute") index was tried
+    // and empirically disproven — it broke real nonzero-offset deeplinks instead of fixing them).
     expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(50)
   })
 
-  it('re-centers on the target once, imperatively, after mount', async () => {
+  it('re-centers on the array-local target index once, imperatively, after mount', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
     renderView('uuid-90')
     await screen.findAllByTestId('row')
 
-    // The centering (2026-07-20 walk ruling — top-edge landing hid the context above) now
-    // happens via a one-shot scrollToIndex ref call instead of the initial-prop object form.
+    // The centering (2026-07-20 walk ruling — top-edge landing hid the context above) happens via
+    // a one-shot scrollToIndex ref call (walk fix 9b round 3), with an array-local index argument
+    // (walk fix 9b round 4 confirmed this, not offset + arrayIndex).
     await waitFor(() =>
       expect(scrollToIndexMock).toHaveBeenCalledWith({ index: 50, align: 'center', behavior: 'auto' }),
     )
     expect(scrollToIndexMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('pins array-local indexing even on a deep, non-zero-offset window', async () => {
+    // Walk fix 9b round 4: a live fiber inspection suggested the index should be offset-adjusted
+    // ("absolute") once firstItemIndex is non-zero. That was tried and empirically disproven — an
+    // offset-adjusted index (260 here) drove virtuoso into a runaway endReached fetch loop instead
+    // of landing on the target; the array-local index (60) landed correctly, one fetch, first try
+    // (see round 4's report for the live A/B test). This pins the array-local contract directly
+    // against a window that does NOT start at offset 0, so a future regression back toward
+    // "absolute" fails here instead of only showing up against a live nonzero-offset deeplink.
+    const offset = 200
+    fetchMessages.mockResolvedValueOnce(pageOf(offset, 100, 500))
+    renderView('uuid-260')
+    await screen.findAllByTestId('row')
+
+    const arrayIndex = 60 // uuid-260 is the 61st item in a page starting at uuid-200
+    expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(arrayIndex)
+    await waitFor(() =>
+      expect(scrollToIndexMock).toHaveBeenCalledWith({
+        index: arrayIndex,
+        align: 'center',
+        behavior: 'auto',
+      }),
+    )
   })
 })
 
@@ -415,8 +442,9 @@ describe('top / end reader controls', () => {
     await waitFor(() =>
       expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 150, limit: 100 }),
     )
-    // Window seeded at the last page (firstItemIndex 150); plain-number landing (walk fix 9b) —
-    // the {index, align: 'end'} object form used the same livelock-prone initial-resolution path.
+    // Window seeded at the last page (firstItemIndex 150); array-local index of the last loaded
+    // item is 99 (walk fix 9b round 4 confirmed this path is array-local too, not offset-adjusted
+    // — see the NOTE at ConversationView.tsx's `targetIndex`).
     expect(virtuosoProps.current?.firstItemIndex).toBe(150)
     expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(99)
     const rows = screen.getAllByTestId('row')

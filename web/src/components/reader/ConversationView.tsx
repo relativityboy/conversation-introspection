@@ -246,57 +246,57 @@ function MessageStream({
   // window lives — navigation stays inside `stream.items`, never re-fetching from the modal.
   const [inspectUuid, setInspectUuid] = useState<string | null>(null)
 
-  // Array index (virtuoso interprets initialTopMostItemIndex in list space, not absolute
-  // space) of the around-target within the seeded page; top of the stream when absent.
+  // Array index (within the seeded page) of the around-target, or of the last loaded message for
+  // `landAtEnd`; undefined when there's no real target (bare top-of-window landing).
   //
-  // NOTE(claude): PLAIN NUMBER only — deliberately not the `{index, align}` object form (walk fix
-  // 9b, 2026-08-05). That object form asks virtuoso to resolve alignment as part of its INITIAL
-  // measure-and-correct pass, and on at least one profile-dependent Chrome configuration (dpr 2,
-  // specific font metrics — plausibly a fractional-height measure/correct oscillation, the same
-  // race-condition class as react-virtuoso#91/#883) that pass never converges: a main-thread
-  // livelock, zero rows ever paint. A plain number can't oscillate — it's a stable top-edge
-  // landing with no alignment resolution involved. The centering this reader wants (still wanted
-  // — see the 2026-07-20 finding below) happens one tick later, imperatively, via the
-  // `scrollToIndex` effect below, once virtuoso has already mounted on solid ground.
-  const [initialTopMostItemIndex] = useState<number>(() => {
-    // End re-seed lands on the LAST message of the last page (bare top-edge index for now — the
-    // bottom pin below applies the same as the around-target center pin).
-    if (landAtEnd) return seed.items.length > 0 ? seed.items.length - 1 : 0
-    if (!initialAroundUuid) return 0
+  // NOTE(claude): ARRAY-LOCAL, not absolute — walk fix 9b round 4, 2026-08-05. A round-4 fiber
+  // inspection suggested this should be `seed.offset + arrayIndex` (absolute, matching
+  // itemContent's space) instead, reasoning virtuoso resolves this prop against the same
+  // firstItemIndex-shifted tree it uses everywhere else. That direction was tried and PROVEN
+  // WRONG by two independent checks: (1) source — `listStateSystem.ts`'s
+  // `buildListStateFromItemCount` resolves the initial index via a direct `data[index +
+  // initialTopMostItemIndexNumber]` lookup into the LOADED array, and only the *output* items get
+  // `+firstItemIndex` applied afterward (in `transposeItems`) to produce the absolute index
+  // `itemContent` receives — the shift is a presentation-layer step, not the space this prop
+  // lives in. (2) live A/B test against a real nonzero-offset deeplink (offset 300, target array
+  // index 50): the array-local index (50) landed on the target instantly, one fetch; the
+  // "absolute" index (350) never found it and instead drove `endReached` into a runaway fetch
+  // loop (400, 500, 600…), because 350 is nonsense relative to the ~100 LOCAL items actually
+  // loaded. This is exactly this reader's existing convention — see `itemContent` below, which
+  // separately converts absolute-to-local via `stream.items[absoluteIndex - stream.firstItemIndex]`
+  // for its OWN (correct, unrelated) reason.
+  const targetIndex = (() => {
+    if (landAtEnd) return seed.items.length > 0 ? seed.items.length - 1 : undefined
+    if (!initialAroundUuid) return undefined
     const index = seed.items.findIndex((m) => m.record_uuid === initialAroundUuid)
-    return index === -1 ? 0 : index
-  })
+    return index === -1 ? undefined : index
+  })()
+  const [initialTopMostItemIndex] = useState<number>(() => targetIndex ?? 0)
 
-  // One-shot post-mount align correction — the imperative counterpart to the plain-number landing
-  // above. NOTE(claude): the target is still CENTERED (2026-07-20 walk finding — top-edge landing
-  // hid the context above the highlighted message and read as "not what I hoped for"); it just
-  // gets there via `scrollToIndex` on the virtuoso ref instead of as part of the initial-prop
-  // resolution (walk fix 9b). `scrolledRef` fires this at most once per MessageStream mount (also
-  // absorbs React StrictMode's dev double-invoke) — a no-op when there's no target to align to,
-  // since a bare top landing is already correct in that case. `behavior: 'auto'` is an instant
-  // jump, not a smooth-scroll animation: the point is to land, not to visibly travel there.
+  // One-shot post-mount align correction. NOTE(claude): the target is still CENTERED (2026-07-20
+  // walk finding — top-edge landing hid the context above the highlighted message and read as
+  // "not what I hoped for"); it gets there via `scrollToIndex` on the virtuoso ref instead of as
+  // part of the initial-prop resolution, because the OBJECT `{index, align}` form of that initial
+  // prop livelocked the main thread on at least one profile-dependent Chrome configuration (walk
+  // fix 9b round 3). `scrolledRef` fires this at most once per MessageStream mount (also absorbs
+  // React StrictMode's dev double-invoke) — a no-op when there's no target to align to, since a
+  // bare top landing is already correct in that case. `behavior: 'auto'` is an instant jump, not
+  // a smooth-scroll animation: the point is to land, not to visibly travel there.
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const scrolledRef = useRef(false)
   useEffect(() => {
     if (scrolledRef.current) return
     scrolledRef.current = true
-    if (landAtEnd) {
-      if (seed.items.length > 0) {
-        virtuosoRef.current?.scrollToIndex({
-          index: seed.items.length - 1,
-          align: 'end',
-          behavior: 'auto',
-        })
-      }
-      return
-    }
-    if (!initialAroundUuid) return
-    const index = seed.items.findIndex((m) => m.record_uuid === initialAroundUuid)
-    if (index === -1) return
-    virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' })
-    // Deliberately mount-only: `seed`/`initialAroundUuid`/`landAtEnd` are stable for this
-    // instance's lifetime (ConversationView remounts MessageStream via its `key` on any change
-    // that would otherwise require re-seeding — see that component's key comment).
+    if (targetIndex === undefined) return
+    virtuosoRef.current?.scrollToIndex({
+      index: targetIndex,
+      align: landAtEnd ? 'end' : 'center',
+      behavior: 'auto',
+    })
+    // Deliberately mount-only: `seed`/`initialAroundUuid`/`landAtEnd` (and so `targetIndex`,
+    // derived from them) are stable for this instance's lifetime (ConversationView remounts
+    // MessageStream via its `key` on any change that would otherwise require re-seeding — see
+    // that component's key comment).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
