@@ -186,6 +186,8 @@ whether or not Claude Code still has the transcript.
   clipboard and says so — paste and run.
 - If the original project directory no longer exists, or you're not on macOS, nothing is
   launched; the reader shows the exact command to run instead.
+- If the transcript was hand-edited in its source file (pretty-printed, for instance), the restored
+  bytes are byte-identical but may not be consumable by `claude --resume`, which expects compact JSONL.
 
 Launching happens on the machine running `introspect serve`. That's the point on your own
 Mac — but it's one more reason never to bind the server beyond 127.0.0.1.

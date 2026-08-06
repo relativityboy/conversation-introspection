@@ -95,6 +95,20 @@ This is exactly how the ~17,500-anomaly production drift event was resolved: the
 declared, `reparse` rebuilt the affected records from bytes already on disk, and the floor collapsed
 to a handful.
 
+## The recapture command (healing hand-edited transcripts)
+
+Pretty-printed hand-edited transcripts are tolerated by the capture reader and exported byte-identically,
+but a file that's already in the archive as a series of broken fragments can be healed with
+`introspect recapture <session-uuid>`. The command re-runs the tolerant capture reader over the source
+file and swaps the shattered records for properly reassembled ones — but *only* if the stored archive
+bytes reconcile exactly with the re-split bytes (a gate that prevents mutation on source divergence).
+Unlike `reparse`, which operates on *interpretation* (re-parsing raw records under a new schema version),
+`recapture` operates on *record boundaries* — it redefines where one record ends and the next begins,
+then re-interprets the new records in the same transaction. Reassembly is bounded by three give-up
+triggers: a per-record cap (1,000 lines or 1 MiB), a negative brace-balance (unmatched closing), or
+an unindented independently-valid next line (native records start at column 0, continuations are
+indented per `json.dumps(indent=2)`).
+
 ## House rules
 
 - Keep diffs small and self-contained; prefer new modules over growing large files.

@@ -35,7 +35,8 @@ anywhere in the loop. And it works **even if the original file is already gone**
 system of record, not a cache of the file.
 
 Large transcripts stream straight to disk, one line at a time, so a session with multi-megabyte
-lines exports without ever being fully held in memory.
+lines exports without ever being fully held in memory. This is true even for pretty-printed
+sessions: hand-edited transcripts export byte-identically as they are stored, formatting and all.
 
 ## Which copy you get back
 

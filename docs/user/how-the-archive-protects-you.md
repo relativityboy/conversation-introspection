@@ -69,6 +69,15 @@ You never manage this by hand. The database migrates itself to the current schem
 opened, so pulling a newer version of the repo and running it against an existing archive just
 works.
 
+## Hand-edited transcripts
+
+If you hand-edit a transcript file during debugging or investigation — pretty-printing it for
+readability, for example — the archive tolerates it at capture time. Pretty-printed multi-line
+JSON records are reassembled into single records and captured byte-identically. If the file's
+already in the archive and shattered into anomalies, `introspect recapture <session-uuid>` heals
+it from the original source, gated by a byte-reconciliation proof so the archive's stored bytes
+never change unexpectedly. Either way, exports remain byte-identical to the source file.
+
 ## Local-only, and what's actually in the file
 
 The archive lives at `~/.conversation-introspection/archive.db` by default — deliberately outside
