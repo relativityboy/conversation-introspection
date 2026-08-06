@@ -34,6 +34,7 @@ from introspect import config, cron
 from introspect.api import create_app
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.export import SessionNotFoundError, TranscriptNotFoundError, export_session_to
+from introspect.ingest.recapture import recapture_file
 from introspect.ingest.reparse import reparse_all
 
 # NOTE(claude): `_acquire_lock`/`_release_lock` are private to run.py, but the amendment for
@@ -62,6 +63,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reparse = subparsers.add_parser("reparse", help="rebuild interpretation from raw bytes")
     p_reparse.add_argument("--db", help="path to the archive DB")
     p_reparse.set_defaults(handler=_cmd_reparse)
+
+    p_recapture = subparsers.add_parser(
+        "recapture", help="byte-reconciled repair of a shattered source file's raw records"
+    )
+    p_recapture.add_argument("session_uuid")
+    p_recapture.add_argument("--kind", default="main", help="transcript kind (default: main)")
+    p_recapture.add_argument(
+        "--agent-hex", dest="agent_hex_id", help="subagent hex id (only with --kind subagent)"
+    )
+    p_recapture.add_argument("--db", help="path to the archive DB")
+    p_recapture.add_argument(
+        "--dry-run", action="store_true", help="report the would-be swap without mutating"
+    )
+    p_recapture.set_defaults(handler=_cmd_recapture)
 
     p_export = subparsers.add_parser("export", help="reconstruct a transcript's bytes")
     p_export.add_argument("session_uuid")
@@ -159,6 +174,53 @@ def _cmd_reparse(args: argparse.Namespace) -> int:
         f"anomalies_before={stats.anomalies_before} anomalies_after={stats.anomalies_after}"
     )
     return 0
+
+
+def _cmd_recapture(args: argparse.Namespace) -> int:
+    """Byte-reconciled repair of one transcript's shattered raw records (compat spec §3).
+
+    Same lock/exit-code idiom as ``_cmd_reparse``: the advisory ``import.lock`` guards against
+    a concurrent import/reparse racing the swap, and DB-open failure is exit 2. A REFUSED
+    outcome (``reconciled=False`` -- the byte gate failed, or a unit straddled the checkpoint)
+    is exit 1 with the diagnosis on stderr, matching every other "ran but failed" case; success
+    (including a reconciled ``--dry-run``) is exit 0.
+    """
+    dbp = _resolve_db_path_or_none(args.db)
+    if dbp is None:
+        return 2
+    lock_fh = _acquire_lock(dbp.parent / "import.lock")
+    if lock_fh is None:
+        print("recapture: another import/reparse is already running", file=sys.stderr)
+        return 1
+    try:
+        engine = _open_db_or_none(dbp)
+        if engine is None:
+            return 2
+        with session_factory(engine)() as db:
+            try:
+                stats = recapture_file(
+                    db,
+                    args.session_uuid,
+                    kind=args.kind,
+                    agent_hex_id=args.agent_hex_id,
+                    dry_run=args.dry_run,
+                )
+            except (SessionNotFoundError, TranscriptNotFoundError) as exc:
+                print(f"recapture: {exc}", file=sys.stderr)
+                return 1
+            except Exception as exc:  # noqa: BLE001 -- internal failure: one clean line, exit 1
+                print(f"recapture: {exc}", file=sys.stderr)
+                return 1
+    finally:
+        _release_lock(lock_fh)
+    if not stats.reconciled:
+        print(f"recapture: refused — {stats.reason}", file=sys.stderr)
+    print(
+        f"recapture file={stats.path} reconciled={stats.reconciled} "
+        f"records {stats.records_before}->{stats.records_after} "
+        f"anomalies {stats.anomalies_before}->{stats.anomalies_after}"
+    )
+    return 0 if stats.reconciled else 1
 
 
 def _cmd_export(args: argparse.Namespace) -> int:

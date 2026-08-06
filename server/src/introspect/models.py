@@ -124,7 +124,7 @@ class ImportRun(Base):
     __tablename__ = "import_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    trigger: Mapped[str]  # 'cli' | 'api'
+    trigger: Mapped[str]  # 'cli' | 'api' | 'recapture'
     started_at: Mapped[datetime] = mapped_column(UTCDateTime)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     files_seen: Mapped[int] = mapped_column(default=0)
