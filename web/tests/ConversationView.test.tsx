@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
-import { forwardRef, useImperativeHandle, useState } from 'react'
+import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type MessagesOptions } from '../src/api/client'
 import type { MessageList, MessageOut } from '../src/api/types'
@@ -14,25 +14,24 @@ import { ConversationView } from '../src/components/reader/ConversationView'
 // initialTopMostItemIndex) and exposes the two edge callbacks as buttons; every row the real
 // component would virtualize is rendered flat so prepend/append order is observable in the DOM.
 //
-// initialTopMostItemIndex is a PLAIN NUMBER only (walk fix 9b) — the object `{index, align}` form
-// livelocked the main thread on at least one profile-dependent Chrome configuration, so
-// ConversationView now lands at the plain top-edge index and re-centers imperatively via a
-// scrollToIndex ref call once mounted. The mock exposes that ref (forwardRef +
-// useImperativeHandle) so scrollToIndexMock can pin what was requested.
+// initialTopMostItemIndex is either the plain number 0 (no real target — bare top-of-window
+// landing) or the OBJECT `{index, align}` form (a real around/end target — final review fix:
+// virtuoso re-issues an aligned `scrollToIndex` itself post-measurement, so ConversationView no
+// longer needs an imperative ref call of its own). The mock only needs to capture the prop shape
+// Virtuoso was handed — no ref/imperative-handle plumbing required.
 interface VirtuosoMockProps {
   totalCount: number
   firstItemIndex: number
-  initialTopMostItemIndex?: number
+  initialTopMostItemIndex?: number | { index: number; align: 'center' | 'end' }
   startReached?: (index: number) => void
   endReached?: (index: number) => void
   itemContent: (index: number) => ReactNode
 }
 
-const { fetchMessages, fetchRawRecord, virtuosoProps, scrollToIndexMock } = vi.hoisted(() => ({
+const { fetchMessages, fetchRawRecord, virtuosoProps } = vi.hoisted(() => ({
   fetchMessages: vi.fn(),
   fetchRawRecord: vi.fn(),
   virtuosoProps: { current: null as VirtuosoMockProps | null },
-  scrollToIndexMock: vi.fn(),
 }))
 
 vi.mock('../src/api/client', async () => {
@@ -41,25 +40,22 @@ vi.mock('../src/api/client', async () => {
 })
 
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: forwardRef<{ scrollToIndex: typeof scrollToIndexMock }, VirtuosoMockProps>(
-    (props, ref) => {
-      virtuosoProps.current = props
-      useImperativeHandle(ref, () => ({ scrollToIndex: scrollToIndexMock }))
-      return (
-        <div>
-          <button onClick={() => props.startReached?.(props.firstItemIndex)}>reach-start</button>
-          {Array.from({ length: props.totalCount }, (_, i) => (
-            <div data-testid="row" key={props.firstItemIndex + i}>
-              {props.itemContent(props.firstItemIndex + i)}
-            </div>
-          ))}
-          <button onClick={() => props.endReached?.(props.firstItemIndex + props.totalCount - 1)}>
-            reach-end
-          </button>
-        </div>
-      )
-    },
-  ),
+  Virtuoso: (props: VirtuosoMockProps) => {
+    virtuosoProps.current = props
+    return (
+      <div>
+        <button onClick={() => props.startReached?.(props.firstItemIndex)}>reach-start</button>
+        {Array.from({ length: props.totalCount }, (_, i) => (
+          <div data-testid="row" key={props.firstItemIndex + i}>
+            {props.itemContent(props.firstItemIndex + i)}
+          </div>
+        ))}
+        <button onClick={() => props.endReached?.(props.firstItemIndex + props.totalCount - 1)}>
+          reach-end
+        </button>
+      </div>
+    )
+  },
 }))
 
 const TRANSCRIPT_ID = 7
@@ -117,7 +113,6 @@ beforeEach(() => {
   fetchMessages.mockReset()
   fetchRawRecord.mockReset()
   virtuosoProps.current = null
-  scrollToIndexMock.mockReset()
 })
 
 describe('initial load without around', () => {
@@ -134,57 +129,42 @@ describe('initial load without around', () => {
 })
 
 describe('around-seeded load', () => {
-  it('seeds firstItemIndex from the response offset and lands at the array-local target index', async () => {
+  it('seeds firstItemIndex from the response offset and lands at the array-local target index, centered', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
     renderView('uuid-90')
 
     expect(await screen.findAllByTestId('row')).toHaveLength(100)
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { around: 'uuid-90', limit: 100 })
     expect(virtuosoProps.current?.firstItemIndex).toBe(40)
-    // uuid-90 sits at array index 50 within the seeded page (items are uuid-40..uuid-139). A
-    // plain number, not the object form (walk fix 9b round 3 — that livelocked at least one
-    // Chrome profile), and ARRAY-LOCAL, not offset-adjusted (walk fix 9b round 4 — see the NOTE
-    // at ConversationView.tsx's `targetIndex`: an offset-adjusted ("absolute") index was tried
-    // and empirically disproven — it broke real nonzero-offset deeplinks instead of fixing them).
-    expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(50)
+    // uuid-90 sits at array index 50 within the seeded page (items are uuid-40..uuid-139). The
+    // OBJECT `{index, align}` form (final review fix — restored after walk fix 9b round 3's plain
+    // number regressed the landing to the top edge; virtuoso re-issues an aligned scrollToIndex
+    // itself post-measurement, so this prop is what actually controls where it lands), and
+    // ARRAY-LOCAL, not offset-adjusted (walk fix 9b round 4 — see the NOTE at
+    // ConversationView.tsx's `targetIndex`: an offset-adjusted ("absolute") index was tried and
+    // empirically disproven — it broke real nonzero-offset deeplinks instead of fixing them).
+    expect(virtuosoProps.current?.initialTopMostItemIndex).toEqual({ index: 50, align: 'center' })
   })
 
-  it('re-centers on the array-local target index once, imperatively, after mount', async () => {
-    fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
-    renderView('uuid-90')
-    await screen.findAllByTestId('row')
-
-    // The centering (2026-07-20 walk ruling — top-edge landing hid the context above) happens via
-    // a one-shot scrollToIndex ref call (walk fix 9b round 3), with an array-local index argument
-    // (walk fix 9b round 4 confirmed this, not offset + arrayIndex).
-    await waitFor(() =>
-      expect(scrollToIndexMock).toHaveBeenCalledWith({ index: 50, align: 'center', behavior: 'auto' }),
-    )
-    expect(scrollToIndexMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('pins array-local indexing even on a deep, non-zero-offset window', async () => {
+  it('pins the OBJECT prop shape and array-local indexing on a deep, non-zero-offset window', async () => {
     // Walk fix 9b round 4: a live fiber inspection suggested the index should be offset-adjusted
     // ("absolute") once firstItemIndex is non-zero. That was tried and empirically disproven — an
     // offset-adjusted index (260 here) drove virtuoso into a runaway endReached fetch loop instead
     // of landing on the target; the array-local index (60) landed correctly, one fetch, first try
     // (see round 4's report for the live A/B test). This pins the array-local contract directly
     // against a window that does NOT start at offset 0, so a future regression back toward
-    // "absolute" fails here instead of only showing up against a live nonzero-offset deeplink.
+    // "absolute" fails here instead of only showing up against a live nonzero-offset deeplink —
+    // and pins the OBJECT `{index, align}` prop shape (final review fix) rather than a bare number.
     const offset = 200
     fetchMessages.mockResolvedValueOnce(pageOf(offset, 100, 500))
     renderView('uuid-260')
     await screen.findAllByTestId('row')
 
     const arrayIndex = 60 // uuid-260 is the 61st item in a page starting at uuid-200
-    expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(arrayIndex)
-    await waitFor(() =>
-      expect(scrollToIndexMock).toHaveBeenCalledWith({
-        index: arrayIndex,
-        align: 'center',
-        behavior: 'auto',
-      }),
-    )
+    expect(virtuosoProps.current?.initialTopMostItemIndex).toEqual({
+      index: arrayIndex,
+      align: 'center',
+    })
   })
 })
 
@@ -416,22 +396,18 @@ describe('top / end reader controls', () => {
     renderView('uuid-90')
     await screen.findAllByTestId('row')
     expect(virtuosoProps.current?.firstItemIndex).toBe(40)
-    // The around-seeded mount's own centering effect already fired once here — clear it so the
-    // assertion below is scoped to the Top click's remount, not this earlier, correct call.
-    scrollToIndexMock.mockClear()
 
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
     await userEvent.click(screen.getByRole('button', { name: 'top' }))
 
     await waitFor(() => expect(virtuosoProps.current?.firstItemIndex).toBe(0))
     expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+    // No target to align to on the Top-reseeded (remounted) window — plain number 0, not the
+    // object form.
     expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(0)
-    // No target to align to on the Top-reseeded (remounted) window — the one-shot effect is a
-    // no-op there.
-    expect(scrollToIndexMock).not.toHaveBeenCalled()
   })
 
-  it('end fetches the LAST page (offset = total - PAGE_SIZE) and renders the final message', async () => {
+  it('end fetches the LAST page (offset = total - PAGE_SIZE) and renders the final message, end-aligned', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
     renderView()
     await screen.findAllByTestId('row')
@@ -444,16 +420,12 @@ describe('top / end reader controls', () => {
     )
     // Window seeded at the last page (firstItemIndex 150); array-local index of the last loaded
     // item is 99 (walk fix 9b round 4 confirmed this path is array-local too, not offset-adjusted
-    // — see the NOTE at ConversationView.tsx's `targetIndex`).
+    // — see the NOTE at ConversationView.tsx's `targetIndex`), OBJECT form with align 'end' (final
+    // review fix — restores the bottom-pinned landing).
     expect(virtuosoProps.current?.firstItemIndex).toBe(150)
-    expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(99)
+    expect(virtuosoProps.current?.initialTopMostItemIndex).toEqual({ index: 99, align: 'end' })
     const rows = screen.getAllByTestId('row')
     expect(rows[rows.length - 1].textContent).toContain('message 249')
-    // The bottom-pin happens imperatively too, once, after mount.
-    await waitFor(() =>
-      expect(scrollToIndexMock).toHaveBeenCalledWith({ index: 99, align: 'end', behavior: 'auto' }),
-    )
-    expect(scrollToIndexMock).toHaveBeenCalledTimes(1)
   })
 
   it('threads chat_only through the end re-seed fetch', async () => {

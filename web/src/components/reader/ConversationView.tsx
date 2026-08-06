@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { useCallback, useRef, useState } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import { ApiError, fetchMessages } from '../../api/client'
 import { useMessages } from '../../api/hooks'
 import type { MessageList, MessageOut } from '../../api/types'
@@ -271,34 +271,29 @@ function MessageStream({
     const index = seed.items.findIndex((m) => m.record_uuid === initialAroundUuid)
     return index === -1 ? undefined : index
   })()
-  const [initialTopMostItemIndex] = useState<number>(() => targetIndex ?? 0)
-
-  // One-shot post-mount align correction. NOTE(claude): the target is still CENTERED (2026-07-20
-  // walk finding — top-edge landing hid the context above the highlighted message and read as
-  // "not what I hoped for"); it gets there via `scrollToIndex` on the virtuoso ref instead of as
-  // part of the initial-prop resolution, because the OBJECT `{index, align}` form of that initial
-  // prop livelocked the main thread on at least one profile-dependent Chrome configuration (walk
-  // fix 9b round 3). `scrolledRef` fires this at most once per MessageStream mount (also absorbs
-  // React StrictMode's dev double-invoke) — a no-op when there's no target to align to, since a
-  // bare top landing is already correct in that case. `behavior: 'auto'` is an instant jump, not
-  // a smooth-scroll animation: the point is to land, not to visibly travel there.
-  const virtuosoRef = useRef<VirtuosoHandle>(null)
-  const scrolledRef = useRef(false)
-  useEffect(() => {
-    if (scrolledRef.current) return
-    scrolledRef.current = true
-    if (targetIndex === undefined) return
-    virtuosoRef.current?.scrollToIndex({
-      index: targetIndex,
-      align: landAtEnd ? 'end' : 'center',
-      behavior: 'auto',
-    })
-    // Deliberately mount-only: `seed`/`initialAroundUuid`/`landAtEnd` (and so `targetIndex`,
-    // derived from them) are stable for this instance's lifetime (ConversationView remounts
-    // MessageStream via its `key` on any change that would otherwise require re-seeding — see
-    // that component's key comment).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // The target lands CENTERED (2026-07-20 walk finding — top-edge landing hid the context above
+  // the highlighted message and read as "not what I hoped for"), via the OBJECT `{index, align}`
+  // form of `initialTopMostItemIndex` — no target (bare top-of-window landing) stays the plain
+  // number 0, which needs no alignment.
+  //
+  // NOTE(claude): walk fix 9b round 3 replaced this object form with a plain number, diagnosing a
+  // main-thread livelock in virtuoso's initial-align resolution on at least one profile-dependent
+  // Chrome configuration and adding a one-shot post-mount `scrollToIndex` ref call to re-apply the
+  // alignment imperatively instead. That livelock evidence was retracted — it traced to an
+  // automation-tab artifact, not a real defect reachable from ordinary browser use. The one-shot
+  // effect is removed here because it never actually controlled the landing anyway: virtuoso
+  // itself re-issues `scrollToIndex` with the CURRENT `initialTopMostItemIndex` value after
+  // measurement settles, 4 rAFs later (`node_modules/react-virtuoso/dist/index.mjs:1178-1216`,
+  // the `je(4, …)` call at :1211, `je` defined :1164) — so a plain number (align undefined →
+  // 'start') always won the race and overwrote our mount-effect's centered/end-aligned call,
+  // which is why the landing regressed to the top edge. Passing the object form here lets
+  // virtuoso's own post-measurement correction land at the right alignment instead of fighting it.
+  const [initialTopMostItemIndex] = useState<number | { index: number; align: 'center' | 'end' }>(
+    () =>
+      targetIndex === undefined
+        ? 0
+        : { index: targetIndex, align: landAtEnd ? 'end' : 'center' },
+  )
 
   // Deep-link arrival glow. A ref callback (not a post-render querySelector) fires exactly when
   // the target row's element mounts — robust against virtuoso's async measure-then-render and
@@ -368,7 +363,6 @@ function MessageStream({
   return (
     <>
       <Virtuoso
-        ref={virtuosoRef}
         style={{ height: '100%' }}
         totalCount={stream.items.length}
         firstItemIndex={stream.firstItemIndex}
