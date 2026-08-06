@@ -73,6 +73,35 @@ def test_incremental_append_after_pretty_head(db_session, tmp_path):
     assert recs[1].line_number == pretty.count(b"\n") + 1  # file-position ordinal
 
 
+def test_duplicate_reassembled_unit_same_file_is_stored_not_deduped(db_session, tmp_path):
+    """Same-file dedup carve-out (test_capture.py::test_same_file_byte_identical_uuid_line_is_stored)
+    extends unchanged to reassembled units: dedup only skips a match from a DIFFERENT source
+    file (see ``_dedup_or_conflict``'s docstring), because export is pure concatenation of
+    stored ``raw_line`` bytes — skipping one copy of an intra-file repeat would be unrepairable
+    capture loss. So a pretty record appearing twice in one file is stored TWICE, not deduped,
+    and each occurrence still consumes its own ``line_span`` of file-position ordinals.
+    """
+    pretty = _pretty_line(make_user_line(text="hand edited", sessionId=PRETTY_SESSION_UUID))
+    compact = make_assistant_line(text="native tail", sessionId=PRETTY_SESSION_UUID)
+    payload = pretty + pretty + compact
+    proj = tmp_path / "pretty" / "-Users-x-pretty"
+    proj.mkdir(parents=True)
+    (proj / f"{PRETTY_SESSION_UUID}.jsonl").write_bytes(payload)
+    stats = [capture_file(db_session, f) for f in discover(tmp_path / "pretty")]
+    db_session.commit()
+
+    assert sum(s.records_skipped_duplicate for s in stats) == 0  # NOT deduped (same-file carve-out)
+    assert sum(s.records_added for s in stats) == 3  # both pretty copies + the compact tail
+
+    recs = db_session.query(RawRecord).order_by(RawRecord.line_number).all()
+    assert [r.reassembled for r in recs] == [True, True, False]
+    span = pretty.count(b"\n")  # file lines spanned by one pretty copy
+    assert [r.line_number for r in recs] == [1, span + 1, 2 * span + 1]
+    # Nothing was skipped: export (concatenated stored raw_lines) equals the file exactly.
+    assert b"".join(r.raw_line for r in recs) == payload
+    assert db_session.query(ParseAnomaly).filter_by(kind="uuid_content_conflict").count() == 0
+
+
 def test_unbalanced_giveup_matches_per_line_anomalies(db_session, tmp_path):
     # opener that never closes + fragment lines: capture must record them as
     # per-line invalid_json anomalies exactly like today (spec §2 give-up)

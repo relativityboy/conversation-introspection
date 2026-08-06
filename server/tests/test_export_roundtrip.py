@@ -23,7 +23,7 @@ from introspect.export import (
 )
 from introspect.ingest.capture import capture_file, detect_gone
 from introspect.ingest.discovery import discover
-from tests.fixtures.records import make_user_line
+from tests.fixtures.records import make_assistant_line, make_pretty, make_thin_meta_line, make_user_line
 from tests.test_capture import _capture_all
 
 
@@ -59,6 +59,24 @@ def test_roundtrip_no_trailing_newline(db_session, tmp_path):
     for f in discover(root):
         capture_file(db_session, f)
     assert export_transcript(db_session, "aaaaaaaa-1111-2222-3333-444444444444") == content
+
+
+def test_roundtrip_pretty_printed_head_byte_identical(db_session, tmp_path):
+    """Compat spec §2's export covenant: a hand-pretty-printed head exports exactly
+    as it sits on disk — reassembly moves boundaries, never bytes."""
+    root = tmp_path / "r"
+    slug = root / "-Users-x-pretty"
+    slug.mkdir(parents=True)
+    uuid = "6b6b6b6b-0000-4000-8000-000000000006"
+    content = (
+        make_pretty(make_user_line(text="edited by hand", sessionId=uuid))
+        + make_pretty(make_thin_meta_line("mode", session_id=uuid))
+        + make_assistant_line(text="native tail", sessionId=uuid)
+    )
+    (slug / f"{uuid}.jsonl").write_bytes(content)
+    for f in discover(root):
+        capture_file(db_session, f)
+    assert export_transcript(db_session, uuid) == content
 
 
 def test_export_unknown_session_raises(db_session):

@@ -38,6 +38,12 @@ def _encode(record: dict) -> bytes:
     return (json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
 
 
+def make_pretty(line: bytes) -> bytes:
+    """Re-serialize a compact builder line as pretty-printed multi-line bytes (spec §2's
+    hand-edit shape): 2-space indent, one field per line, newline-terminated."""
+    return (json.dumps(json.loads(line), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def _envelope(record_type: str, **overrides: object) -> dict:
     """Build a conversational envelope. ``overrides`` use the on-disk camelCase keys."""
     env = {
