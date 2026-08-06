@@ -209,9 +209,9 @@ The app never pretends. Unknown or missing things get honest, recoverable states
 The bottom of the reading room shows archive stats (last import time, session/record counts, anomaly badge) and an **import** button. When you click it, the button shows live feedback:
 
 - Idle: "import"
-- Running: a spinning icon inside the button
+- Running: a spinning icon inside the button, label reads `import…`
 - Success: a brief flash of `imported ✓` (then clears back to idle)
-- Already running: a neutral flash of `already running ✓` (another import process is already in progress)
+- Already running: a neutral flash of `already running` (no checkmark — another import process is already in progress)
 - Failed: a sticky `⚠ import failed` state; hover the button to see the reason in the tooltip, or click it again to retry.
 
 <!-- SCREENSHOTS: this page is text-only for V1. If screenshots are added later they must be
