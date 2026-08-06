@@ -67,7 +67,7 @@ def test_status_reports_schema_version_and_known_count(tmp_path: Path, fixture_t
     with session_factory(engine)() as db:
         snap = collect_status(db)
     assert snap.schema_version == SCHEMA_VERSION
-    # 3 historical (backfilled by migration 0005) + the current one recorded at import.
+    # Fresh-DB count is bump-invariant: migration 0005 backfills /1-/3 (frozen), ensure_current_schema_version_recorded adds exactly one row for the CURRENT version, total = 4 regardless of generation.
     assert snap.schema_versions_known == 4
     line = schema_line(snap)
     assert SCHEMA_VERSION in line
