@@ -105,6 +105,7 @@ class AnomalyBreakdown(BaseModel):
 
 
 class StatusOut(BaseModel):
+    version: str
     sessions: int
     files: int
     records: int
@@ -257,6 +258,7 @@ def get_status(request: Request, db: Session = Depends(get_db)) -> StatusOut:
     archive_bytes = os.stat(db_path).st_size
 
     return StatusOut(
+        version=request.app.state.app_version,
         sessions=sessions,
         files=files,
         records=records,

@@ -225,6 +225,7 @@ def test_status_shape_and_counts(
 
     body = client.get("/api/v1/status").json()
     assert set(body) == {
+        "version",
         "sessions",
         "files",
         "records",
@@ -239,6 +240,23 @@ def test_status_shape_and_counts(
     assert set(body["anomalies"]) == {"error", "warn", "info"}
     # Captured directly (not via run_import) so there is no ImportRun row.
     assert body["last_run"] is None
+
+
+def test_status_reports_injected_app_version(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(db_path=tmp_path / "archive.db", app_version="9.9.9")
+    )
+    resp = client.get("/api/v1/status")
+    assert resp.status_code == 200
+    assert resp.json()["version"] == "9.9.9"
+
+
+def test_app_version_defaults_to_changelog_lookup(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("introspect.api.changelog.app_version", lambda: "7.7.7")
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    resp = client.get("/api/v1/status")
+    assert resp.status_code == 200
+    assert resp.json()["version"] == "7.7.7"
 
 
 # --- Anomalies --------------------------------------------------------------------------

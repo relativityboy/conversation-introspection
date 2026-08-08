@@ -28,7 +28,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from introspect import config
+from introspect import changelog, config
 from introspect.api.errors import register_error_handlers
 from introspect.api.routes.admin import router as admin_router
 from introspect.api.routes.archive import router as archive_router
@@ -48,6 +48,7 @@ def create_app(
     ui_dist: Path | None = None,
     terminal_app: str | None = None,
     resume_runner: "Runner | None" = None,
+    app_version: str | None = None,
 ) -> FastAPI:
     """Build a fully-migrated app instance bound to one archive DB.
 
@@ -68,6 +69,7 @@ def create_app(
     resolved_db_path = config.db_path(str(db_path) if db_path is not None else None)
     resolved_source_root = config.source_root(str(source_root) if source_root is not None else None)
     resolved_ui_dist = _resolve_ui_dist(ui_dist)
+    resolved_app_version = app_version if app_version is not None else changelog.app_version()
 
     engine = get_engine(resolved_db_path)
     upgrade_to_head(engine)
@@ -78,6 +80,7 @@ def create_app(
     app.state.source_root = resolved_source_root
     app.state.terminal_app = config.terminal_app(terminal_app)
     app.state.resume_runner = resume_runner  # tests inject a fake; None = real subprocess
+    app.state.app_version = resolved_app_version
 
     register_error_handlers(app)
     app.include_router(sessions_router)
