@@ -99,6 +99,13 @@ const PRE_STYLE: CSSProperties = {
   wordBreak: 'break-word',
 }
 
+const CLASSIFICATION_STYLE: CSSProperties = {
+  fontFamily: 'var(--mono)',
+  fontSize: 12,
+  color: 'var(--mist)',
+  padding: '8px 16px 0',
+}
+
 const NOTE_STYLE: CSSProperties = { color: 'var(--mist)', fontSize: 13, margin: 0 }
 const NOTICE_STYLE: CSSProperties = {
   color: 'var(--dawn)',
@@ -110,6 +117,17 @@ const NOTICE_STYLE: CSSProperties = {
 // Focusable descendants for the Tab trap. The panel itself (tabIndex=-1) is excluded by the
 // [tabindex="-1"] filter, so Tab cycles only the real controls.
 const FOCUSABLE = 'button:not([disabled]), [href], input, [tabindex]:not([tabindex="-1"])'
+
+/** The §6 classification line: `authorship: {kind} ({basis}{ — detail if present})`. A null
+ * `authorship_kind` means the record predates the reparse backfill (spec §4 deploy window), not
+ * that it was classified as blank — that gets its own explicit sentence, not an empty parens. */
+function classificationLine(message: MessageOut | undefined): string {
+  const kind = message?.authorship_kind ?? null
+  if (kind == null) return 'authorship: not yet classified (reparse pending)'
+  const basis = message?.authorship_basis ?? ''
+  const detail = message?.authorship_detail
+  return `authorship: ${kind} (${basis}${detail ? ` — ${detail}` : ''})`
+}
 
 export interface RawRecordInspectorProps {
   /** The reader's loaded window in traversal order (MessageStream's `stream.items`). Navigation
@@ -154,6 +172,11 @@ export function RawRecordInspector({
       openerRef.current?.focus?.()
     }
   }, [])
+
+  // The current record's own MessageOut, looked up from the loaded window — carries the three
+  // authorship_* fields the classification line below reads. Always found in practice: currentUuid
+  // only ever changes to a uuid drawn from `navigable`, itself filtered from `items`.
+  const currentMessage = items.find((m) => m.record_uuid === currentUuid)
 
   const navigable = useMemo(
     () => items.filter((m) => isVisibleInView(m, filterView)),
@@ -275,6 +298,9 @@ export function RawRecordInspector({
             raw bytes
           </button>
           <ViewToggle view={filterView} setView={setFilterView} />
+        </div>
+        <div className="raw-record-authorship mono" style={CLASSIFICATION_STYLE}>
+          {classificationLine(currentMessage)}
         </div>
         <div style={CONTENT_STYLE}>
           <RawContent

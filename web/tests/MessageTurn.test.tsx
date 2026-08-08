@@ -3,7 +3,7 @@ import type { ReactElement } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BlockOut, MessageOut, TranscriptInfo } from '../src/api/types'
-import { MessageTurn } from '../src/components/reader/MessageTurn'
+import { MessageTurn, speakerFor } from '../src/components/reader/MessageTurn'
 import { TranscriptsProvider } from '../src/components/reader/transcripts-context'
 
 // MessageTurn is deliberately tested UN-virtualized (plain render, no Virtuoso) — jsdom has no
@@ -256,55 +256,88 @@ describe('conversation-only block hiding (view prop)', () => {
     }
   }
 
-  it('hides tool_use and tool_result blocks but keeps text/thinking/image', () => {
-    const msg = message({
-      blocks: [
-        textBlock(0, 'kept text'),
-        toolBlock(1, { block_kind: 'tool_use', tool_name: 'Bash', tool_use_id: 'no-match' }),
-        toolBlock(2, { block_kind: 'tool_result', text_content: 'tool output' }),
-        {
-          block_index: 3,
-          block_kind: 'thinking',
-          text_content: 'private',
-          tool_name: null,
-          tool_use_id: null,
-          is_error: null,
-        },
-        {
-          block_index: 4,
-          block_kind: 'image',
-          text_content: null,
-          tool_name: null,
-          tool_use_id: null,
-          is_error: null,
-        },
-      ],
-    })
-    const { container } = renderTurn(<MessageTurn message={msg} view="chat" />)
-    // tool_use (as ToolBlock, no transcript match) and tool_result both vanish.
-    expect(container.querySelector('.tool-block')).toBeNull()
-    // conversational blocks remain.
-    expect(container.textContent).toContain('kept text')
-    expect(container.querySelector('.thinking-glyph')).not.toBeNull()
-    expect(container.textContent).toContain('[image]')
-  })
+  it.each(['chat', 'chat-harness'] as const)(
+    'hides tool_use and tool_result blocks but keeps text/thinking/image (view=%s)',
+    (view) => {
+      const msg = message({
+        blocks: [
+          textBlock(0, 'kept text'),
+          toolBlock(1, { block_kind: 'tool_use', tool_name: 'Bash', tool_use_id: 'no-match' }),
+          toolBlock(2, { block_kind: 'tool_result', text_content: 'tool output' }),
+          {
+            block_index: 3,
+            block_kind: 'thinking',
+            text_content: 'private',
+            tool_name: null,
+            tool_use_id: null,
+            is_error: null,
+          },
+          {
+            block_index: 4,
+            block_kind: 'image',
+            text_content: null,
+            tool_name: null,
+            tool_use_id: null,
+            is_error: null,
+          },
+        ],
+      })
+      const { container } = renderTurn(<MessageTurn message={msg} view={view} />)
+      // tool_use (as ToolBlock, no transcript match) and tool_result both vanish.
+      expect(container.querySelector('.tool-block')).toBeNull()
+      // conversational blocks remain.
+      expect(container.textContent).toContain('kept text')
+      expect(container.querySelector('.thinking-glyph')).not.toBeNull()
+      expect(container.textContent).toContain('[image]')
+    },
+  )
 
-  it('makes the subagent chip disappear with its tool_use block (ledger #7, intended)', () => {
-    const dispatch: TranscriptInfo = {
-      id: 2,
+  // Spec §6/§10.7c supersedes the earlier "chip disappears with its tool_use" ledger #7 read: a
+  // RESOLVED subagent dispatch survives in every view — SubagentChip is the reader's sole doorway
+  // into a subagent transcript, so filtering it out with ordinary tool noise would delete subagent
+  // navigation from the default view. Only an UNRESOLVED tool_use (no matching transcript) stays
+  // hidden outside `all` (next test). A leading text block keeps the ROW itself past
+  // isVisibleInView's prose-visibility gate (lib/viewMode, untouched by this task) — a tool_use
+  // block alone never counts as "content" there, so a tool_use-only row would vanish at the ROW
+  // level regardless of the block-level behavior this test is isolating.
+  it.each(['chat', 'chat-harness'] as const)(
+    'keeps the subagent chip when its tool_use resolves to a dispatch (view=%s)',
+    (view) => {
+      const dispatch: TranscriptInfo = {
+        id: 2,
+        kind: 'subagent',
+        agent_hex_id: 'a1b2c3',
+        agent_type: 'Explore',
+        agent_description: null,
+        parent_tool_use_id: 'tu-1',
+      }
+      const msg = message({ blocks: [textBlock(0, 'dispatching'), toolBlock(1)] })
+      renderTurn(
+        <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
+          <MessageTurn message={msg} view={view} />
+        </TranscriptsProvider>,
+      )
+      expect(screen.getByRole('link', { name: /view transcript/ })).not.toBeNull()
+      expect(screen.getByText(/subagent/)).not.toBeNull()
+    },
+  )
+
+  it('does not fall back to a plain ToolBlock for an unresolved tool_use in a filtered view, even with a TranscriptsProvider present', () => {
+    const unrelated: TranscriptInfo = {
+      id: 3,
       kind: 'subagent',
-      agent_hex_id: 'a1b2c3',
+      agent_hex_id: 'zzz',
       agent_type: 'Explore',
       agent_description: null,
-      parent_tool_use_id: 'tu-1',
+      parent_tool_use_id: 'different-tool-use-id',
     }
-    const msg = message({ blocks: [toolBlock(0)] })
-    renderTurn(
-      <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
-        <MessageTurn message={msg} view="chat" />
+    const msg = message({ blocks: [textBlock(0, 'thinking about it'), toolBlock(1)] })
+    const { container } = renderTurn(
+      <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [unrelated] }}>
+        <MessageTurn message={msg} view="chat-harness" />
       </TranscriptsProvider>,
     )
-    expect(screen.queryByRole('link', { name: /view transcript/ })).toBeNull()
+    expect(container.querySelector('.tool-block')).toBeNull()
     expect(screen.queryByText(/subagent/)).toBeNull()
   })
 
@@ -393,5 +426,114 @@ describe('markdown prose', () => {
     })
     const { container } = renderTurn(<MessageTurn message={fenced} />)
     expect(container.querySelector('.markdown-prose pre code .hljs-keyword')).not.toBeNull()
+  })
+})
+
+// Task 6 (authorship spec §3.3): speakerFor(message) replaces the old voiceOf/SPEAKER/ACCENT
+// trio. Every row of the §3.3 kind→label table gets its own case here, keyed off authorship_kind
+// + authorship_detail alone — speakerFor is tested directly (not through the DOM) so a label typo
+// fails at the exact row it belongs to.
+const cases: Array<[string, string | null, string]> = [
+  ['human_typed', null, 'YOU'],
+  ['human_queued', null, 'YOU'],
+  ['human_inferred', null, 'YOU'],
+  ['claude', null, 'CLAUDE'],
+  ['dispatch', null, 'CLAUDE (DISPATCH)'],
+  ['coordinator', null, 'CLAUDE (COORDINATOR)'],
+  ['tool_result', 'Bash', 'SYSTEM (TOOL RESULT)'],
+  ['skill_injection', 'superpowers:brainstorming', 'SYSTEM (SKILL: brainstorming)'], // prefix stripped
+  ['tool_injection', 'ToolSearch', 'SYSTEM (INJECTED: toolsearch)'],
+  ['tool_injection', null, 'SYSTEM (INJECTED)'],
+  ['task_notification', null, 'SYSTEM (TASK NOTIFICATION)'],
+  ['sdk_automation', null, 'SYSTEM (AUTOMATION)'],
+  ['command_expansion', '/model', 'SYSTEM (COMMAND: /model)'],
+  ['command_output', null, 'SYSTEM (COMMAND OUTPUT)'],
+  ['harness_meta', 'reminder', 'SYSTEM (REMINDER)'],
+  ['harness_meta', 'caveat', 'SYSTEM (CAVEAT)'],
+  ['harness_meta', null, 'SYSTEM (META)'],
+  ['interrupt_marker', null, 'SYSTEM (INTERRUPT)'],
+  ['interrupt_marker', 'tool', 'SYSTEM (INTERRUPT)'],
+  ['compact_summary', null, 'SYSTEM (COMPACTION)'],
+  ['unclassified', null, 'SYSTEM (UNCLASSIFIED)'],
+  ['system', 'turn_duration', 'SYSTEM (TURN DURATION)'],
+  ['system', null, 'SYSTEM'],
+  ['attachment_queued_human', null, 'SYSTEM (YOU)'],
+  ['attachment_furniture', null, 'SYSTEM'],
+]
+
+describe('speakerFor — §3.3 label table', () => {
+  it.each(cases)('kind=%s detail=%s → %s', (kind, detail, expectedLabel) => {
+    expect(speakerFor(message({ authorship_kind: kind, authorship_detail: detail })).label).toBe(
+      expectedLabel,
+    )
+  })
+})
+
+describe('speakerFor — accent reservation (§3.3)', () => {
+  const DAWN_KINDS = new Set([
+    'human_typed',
+    'human_queued',
+    'human_inferred',
+    'attachment_queued_human',
+  ])
+  const DRAGONFLY_KINDS = new Set(['claude', 'dispatch', 'coordinator'])
+  const ALL_KINDS = [...new Set(cases.map(([kind]) => kind))]
+
+  it.each(ALL_KINDS)('accents %s correctly', (kind) => {
+    const accent = speakerFor(message({ authorship_kind: kind, authorship_detail: null })).accent
+    if (DAWN_KINDS.has(kind)) expect(accent).toBe('var(--dawn)')
+    else if (DRAGONFLY_KINDS.has(kind)) expect(accent).toBe('var(--dragonfly)')
+    else expect(accent).toBe('var(--mist)')
+  })
+
+  // Dawn-reservation property (global constraint): only human_* and attachment_queued_human may
+  // ever take the dawn accent — every OTHER kind in the table must provably not take it.
+  it('reserves dawn for human_* and attachment_queued_human only', () => {
+    for (const kind of ALL_KINDS) {
+      const accent = speakerFor(message({ authorship_kind: kind, authorship_detail: null })).accent
+      expect(accent === 'var(--dawn)').toBe(DAWN_KINDS.has(kind))
+    }
+  })
+})
+
+describe('speakerFor — null-kind legacy fallback', () => {
+  // A message not yet touched by the reparse backfill (spec §4 deploy window) has NO
+  // authorship_kind: speakerFor must render the OLD type-derived YOU/CLAUDE/SYSTEM labels, not a
+  // blank or an "unclassified" mislabel.
+  it('falls back to the type-derived label when authorship_kind is null', () => {
+    expect(speakerFor(message({ type: 'user', authorship_kind: null })).label).toBe('YOU')
+    expect(speakerFor(message({ type: 'assistant', authorship_kind: null })).label).toBe('CLAUDE')
+    expect(speakerFor(message({ type: 'system', authorship_kind: null })).label).toBe('SYSTEM')
+    expect(
+      speakerFor(
+        message({ type: 'attachment', authorship_kind: null, blocks: [textBlock(0, 'x')] }),
+      ).label,
+    ).toBe('SYSTEM (YOU)')
+    expect(
+      speakerFor(message({ type: 'attachment', authorship_kind: null, blocks: [] })).label,
+    ).toBe('SYSTEM')
+  })
+
+  it('falls back to the type-derived accent when authorship_kind is null', () => {
+    expect(speakerFor(message({ type: 'user', authorship_kind: null })).accent).toBe(
+      'var(--dawn)',
+    )
+    expect(speakerFor(message({ type: 'assistant', authorship_kind: null })).accent).toBe(
+      'var(--dragonfly)',
+    )
+    expect(speakerFor(message({ type: 'system', authorship_kind: null })).accent).toBe(
+      'var(--mist)',
+    )
+  })
+})
+
+describe('speakerFor DOM wiring', () => {
+  it('reaches the eyebrow for a classified (non-null-kind) message', () => {
+    const { container } = renderTurn(
+      <MessageTurn
+        message={message({ authorship_kind: 'dispatch', authorship_detail: null, timestamp: null })}
+      />,
+    )
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toBe('CLAUDE (DISPATCH)')
   })
 })

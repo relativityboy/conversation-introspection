@@ -157,11 +157,19 @@ describe('ImageBlock', () => {
 })
 
 describe('SubagentChip', () => {
-  function renderChip(block: BlockOut, transcripts: TranscriptInfo[], initialEntry = '/') {
+  // renderFallback defaults true here (matching the reader's `all`-view behavior) so the existing
+  // matched-transcript cases below don't need to think about it; the dedicated renderFallback
+  // tests pass it explicitly.
+  function renderChip(
+    block: BlockOut,
+    transcripts: TranscriptInfo[],
+    initialEntry = '/',
+    renderFallback = true,
+  ) {
     return render(
       <MemoryRouter initialEntries={[initialEntry]}>
         <TranscriptsProvider value={{ sessionUuid: 'sess-uuid', transcripts }}>
-          <SubagentChip block={block} />
+          <SubagentChip block={block} renderFallback={renderFallback} />
         </TranscriptsProvider>
       </MemoryRouter>,
     )
@@ -193,11 +201,30 @@ describe('SubagentChip', () => {
     expect(desc?.textContent?.endsWith('…')).toBe(true)
   })
 
-  it('degrades to a plain ToolBlock (no link) when no transcript matches', () => {
+  it('degrades to a plain ToolBlock (no link) when no transcript matches and renderFallback is true', () => {
     const { container } = renderChip(toolUse({ tool_use_id: 'tu-nomatch', tool_name: 'Task' }), [])
     expect(container.querySelector('.tool-block')).not.toBeNull()
     expect(screen.queryByRole('link')).toBeNull()
     expect(screen.getByText('⌘ Task')).not.toBeNull()
+  })
+
+  // Task 6: the per-view block gate (MessageTurn) suppresses the ordinary-tool fallback outside
+  // `all` by passing renderFallback=false — SubagentChip itself owns that suppression.
+  it('renders nothing when no transcript matches and renderFallback is false', () => {
+    const { container } = renderChip(
+      toolUse({ tool_use_id: 'tu-nomatch', tool_name: 'Task' }),
+      [],
+      '/',
+      false,
+    )
+    expect(container.querySelector('.tool-block')).toBeNull()
+    expect(container.textContent).toBe('')
+  })
+
+  it('still renders a resolved chip when renderFallback is false — only the fallback is suppressed', () => {
+    renderChip(toolUse({ tool_use_id: 'tu-1' }), [transcript()], '/', false)
+    expect(screen.getByText('⑂ subagent · Explore')).not.toBeNull()
+    expect(screen.getByRole('link', { name: /view transcript/ })).not.toBeNull()
   })
 })
 

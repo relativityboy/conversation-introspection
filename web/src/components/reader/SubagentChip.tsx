@@ -9,8 +9,18 @@ const DESC_MAX = 60
 // SubagentChip is the tool_use renderer, and it IS the dispatch-detector. A tool_use block is a
 // subagent dispatch precisely when a captured transcript's parent_tool_use_id equals this block's
 // tool_use_id — the join, not a tool-name string match. Consequence (deliberate): a subagent
-// whose transcript was never captured has no match and degrades gracefully to a plain ToolBlock.
-export function SubagentChip({ block }: { block: BlockOut }) {
+// whose transcript was never captured has no match. Whether that no-match degrades to a plain
+// ToolBlock or renders nothing is the caller's call, via `renderFallback` (spec §6): MessageTurn
+// passes `true` only in the `all` view — in `chat`/`chat-harness` an unresolved tool_use should
+// vanish, not surface as undifferentiated tool noise, while a RESOLVED dispatch chip always
+// renders regardless of `renderFallback`.
+export function SubagentChip({
+  block,
+  renderFallback,
+}: {
+  block: BlockOut
+  renderFallback: boolean
+}) {
   const { sessionUuid, transcripts } = useTranscripts()
   // Read directly off the URL (Task 9) rather than prop-drilling `projects` down through
   // MessageTurn's block dispatch: SubagentChip is a leaf several layers deep in the virtualized
@@ -24,7 +34,7 @@ export function SubagentChip({ block }: { block: BlockOut }) {
     ? transcripts.find((t) => t.parent_tool_use_id === block.tool_use_id)
     : undefined
 
-  if (!transcript) return <ToolBlock block={block} />
+  if (!transcript) return renderFallback ? <ToolBlock block={block} /> : null
 
   const agentType = transcript.agent_type ?? 'subagent'
   const desc = truncate(transcript.agent_description, DESC_MAX)

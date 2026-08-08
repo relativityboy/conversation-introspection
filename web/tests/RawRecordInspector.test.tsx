@@ -27,8 +27,26 @@ function textBlock(): BlockOut {
   }
 }
 
-function msg(uuid: string, type = 'user', blocks: BlockOut[] = [textBlock()]): MessageOut {
-  return { record_uuid: uuid, parent_uuid: null, type, model: null, timestamp: null, blocks, authorship_kind: null, authorship_basis: null, authorship_detail: null }
+function msg(
+  uuid: string,
+  type = 'user',
+  blocks: BlockOut[] = [textBlock()],
+  authorship: Partial<
+    Pick<MessageOut, 'authorship_kind' | 'authorship_basis' | 'authorship_detail'>
+  > = {},
+): MessageOut {
+  return {
+    record_uuid: uuid,
+    parent_uuid: null,
+    type,
+    model: null,
+    timestamp: null,
+    blocks,
+    authorship_kind: null,
+    authorship_basis: null,
+    authorship_detail: null,
+    ...authorship,
+  }
 }
 
 // A distinctive, uuid-keyed payload so each record's content is greppable in the pretty view.
@@ -115,6 +133,44 @@ describe('open and close', () => {
     await open()
     await userEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+// --- authorship classification line (spec §6) ----------------------------------------------
+
+describe('authorship classification line', () => {
+  function authorshipLine(): string | null {
+    return dialog().querySelector('.raw-record-authorship')?.textContent ?? null
+  }
+
+  it('renders kind (basis — detail) above the raw JSON when classified with a detail', async () => {
+    const classified = msg('uuid-0', 'user', [textBlock()], {
+      authorship_kind: 'skill_injection',
+      authorship_basis: 'verified',
+      authorship_detail: 'superpowers:brainstorming',
+    })
+    render(<Harness items={[classified]} initialUuid="uuid-0" />)
+    await open()
+    expect(authorshipLine()).toBe(
+      'authorship: skill_injection (verified — superpowers:brainstorming)',
+    )
+  })
+
+  it('omits the em-dash detail suffix when authorship_detail is null', async () => {
+    const classified = msg('uuid-0', 'user', [textBlock()], {
+      authorship_kind: 'tool_result',
+      authorship_basis: 'verified',
+      authorship_detail: null,
+    })
+    render(<Harness items={[classified]} initialUuid="uuid-0" />)
+    await open()
+    expect(authorshipLine()).toBe('authorship: tool_result (verified)')
+  })
+
+  it('renders the pre-backfill fallback when authorship_kind is null', async () => {
+    render(<Harness items={[msg('uuid-0')]} initialUuid="uuid-0" />)
+    await open()
+    expect(authorshipLine()).toBe('authorship: not yet classified (reparse pending)')
   })
 })
 
