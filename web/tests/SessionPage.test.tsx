@@ -71,6 +71,9 @@ function makeMessage(uuid: string): MessageOut {
     type: 'assistant',
     model: null,
     timestamp: null,
+    authorship_kind: null,
+    authorship_basis: null,
+    authorship_detail: null,
     blocks: [
       {
         block_index: 0,

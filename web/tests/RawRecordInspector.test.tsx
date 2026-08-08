@@ -28,7 +28,7 @@ function textBlock(): BlockOut {
 }
 
 function msg(uuid: string, type = 'user', blocks: BlockOut[] = [textBlock()]): MessageOut {
-  return { record_uuid: uuid, parent_uuid: null, type, model: null, timestamp: null, blocks }
+  return { record_uuid: uuid, parent_uuid: null, type, model: null, timestamp: null, blocks, authorship_kind: null, authorship_basis: null, authorship_detail: null }
 }
 
 // A distinctive, uuid-keyed payload so each record's content is greppable in the pretty view.

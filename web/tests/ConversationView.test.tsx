@@ -78,6 +78,9 @@ function makeMessage(ordinal: number): MessageOut {
         is_error: null,
       },
     ],
+    authorship_kind: null,
+    authorship_basis: null,
+    authorship_detail: null,
   }
 }
 

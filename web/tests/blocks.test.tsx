@@ -45,6 +45,9 @@ function message(over: Partial<MessageOut> = {}): MessageOut {
     model: null,
     timestamp: '2026-07-19T14:03:00Z',
     blocks: [],
+    authorship_kind: null,
+    authorship_basis: null,
+    authorship_detail: null,
     ...over,
   }
 }
