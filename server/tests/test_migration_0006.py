@@ -1,9 +1,9 @@
 """Migration 0006 tests (walk-fix Task 9a): the ``content_blocks(message_id)`` index.
 
 Binding-contract style mirrors ``test_migration_0004.py``/``test_migration_0003.py``: index
-exists after upgrade, downgrade drops it. This index makes the ``chat_only`` trim's
-correlated EXISTS-over-``content_blocks`` subquery (``_chat_only_filter`` in
-``introspect.api.routes.sessions``) an index seek instead of a full-table scan per message.
+exists after upgrade, downgrade drops it. This index makes the ``view=`` filter's
+content-emptiness trim's correlated EXISTS-over-``content_blocks`` subquery (``_prose_visible``
+in ``introspect.api.routes.sessions``) an index seek instead of a full-table scan per message.
 """
 
 from pathlib import Path

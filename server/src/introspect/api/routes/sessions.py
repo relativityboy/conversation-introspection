@@ -15,6 +15,8 @@ never here). Two shape rules are load-bearing and enforced by the spec:
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import ColumnElement, and_, exists, func, or_, select, true
@@ -363,24 +365,28 @@ def get_session(
     )
 
 
-#: The §14.4 "conversation only" predicate: everything a human said or pasted stays IN,
-#: only `system`-type rows (CLI-internal chatter) are hidden. Attachments are IN by
+#: The legacy §14.4 "conversation only" type set -- everything a human said or pasted stays
+#: IN, only `system`-type rows (CLI-internal chatter) are hidden. Attachments are IN by
 #: relativityboy's ruling ("pasted things are things a human said") -- do not narrow this to
-#: `("user", "assistant")`, that was a stale draft.
-_CHAT_ONLY_TYPES = ("user", "assistant", "attachment")
+#: `("user", "assistant")`, that was a stale draft. Now doubles as the NULL-tolerance fallback
+#: rule in `_view_filter` (authorship spec §5) for rows not yet backfilled with an
+#: `authorship_kind`.
+_LEGACY_TYPES = ("user", "assistant", "attachment")
 
 #: Kinds with dedicated renderers, used to spot UNKNOWN kinds by exclusion (an unknown kind
 #: renders a visible UnknownChip client-side, so it counts as content -- forward-tolerance).
 _KNOWN_BLOCK_KINDS = ("text", "thinking", "tool_use", "tool_result", "image")
 
+#: The three `view=` values the messages endpoint accepts (authorship spec §5).
+VIEW_VALUES = ("chat", "chat-harness", "all")
 
-def _chat_only_filter() -> ColumnElement:
-    """Spec §4 (2026-08-04 refinements): conversation-only shows a row only when its TYPE
-    qualifies AND at least one block renders content in that mode. thinking (the ◌ glyph),
-    tool_use, tool_result and empty text don't count; images and unknown kinds do. Built once
-    per request and applied at all four query sites -- same discipline as the original
-    type-only filter (see the note on `type_filter` below)."""
-    has_content = exists(
+
+def _prose_visible() -> ColumnElement:
+    """Spec §4 (2026-08-04 refinements): a row is visible only when at least one block renders
+    content in conversation mode. thinking (the ◌ glyph), tool_use, tool_result and empty text
+    don't count; images and unknown kinds do. Layered on top of the kind/type predicate by
+    `_view_filter` for both the `chat` and `chat-harness` views."""
+    return exists(
         select(1).where(
             ContentBlock.message_id == Message.id,
             or_(
@@ -394,7 +400,26 @@ def _chat_only_filter() -> ColumnElement:
             ),
         )
     )
-    return and_(Message.type.in_(_CHAT_ONLY_TYPES), has_content)
+
+
+def _view_filter(view: str) -> ColumnElement:
+    """Spec §5. NULL-tolerant: rows not yet backfilled (migrate→reparse window) degrade
+    to the legacy type+content rule, never to an empty reader."""
+    if view == "all":
+        return true()
+    legacy_fallback = and_(
+        Message.authorship_kind.is_(None), Message.type.in_(_LEGACY_TYPES)
+    )
+    if view == "chat":
+        from introspect.schema.authorship import CHAT_KINDS
+
+        kind_ok = or_(Message.authorship_kind.in_(sorted(CHAT_KINDS)), legacy_fallback)
+    else:  # chat-harness
+        kind_ok = or_(
+            Message.authorship_kind.is_(None), Message.authorship_kind != "tool_result"
+        )
+        kind_ok = and_(or_(kind_ok, legacy_fallback), Message.type.in_(_LEGACY_TYPES))
+    return and_(kind_ok, _prose_visible())
 
 
 @router.get("/transcripts/{transcript_id}/messages", response_model=MessageList)
@@ -404,7 +429,7 @@ def list_messages(
     offset: int = 0,
     limit: int = _DEFAULT_LIMIT,
     around: str | None = None,
-    chat_only: bool = False,
+    view: Literal["chat", "chat-harness", "all"] = "all",
 ) -> MessageList:
     transcript = db.get(Transcript, transcript_id)
     if transcript is None:
@@ -419,11 +444,11 @@ def list_messages(
 
     # Built ONCE, applied at all four query sites below (total, around-target resolution,
     # around ordinal count, page fetch) -- missing any one desyncs totals/offsets/centering
-    # (see module docstring + task-p4-5-brief.md). `True` (no-op filter) when chat_only is
-    # off, so the default path's generated SQL/results are unchanged. `_chat_only_filter()`'s
-    # EXISTS-over-blocks clause rides along automatically since the filter is still built once
-    # here and reused at all four sites (refinements spec §4, Task 5).
-    type_filter: ColumnElement = _chat_only_filter() if chat_only else true()
+    # (see module docstring + task-p4-5-brief.md). `view="all"` yields `True` (no-op filter),
+    # so the default path's generated SQL/results are unchanged. `_view_filter()`'s
+    # EXISTS-over-blocks clause (via `_prose_visible()`) rides along automatically since the
+    # filter is still built once here and reused at all four sites (authorship spec §5).
+    type_filter: ColumnElement = _view_filter(view)
 
     total = db.scalar(
         select(func.count(Message.id)).where(

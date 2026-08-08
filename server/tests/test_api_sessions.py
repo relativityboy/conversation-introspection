@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from introspect.api import create_app
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
+from introspect.ingest.interpret import classify_pending
 from introspect.models import ChatSession, Favorite, Message, Transcript
 from tests.conftest import (
     AGENT_HEX_ID,
@@ -35,6 +36,7 @@ from tests.fixtures.records import (
     make_queued_command_line,
     make_session_file,
     make_system_line,
+    make_tool_result_user_line,
     make_user_line,
 )
 
@@ -607,56 +609,60 @@ def test_unknown_around_uuid_is_404_problem(
     assert body["status"] == 404
 
 
-# --- Transcript messages -- chat_only= filtering (Task P4-5) ----------------------------
+# --- Transcript messages -- view=chat-harness type filtering (Task 4, authorship spec §5) --
 #
-# `chat_only=1` hides `system`-type rows from ALL FOUR query sites in `list_messages`
-# (total, around-target resolution, around ordinal count, page fetch) per spec S14.4 +
-# ledger #1: attachments stay IN (`type IN ('user','assistant','attachment')`) -- "pasted
-# things are things a human said" -- only `system` rows are hidden. A dedicated ad-hoc tree
-# (own TestClient, like `test_around_centers_mid_target_and_clamps_early_target` above) is
-# used rather than the pinned `fixture_tree`/`client` fixture, since none of its sessions
-# carry a system- or attachment-type MESSAGE row and `TOTAL_FIXTURE_LINES` is a pinned
-# contract other tasks hardcode.
+# `view=chat-harness` hides `system`-type rows from ALL FOUR query sites in `list_messages`
+# (total, around-target resolution, around ordinal count, page fetch) per spec §5 + ledger #1:
+# attachments stay IN (`type IN ('user','assistant','attachment')`) -- "pasted things are
+# things a human said" -- only `system` rows are hidden. None of these rows are ever
+# authorship-classified (this tree is captured via `_capture`, which never calls
+# `classify_pending`), so every row's `authorship_kind` stays NULL and `chat-harness`
+# degrades to the legacy type+content rule -- the spec's "row-identical to today's toggle-on
+# view" note, exercised here. A dedicated ad-hoc tree (own TestClient, like
+# `test_around_centers_mid_target_and_clamps_early_target` above) is used rather than the
+# pinned `fixture_tree`/`client` fixture, since none of its sessions carry a system- or
+# attachment-type MESSAGE row and `TOTAL_FIXTURE_LINES` is a pinned contract other tasks
+# hardcode.
 
-_CHAT_ONLY_SESSION_UUID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+_VIEW_HARNESS_SESSION_UUID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 
-# 14 records: 5 system (hidden under chat_only=1), 9 kept (4 user, 4 assistant, 1
+# 14 records: 5 system (hidden under view=chat-harness), 9 kept (4 user, 4 assistant, 1
 # attachment). Deliberately NOT a truncation of the raw order -- kept rows land at
 # non-contiguous raw indices so filtered total/paging/around-centering are exercised
 # against a real re-indexing, not just "drop a prefix/suffix".
-_CHAT_ONLY_TREE_TYPES = [
+_VIEW_HARNESS_TREE_TYPES = [
     "system", "user", "assistant", "system", "user", "assistant",
     "attachment", "system", "user", "assistant", "system", "user",
     "assistant", "system",
 ]
 
 
-def _chat_only_line(kind: str, index: int) -> bytes:
+def _view_harness_line(kind: str, index: int) -> bytes:
     if kind == "system":
         return make_system_line(
-            content=f"chat-only system note {index}", sessionId=_CHAT_ONLY_SESSION_UUID
+            content=f"harness system note {index}", sessionId=_VIEW_HARNESS_SESSION_UUID
         )
     if kind == "attachment":
         # A human-origin queued_command: the ONE attachment shape `AttachmentRecord.blocks()`
         # rescues into a content block (Task 5 refinements spec §4) -- a content-less
         # attachment (e.g. the default deferred_tools_delta furniture) would now correctly
-        # trim under chat_only, so the "attachment stays IN" exemplar must carry content.
-        return make_queued_command_line(sessionId=_CHAT_ONLY_SESSION_UUID)
+        # trim under view=chat-harness, so the "attachment stays IN" exemplar must carry content.
+        return make_queued_command_line(sessionId=_VIEW_HARNESS_SESSION_UUID)
     line_fn = make_user_line if kind == "user" else make_assistant_line
-    return line_fn(text=f"chat-only message {index}", sessionId=_CHAT_ONLY_SESSION_UUID)
+    return line_fn(text=f"harness message {index}", sessionId=_VIEW_HARNESS_SESSION_UUID)
 
 
-def _build_chat_only_tree(db: Session, tmp_path: Path) -> tuple[int, list[str], list[str]]:
-    """Capture ``_CHAT_ONLY_TREE_TYPES`` as a single main transcript under a fresh tree; return
-    ``(transcript_id, record_uuids_in_id_order, types_in_id_order)``."""
-    root = tmp_path / "chat_only_tree"
-    proj = root / "-Users-x-chatonly"
+def _build_view_harness_tree(db: Session, tmp_path: Path) -> tuple[int, list[str], list[str]]:
+    """Capture ``_VIEW_HARNESS_TREE_TYPES`` as a single main transcript under a fresh tree;
+    return ``(transcript_id, record_uuids_in_id_order, types_in_id_order)``."""
+    root = tmp_path / "view_harness_tree"
+    proj = root / "-Users-x-viewharness"
     proj.mkdir(parents=True)
-    lines = [_chat_only_line(kind, i) for i, kind in enumerate(_CHAT_ONLY_TREE_TYPES)]
-    (proj / f"{_CHAT_ONLY_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
+    lines = [_view_harness_line(kind, i) for i, kind in enumerate(_VIEW_HARNESS_TREE_TYPES)]
+    (proj / f"{_VIEW_HARNESS_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
     _capture(db, root)
 
-    tid = _main_transcript_id(db, _CHAT_ONLY_SESSION_UUID)
+    tid = _main_transcript_id(db, _VIEW_HARNESS_SESSION_UUID)
     rows = (
         db.query(Message.record_uuid, Message.type)
         .filter(Message.transcript_id == tid)
@@ -666,17 +672,17 @@ def _build_chat_only_tree(db: Session, tmp_path: Path) -> tuple[int, list[str], 
     return tid, [u for (u, _t) in rows], [t for (_u, t) in rows]
 
 
-def test_messages_chat_only_filters_totals_and_paging(
+def test_messages_view_chat_harness_filters_totals_and_paging(
     db_session: Session, tmp_path: Path
 ) -> None:
-    tid, record_uuids, types = _build_chat_only_tree(db_session, tmp_path)
+    tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
     filtered_uuids = [u for u, t in zip(record_uuids, types) if t != "system"]
     assert len(filtered_uuids) == 9  # 14 records minus 5 system rows
 
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
     full = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"chat_only": 1, "limit": 100}
+        f"/api/v1/transcripts/{tid}/messages", params={"view": "chat-harness", "limit": 100}
     ).json()
     assert full["total"] == len(filtered_uuids)
     assert [m["record_uuid"] for m in full["items"]] == filtered_uuids
@@ -685,17 +691,17 @@ def test_messages_chat_only_filters_totals_and_paging(
 
     page = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"chat_only": 1, "offset": 2, "limit": 3},
+        params={"view": "chat-harness", "offset": 2, "limit": 3},
     ).json()
     assert page["total"] == len(filtered_uuids)
     assert page["offset"] == 2  # echoes the effective offset within the FILTERED set
     assert [m["record_uuid"] for m in page["items"]] == filtered_uuids[2:5]
 
 
-def test_chat_only_around_centers_within_filtered_set(
+def test_view_chat_harness_around_centers_within_filtered_set(
     db_session: Session, tmp_path: Path
 ) -> None:
-    tid, record_uuids, types = _build_chat_only_tree(db_session, tmp_path)
+    tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
     filtered_uuids = [u for u, t in zip(record_uuids, types) if t != "system"]
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
@@ -707,7 +713,7 @@ def test_chat_only_around_centers_within_filtered_set(
 
     mid = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"chat_only": 1, "around": target, "limit": 4},
+        params={"view": "chat-harness", "around": target, "limit": 4},
     ).json()
     assert mid["total"] == len(filtered_uuids)
     assert mid["offset"] == 2  # max(0, 4 - 4 // 2), computed against the filtered ordinal
@@ -718,41 +724,39 @@ def test_chat_only_around_centers_within_filtered_set(
     early_target = filtered_uuids[0]
     early = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"chat_only": 1, "around": early_target, "limit": 4},
+        params={"view": "chat-harness", "around": early_target, "limit": 4},
     ).json()
     assert early["offset"] == 0
     assert early_target in [m["record_uuid"] for m in early["items"]]
 
 
-def test_chat_only_around_system_target_404s_filtered_but_found_unfiltered(
+def test_view_chat_harness_around_system_target_404s_but_found_in_all(
     db_session: Session, tmp_path: Path
 ) -> None:
-    tid, record_uuids, types = _build_chat_only_tree(db_session, tmp_path)
+    tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
     system_target = record_uuids[0]
     assert types[0] == "system"
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
     filtered_resp = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"chat_only": 1, "around": system_target},
+        params={"view": "chat-harness", "around": system_target},
     )
     assert filtered_resp.status_code == 404
     body = filtered_resp.json()
     assert set(body) == {"status", "title", "detail"}
     assert body["status"] == 404
 
-    unfiltered_resp = client.get(
+    all_resp = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"around": system_target},
+        params={"view": "all", "around": system_target},
     )
-    assert unfiltered_resp.status_code == 200
-    assert system_target in [m["record_uuid"] for m in unfiltered_resp.json()["items"]]
+    assert all_resp.status_code == 200
+    assert system_target in [m["record_uuid"] for m in all_resp.json()["items"]]
 
 
-def test_messages_chat_only_absent_defaults_to_unfiltered(
-    db_session: Session, tmp_path: Path
-) -> None:
-    tid, record_uuids, types = _build_chat_only_tree(db_session, tmp_path)
+def test_messages_view_absent_defaults_to_all(db_session: Session, tmp_path: Path) -> None:
+    tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
     body = client.get(f"/api/v1/transcripts/{tid}/messages", params={"limit": 100}).json()
@@ -761,20 +765,20 @@ def test_messages_chat_only_absent_defaults_to_unfiltered(
     assert any(m["type"] == "system" for m in body["items"])
 
 
-# --- Transcript messages -- chat_only= content-emptiness trim (Task 5, refinements spec §4) --
+# --- Transcript messages -- view=chat-harness content-emptiness trim (spec §4/§5) --------
 #
-# Layered on top of the type filter tested above: `chat_only=1` additionally hides rows whose
-# blocks carry no visible content in conversation-only mode (tool-only, thinking-only, empty
+# Layered on top of the type filter tested above: `view=chat-harness` additionally hides rows
+# whose blocks carry no visible content in conversation mode (tool-only, thinking-only, empty
 # text). A dedicated small tree isolates the content dimension from the type dimension already
-# covered by `_build_chat_only_tree` above, so this fixture doesn't disturb that tree's pinned
-# row-count/ordinal assertions.
+# covered by `_build_view_harness_tree` above, so this fixture doesn't disturb that tree's
+# pinned row-count/ordinal assertions.
 
-_CHAT_ONLY_TRIM_SESSION_UUID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+_VIEW_TRIM_SESSION_UUID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 
 
 def _trim_control_line() -> bytes:
     return make_assistant_line(
-        text="chat-only trim control reply", sessionId=_CHAT_ONLY_TRIM_SESSION_UUID
+        text="view trim control reply", sessionId=_VIEW_TRIM_SESSION_UUID
     )
 
 
@@ -792,19 +796,19 @@ def _trim_tool_only_line() -> bytes:
                 "is_error": False,
             }
         ],
-        sessionId=_CHAT_ONLY_TRIM_SESSION_UUID,
+        sessionId=_VIEW_TRIM_SESSION_UUID,
     )
 
 
 def _trim_thinking_only_line() -> bytes:
     return make_assistant_line(
-        text="", with_thinking=True, sessionId=_CHAT_ONLY_TRIM_SESSION_UUID
+        text="", with_thinking=True, sessionId=_VIEW_TRIM_SESSION_UUID
     )
 
 
 def _trim_empty_text_line() -> bytes:
     return make_user_line(
-        content=[{"type": "text", "text": ""}], sessionId=_CHAT_ONLY_TRIM_SESSION_UUID
+        content=[{"type": "text", "text": ""}], sessionId=_VIEW_TRIM_SESSION_UUID
     )
 
 
@@ -812,12 +816,12 @@ def _trim_unknown_kind_line() -> bytes:
     return make_assistant_line(
         text="",
         extra_blocks=[{"type": "futurekind", "note": "forward-tolerant block"}],
-        sessionId=_CHAT_ONLY_TRIM_SESSION_UUID,
+        sessionId=_VIEW_TRIM_SESSION_UUID,
     )
 
 
 def _trim_image_only_line() -> bytes:
-    # `block_kind == "image"` is its OWN OR-branch in `_chat_only_filter` (sessions.py), separate
+    # `block_kind == "image"` is its OWN OR-branch in `_prose_visible` (sessions.py), separate
     # from the unknown-kind fallback branch -- "image" is a KNOWN kind (`_KNOWN_BLOCK_KINDS`), so
     # without this dedicated branch it would fall neither into the text case nor the unknown-kind
     # case and would trim despite being visible content client-side. No server test exercised this
@@ -828,18 +832,18 @@ def _trim_image_only_line() -> bytes:
         extra_blocks=[
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": ""}}
         ],
-        sessionId=_CHAT_ONLY_TRIM_SESSION_UUID,
+        sessionId=_VIEW_TRIM_SESSION_UUID,
     )
 
 
-def _build_chat_only_trim_tree(
+def _build_view_trim_tree(
     db: Session, tmp_path: Path
 ) -> tuple[int, str, str, str, str, str, str]:
     """Capture one message per Spec §4 emptiness case into a fresh transcript; return
     ``(transcript_id, control_uuid, tool_only_uuid, thinking_only_uuid, empty_text_uuid,
     unknown_kind_uuid, image_only_uuid)`` in insertion (== id) order."""
-    root = tmp_path / "chat_only_trim_tree"
-    proj = root / "-Users-x-chatonlytrim"
+    root = tmp_path / "view_trim_tree"
+    proj = root / "-Users-x-viewtrim"
     proj.mkdir(parents=True)
     lines = [
         _trim_control_line(),
@@ -849,10 +853,10 @@ def _build_chat_only_trim_tree(
         _trim_unknown_kind_line(),
         _trim_image_only_line(),
     ]
-    (proj / f"{_CHAT_ONLY_TRIM_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
+    (proj / f"{_VIEW_TRIM_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
     _capture(db, root)
 
-    tid = _main_transcript_id(db, _CHAT_ONLY_TRIM_SESSION_UUID)
+    tid = _main_transcript_id(db, _VIEW_TRIM_SESSION_UUID)
     uuids = [
         u
         for (u,) in db.query(Message.record_uuid)
@@ -879,9 +883,9 @@ def _build_chat_only_trim_tree(
     )
 
 
-def test_chat_only_trims_content_empty_rows(db_session: Session, tmp_path: Path) -> None:
+def test_view_chat_harness_trims_content_empty_rows(db_session: Session, tmp_path: Path) -> None:
     """PARITY PIN: mirrors web/tests/chatOnly.test.ts::trim fixtures — change both together.
-    Spec §4: visible iff type qualifies AND ≥1 block shows content in conversation-only mode
+    Spec §4: visible iff type qualifies AND ≥1 block shows content in conversation mode
     (non-empty text, image, or unknown kind). tool-only / thinking-only / empty-text rows trim."""
     (
         tid,
@@ -891,12 +895,12 @@ def test_chat_only_trims_content_empty_rows(db_session: Session, tmp_path: Path)
         empty_text_uuid,
         unknown_kind_uuid,
         image_only_uuid,
-    ) = _build_chat_only_trim_tree(db_session, tmp_path)
+    ) = _build_view_trim_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
     all_rows = client.get(f"/api/v1/transcripts/{tid}/messages").json()
     filtered = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"chat_only": 1}
+        f"/api/v1/transcripts/{tid}/messages", params={"view": "chat-harness"}
     ).json()
     filtered_uuids = {m["record_uuid"] for m in filtered["items"]}
 
@@ -911,18 +915,152 @@ def test_chat_only_trims_content_empty_rows(db_session: Session, tmp_path: Path)
     assert {m["record_uuid"] for m in all_rows["items"]} >= {tool_only_uuid, thinking_only_uuid}
 
 
-def test_chat_only_around_trimmed_target_is_404(db_session: Session, tmp_path: Path) -> None:
+def test_view_chat_harness_around_trimmed_target_is_404(
+    db_session: Session, tmp_path: Path
+) -> None:
     """Deep link into a trimmed row under the filter → 404 (the reader's recovery banner path);
-    the same around succeeds unfiltered."""
-    tid, _control, tool_only_uuid, _thinking, _empty, _unknown, _image = _build_chat_only_trim_tree(
+    the same around succeeds under view=all."""
+    tid, _control, tool_only_uuid, _thinking, _empty, _unknown, _image = _build_view_trim_tree(
         db_session, tmp_path
     )
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
     r = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"chat_only": 1, "around": tool_only_uuid},
+        params={"view": "chat-harness", "around": tool_only_uuid},
     )
     assert r.status_code == 404
-    r = client.get(f"/api/v1/transcripts/{tid}/messages", params={"around": tool_only_uuid})
+    r = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"view": "all", "around": tool_only_uuid},
+    )
     assert r.status_code == 200
+
+
+# --- Transcript messages -- view= three-way authorship filtering (Task 4, spec §5) --------
+#
+# `seeded_transcript` seeds one message per authorship case in the §5 semantics: a typed-human
+# record, a plain Claude reply, a tool_result record, a Skill-injection record (whose Skill
+# tool_use is only defined by the LATER dispatching assistant record -- the same out-of-order
+# production shape `test_authorship_apply.py::_build_authorship_tree` exercises), that
+# dispatching assistant record itself, an interrupt marker, and one row whose `authorship_kind`
+# is reset to NULL after classification to simulate a pre-reparse row (spec §4's migrate→reparse
+# deploy window). `_capture` alone never classifies (see the section above); `classify_pending`
+# is called explicitly here so every OTHER row gets a real `authorship_kind`.
+
+_VIEW_SEED_SESSION_UUID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+_VIEW_SEED_BASH_TOOL_USE_ID = "toolu_viewseed_bash0001"
+_VIEW_SEED_SKILL_TOOL_USE_ID = "toolu_viewseed_skill0001"
+
+
+def _build_view_seed_tree(db: Session, tmp_path: Path) -> int:
+    """Capture the §5 authorship exemplar tree into a fresh main transcript and backfill
+    authorship via ``classify_pending``, then reset ``u-nullkind`` back to NULL to simulate
+    the pre-reparse deploy window. Returns the transcript id."""
+    root = tmp_path / "view_seed_tree"
+    proj = root / "-Users-x-viewseed"
+    proj.mkdir(parents=True)
+    lines = [
+        make_user_line(
+            text="please continue with the plan",
+            promptSource="typed",
+            origin={"kind": "human"},
+            uuid="u-human",
+            sessionId=_VIEW_SEED_SESSION_UUID,
+        ),
+        make_assistant_line(
+            text="synthetic claude reply",
+            uuid="u-claude",
+            sessionId=_VIEW_SEED_SESSION_UUID,
+        ),
+        # Out-of-order production case: this tool_result's tool_use (below, in the dispatching
+        # assistant record) has not been seen yet at this point in file order.
+        make_tool_result_user_line(
+            tool_use_id=_VIEW_SEED_BASH_TOOL_USE_ID,
+            uuid="u-toolresult",
+            sessionId=_VIEW_SEED_SESSION_UUID,
+        ),
+        make_user_line(
+            content=[{"type": "text", "text": "Base directory for this skill: ..."}],
+            isMeta=True,
+            sourceToolUseID=_VIEW_SEED_SKILL_TOOL_USE_ID,
+            uuid="u-skill",
+            sessionId=_VIEW_SEED_SESSION_UUID,
+        ),
+        make_assistant_line(
+            with_tool_use=True,
+            tool_use_id=_VIEW_SEED_BASH_TOOL_USE_ID,
+            extra_blocks=[
+                {
+                    "type": "tool_use",
+                    "id": _VIEW_SEED_SKILL_TOOL_USE_ID,
+                    "name": "Skill",
+                    "input": {"skill": "superpowers:brainstorming"},
+                }
+            ],
+            uuid="u-dispatcher",
+            sessionId=_VIEW_SEED_SESSION_UUID,
+        ),
+        make_user_line(
+            text="[Request interrupted by user]",
+            uuid="u-interrupt",
+            sessionId=_VIEW_SEED_SESSION_UUID,
+        ),
+        make_user_line(
+            text="pre-reparse simulated row",
+            promptSource="typed",
+            origin={"kind": "human"},
+            uuid="u-nullkind",
+            sessionId=_VIEW_SEED_SESSION_UUID,
+        ),
+    ]
+    (proj / f"{_VIEW_SEED_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
+    _capture(db, root)
+
+    tid = _main_transcript_id(db, _VIEW_SEED_SESSION_UUID)
+    classify_pending(db)
+
+    # Simulate the pre-reparse NULL window (spec §4/§5): a real un-backfilled row never had an
+    # authorship_kind to begin with, so reset this one back to NULL after classifying it.
+    null_row = db.query(Message).filter(Message.record_uuid == "u-nullkind").one()
+    null_row.authorship_kind = None
+    null_row.authorship_basis = None
+    null_row.authorship_detail = None
+    db.commit()
+    return tid
+
+
+@pytest.fixture
+def seeded_transcript(db_session: Session, tmp_path: Path) -> int:
+    return _build_view_seed_tree(db_session, tmp_path)
+
+
+def _message_uuids(resp) -> list[str]:
+    return [m["record_uuid"] for m in resp.json()["items"]]
+
+
+def test_view_chat_shows_dialogue_and_doors(client: TestClient, seeded_transcript: int) -> None:
+    # seeded: human_typed + claude-with-text + tool_result record + skill_injection
+    #         + interrupt_marker + NULL-kind row (pre-reparse simulation)
+    chat = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=chat")
+    assert "u-human" in _message_uuids(chat) and "u-interrupt" in _message_uuids(chat)
+    assert "u-toolresult" not in _message_uuids(chat) and "u-skill" not in _message_uuids(chat)
+    assert "u-nullkind" in _message_uuids(chat)  # NULL falls back to legacy type+content rule
+
+    harness = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=chat-harness")
+    assert "u-skill" in _message_uuids(harness) and "u-toolresult" not in _message_uuids(harness)
+
+    everything = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=all")
+    assert "u-toolresult" in _message_uuids(everything)
+
+
+def test_chat_only_param_is_gone(client: TestClient, seeded_transcript: int) -> None:
+    r = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?chat_only=true&view=all")
+    assert _message_uuids(r)  # unknown params ignored, view rules
+
+
+def test_view_rejects_unknown_value(client: TestClient, seeded_transcript: int) -> None:
+    assert (
+        client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=bogus").status_code
+        == 422
+    )
