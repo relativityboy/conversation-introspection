@@ -84,6 +84,9 @@ class MessageOut(BaseModel):
     model: str | None
     timestamp: datetime | None
     blocks: list[BlockOut]
+    authorship_kind: str | None
+    authorship_basis: str | None
+    authorship_detail: str | None
 
 
 class HitOut(BaseModel):

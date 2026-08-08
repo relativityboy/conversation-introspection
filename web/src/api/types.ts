@@ -61,6 +61,9 @@ export interface MessageOut {
   model: string | null
   timestamp: string | null
   blocks: BlockOut[]
+  authorship_kind: string | null
+  authorship_basis: string | null
+  authorship_detail: string | null
 }
 
 export interface HitOut {

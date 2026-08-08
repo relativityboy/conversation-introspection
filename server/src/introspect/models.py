@@ -161,6 +161,9 @@ class Message(Base):
     cwd: Mapped[str | None]
     git_branch: Mapped[str | None]
     request_id: Mapped[str | None]
+    authorship_kind: Mapped[str | None]
+    authorship_basis: Mapped[str | None]
+    authorship_detail: Mapped[str | None]
 
 
 class ContentBlock(Base):

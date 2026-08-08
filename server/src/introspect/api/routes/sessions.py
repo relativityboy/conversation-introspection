@@ -477,4 +477,7 @@ def _message_out(db: Session, message: Message) -> MessageOut:
         model=message.model,
         timestamp=message.timestamp,
         blocks=[BlockOut.model_validate(b) for b in blocks],
+        authorship_kind=message.authorship_kind,
+        authorship_basis=message.authorship_basis,
+        authorship_detail=message.authorship_detail,
     )
