@@ -88,10 +88,10 @@ def find_changelog(start: Path) -> Path | None:
 def app_version(start: Path | None = None) -> str:
     """Best-effort current version for runtime surfaces; ``"unknown"`` on any failure."""
     origin = start if start is not None else Path(__file__).resolve()
-    path = find_changelog(origin)
-    if path is None:
-        return "unknown"
     try:
+        path = find_changelog(origin)
+        if path is None:
+            return "unknown"
         return current_version(path.read_text(encoding="utf-8"))
-    except (OSError, ChangelogError):
+    except (OSError, ValueError):
         return "unknown"

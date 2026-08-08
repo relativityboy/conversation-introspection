@@ -97,3 +97,10 @@ def test_app_version_best_effort(tmp_path: Path) -> None:
     nowhere = tmp_path / "nowhere"
     (nowhere / ".git").mkdir(parents=True)
     assert app_version(nowhere) == "unknown"
+
+
+def test_app_version_handles_invalid_utf8(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "CHANGELOG.md").write_bytes(b"## 1.0.0 \xe2\x80\x94 2026-08-08\n- \xff\xfe\n")
+    assert app_version(repo / "server") == "unknown"
