@@ -6,6 +6,10 @@ the interpretation-anomaly wipe, and a mid-chunk interpretation failure must not
 discard its chunk-mates' already-staged work.
 """
 
+import sqlalchemy as sa
+
+from introspect.cli import main
+from introspect.db import get_engine, session_factory
 from introspect.ingest import interpret
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
@@ -162,3 +166,37 @@ def test_reparse_isolates_a_failing_record_without_losing_chunk_mates(
     # Records 1 and 3 (chunk-mates of the deliberately-failed record 2) kept their staged
     # work: the SAVEPOINT isolated the failure instead of losing the whole chunk.
     assert db_session.query(Message).count() == 2
+
+
+def test_reparse_commits_the_authorship_backfill(tmp_path, fixture_tree):
+    """Regression (review fix): the authorship backfill inside ``reparse_all`` must survive
+    the session boundary, not just be visible within the one long-lived session every other
+    test in this file shares. Every real caller (``cli._cmd_reparse``,
+    ``tui.commands._cmd_reparse``) opens its session with ``with session_factory(engine)() as
+    db: reparse_all(db)`` and never commits afterward -- ``Session.close()`` on ``__exit__``
+    does NOT commit, so an UPDATE staged but uncommitted inside ``reparse_all`` is discarded
+    the moment that ``with`` block exits, even though ``classify_pending`` printed a census
+    that looked complete. This drives the real CLI entry point (``cli.main``, the actual
+    caller-boundary the fixed-but-undertested code takes in production) rather than reusing
+    ``db_session``, whose single never-closed session would hide exactly this bug -- every
+    other reparse test in this file queries through the SAME session the update was staged
+    on, where an uncommitted UPDATE is visible via autoflush regardless of whether it was
+    ever durably committed.
+    """
+    dbp = str(tmp_path / "a.db")
+    assert main(["import", "--db", dbp, "--source-root", str(fixture_tree)]) == 0
+    assert main(["reparse", "--db", dbp]) == 0
+
+    # A NEW session on a NEW connection: if reparse_all's backfill never committed, this
+    # session sees exactly what the last commit left behind (NULL, from the interpretation
+    # rebuild) -- the in-session-only UPDATE from the buggy code is invisible here.
+    engine = get_engine(dbp)
+    with session_factory(engine)() as db:
+        null_count = db.execute(
+            sa.text("SELECT count(*) FROM messages WHERE authorship_kind IS NULL")
+        ).scalar_one()
+        assert null_count == 0
+        claude_count = db.execute(
+            sa.text("SELECT count(*) FROM messages WHERE authorship_kind = 'claude'")
+        ).scalar_one()
+        assert claude_count > 0  # every fixture_tree main file has an assistant record

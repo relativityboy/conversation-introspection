@@ -127,6 +127,13 @@ def reparse_all(db: Session) -> ReparseStats:
     # is also the one caller that reports the census -- it is the deliberate full-archive
     # backfill/regeneration path, unlike the continuously-running cron import.
     census = interpret.classify_pending(db)
+    # Every real caller (cli._cmd_reparse, tui.commands._cmd_reparse) opens its session as
+    # `with session_factory(engine)() as db: reparse_all(db)` and never commits afterward --
+    # Session.close() on __exit__ does NOT commit, so without this the whole backfill above
+    # is silently discarded the moment that `with` block exits (review fix, Finding 1).
+    # Commit BEFORE printing so a crash between here and the print can never claim a census
+    # that was never durably persisted.
+    db.commit()
     for kind, count in sorted(census.items(), key=lambda kv: -kv[1]):
         print(f"  authorship {kind}: {count}")
     if census.get("unclassified"):
