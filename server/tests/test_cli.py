@@ -405,6 +405,8 @@ def test_update_behind_prompt_declined(monkeypatch, capsys) -> None:
 
 
 def test_update_preflight_problems_block(monkeypatch, capsys) -> None:
+    """Preflight problems short-circuit BEFORE the prompt, not merely before applying -- run
+    without --yes (so the prompt would fire if reached) and make input() raise if called."""
     entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
     monkeypatch.setattr(cli.update, "find_repo_root", lambda: Path("/repo"))
     monkeypatch.setattr(
@@ -418,11 +420,15 @@ def test_update_preflight_problems_block(monkeypatch, capsys) -> None:
         lambda root: ["working tree has uncommitted changes to tracked files -- commit or stash them first"],
     )
 
+    def _input_should_not_be_called(prompt):
+        raise AssertionError("input must not be called when preflight blocks")
+
     def _apply_should_not_be_called(root, emit, update_script=None):
         raise AssertionError("apply must not be called when preflight problems are present")
 
+    monkeypatch.setattr("builtins.input", _input_should_not_be_called)
     monkeypatch.setattr(cli.update, "apply", _apply_should_not_be_called)
-    assert cli.main(["update", "--yes"]) == 1
+    assert cli.main(["update"]) == 1
     err = capsys.readouterr().err
     assert "working tree has uncommitted changes" in err
 
