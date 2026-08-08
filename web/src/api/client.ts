@@ -7,6 +7,7 @@
  * 204 with no body.
  */
 
+import type { ViewMode } from '../lib/viewMode'
 import type {
   GlobalSearchResult,
   ImportRun,
@@ -131,7 +132,7 @@ export interface MessagesOptions {
   offset?: number
   limit?: number
   around?: string
-  chat_only?: boolean
+  view?: ViewMode
 }
 
 export function fetchMessages(
@@ -142,9 +143,11 @@ export function fetchMessages(
     offset: opts.offset,
     limit: opts.limit,
     around: opts.around,
-    // `1` when true, ABSENT (not `0`) when false -- the server default is false, so a false
-    // value sends no signal rather than noise (see routes/sessions.py `chat_only: bool = False`).
-    chat_only: opts.chat_only ? 1 : undefined,
+    // Sent verbatim when present -- unlike the retired boolean flag this replaces, `view`'s three
+    // states have no "absent means off" reading, and the server's own default ('all') differs
+    // from the client's ('chat'), so every reader call site passes it explicitly (see
+    // ConversationView's `withView`).
+    view: opts.view,
   })
   return apiFetch<MessageList>(`/transcripts/${transcriptId}/messages${qs}`)
 }

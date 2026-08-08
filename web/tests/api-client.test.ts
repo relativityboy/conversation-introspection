@@ -128,22 +128,15 @@ describe('query-string building', () => {
     expect(url.searchParams.has('projects')).toBe(false)
   })
 
-  it('serializes chat_only as "1" when true (fetchMessages)', async () => {
-    await fetchMessages(42, { chat_only: true })
+  it('serializes view verbatim when provided (fetchMessages)', async () => {
+    await fetchMessages(42, { view: 'chat-harness' })
 
     const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
     const url = new URL(calledUrl, 'http://localhost')
-    expect(url.searchParams.get('chat_only')).toBe('1')
+    expect(url.searchParams.get('view')).toBe('chat-harness')
   })
 
-  it('omits chat_only entirely when false, not "0" (fetchMessages)', async () => {
-    await fetchMessages(42, { chat_only: false })
-
-    const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
-    expect(calledUrl).toBe('/api/v1/transcripts/42/messages')
-  })
-
-  it('omits chat_only entirely when not provided (fetchMessages)', async () => {
+  it('omits view entirely when not provided (fetchMessages)', async () => {
     await fetchMessages(42)
 
     const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
@@ -278,17 +271,17 @@ describe('useArchiveSession', () => {
   })
 })
 
-describe('useMessages chat_only key', () => {
-  it('gives different chat_only values distinct query keys (each fetches independently)', async () => {
+describe('useMessages view key', () => {
+  it('gives different view values distinct query keys (each fetches independently)', async () => {
     mockFetchJson(200, { items: [], total: 0, offset: 0 })
-    // ONE shared client: if chat_only weren't part of the key, react-query would dedup these two
+    // ONE shared client: if view weren't part of the key, react-query would dedup these two
     // renders into a single in-flight fetch instead of firing both -- the assertion below on
     // call count (2) and on both distinct URLs is what actually proves key distinctness.
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const sharedWrapper = wrapperWithClient(queryClient)
 
-    renderHook(() => useMessages(1, { chat_only: true }), { wrapper: sharedWrapper })
-    renderHook(() => useMessages(1, { chat_only: false }), { wrapper: sharedWrapper })
+    renderHook(() => useMessages(1, { view: 'chat' }), { wrapper: sharedWrapper })
+    renderHook(() => useMessages(1, { view: 'all' }), { wrapper: sharedWrapper })
 
     await vi.waitFor(() =>
       expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2),
@@ -297,7 +290,7 @@ describe('useMessages chat_only key', () => {
     const urls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
       (call) => call[0] as string,
     )
-    expect(urls).toContain('/api/v1/transcripts/1/messages?chat_only=1')
-    expect(urls).toContain('/api/v1/transcripts/1/messages')
+    expect(urls).toContain('/api/v1/transcripts/1/messages?view=chat')
+    expect(urls).toContain('/api/v1/transcripts/1/messages?view=all')
   })
 })

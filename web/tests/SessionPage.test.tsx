@@ -89,7 +89,7 @@ function pageOf(offset: number, uuids: string[], total: number): MessageList {
 }
 
 beforeEach(() => {
-  // useChatOnly seeds from this key; a leak from a prior test would make the toggle start ON.
+  // useViewMode seeds from this key; a leak from a prior test would make the view start non-default.
   window.localStorage.clear()
   fetchSession.mockReset()
   fetchMessages.mockReset()
@@ -207,67 +207,58 @@ describe('SessionPage archive navigation', () => {
   })
 })
 
-// --- conversation-only toggle (F4 regression + critique #6) -----------------------------------
+// --- three-state view toggle (F4 regression + critique #6) ------------------------------------
 // The whole reason this file gets a toggle test: F4 proved the naive design silently no-ops when
-// the header and the reader each own their own useChatOnly. Toggling from the HEADER must re-seed
-// the READER BODY — the single-owner-per-page contract in action.
+// the header and the reader each own their own useViewMode. Switching from the HEADER must
+// re-seed the READER BODY — the single-owner-per-page contract in action.
 
-describe('SessionPage conversation-only toggle', () => {
+describe('SessionPage view toggle', () => {
   const PATH = '/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
-  it('F4: toggling the header control re-seeds the reader body with chat_only', async () => {
+  it('F4: clicking a header segment re-seeds the reader body with that view', async () => {
     fetchSession.mockResolvedValue(makeSession())
-    fetchMessages.mockImplementation((_id: number, opts?: { chat_only?: boolean }) =>
-      Promise.resolve(pageOf(0, [opts?.chat_only ? 'filtered' : 'full'], 1)),
+    fetchMessages.mockImplementation((_id: number, opts?: { view?: string }) =>
+      Promise.resolve(pageOf(0, [opts?.view === 'all' ? 'full' : 'filtered'], 1)),
     )
     renderAt(PATH)
 
-    // Body seeds unfiltered first.
-    expect(await screen.findByText('text for full')).toBeDefined()
-    const toggle = screen.getByRole('button', { name: 'conversation only' })
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    // Body seeds filtered first — useViewMode's default is 'chat'.
+    expect(await screen.findByText('text for filtered')).toBeDefined()
+    const allSegment = screen.getByRole('button', { name: 'all' })
+    expect(allSegment.getAttribute('aria-pressed')).toBe('false')
 
-    await userEvent.click(toggle)
+    await userEvent.click(allSegment)
 
     // The reader body actually re-seeded (remount + new fetch), driven purely by the header toggle.
-    expect(await screen.findByText('text for filtered')).toBeDefined()
-    expect(screen.queryByText('text for full')).toBeNull()
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
-    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, chat_only: true })
+    expect(await screen.findByText('text for full')).toBeDefined()
+    expect(screen.queryByText('text for filtered')).toBeNull()
+    expect(allSegment.getAttribute('aria-pressed')).toBe('true')
+    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, view: 'all' })
   })
 
-  it('critique #6: the count is the UNFILTERED total, labelled once and unchanged by toggling', async () => {
+  it('critique #6: the count is the UNFILTERED total, unchanged by switching views', async () => {
     fetchSession.mockResolvedValue(makeSession({ message_count: 42 }))
     fetchMessages.mockResolvedValue(pageOf(0, ['m1'], 1))
     renderAt(PATH)
 
-    // "total" states what the number MEANS, in both states. Because it never appears or
-    // disappears, toggling cannot reflow the row -- the count span keeps its width.
+    // "total" states what the number MEANS in every view. Because it never appears or
+    // disappears, switching views cannot reflow the row -- the count span keeps its width.
     expect(await screen.findByText('42 msgs total')).toBeDefined()
-    await userEvent.click(screen.getByRole('button', { name: 'conversation only' }))
+    await userEvent.click(screen.getByRole('button', { name: 'all' }))
     expect(await screen.findByText('42 msgs total')).toBeDefined()
-
-    // The phrase belongs to the BUTTON alone. Duplicating it as a count suffix is what read as a
-    // second highlighted control appearing at the far right: the suffix widened the count span by
-    // 132px, so the (correctly highlighted) toggle shifted right into empty space at the same
-    // instant the same words appeared where the eye already was.
-    const meta = document.querySelector('.session-meta')
-    expect(meta?.textContent?.match(/conversation only/g) ?? []).toHaveLength(1)
   })
 
-  it('is sticky: a session opened while the stored flag is ON seeds filtered from first paint', async () => {
-    window.localStorage.setItem('introspect.chatOnly.v1', '1')
+  it('is sticky: a session opened with introspect.view.v1=all seeds unfiltered from first paint', async () => {
+    window.localStorage.setItem('introspect.view.v1', 'all')
     fetchSession.mockResolvedValue(makeSession())
-    fetchMessages.mockImplementation((_id: number, opts?: { chat_only?: boolean }) =>
-      Promise.resolve(pageOf(0, [opts?.chat_only ? 'filtered' : 'full'], 1)),
+    fetchMessages.mockImplementation((_id: number, opts?: { view?: string }) =>
+      Promise.resolve(pageOf(0, [opts?.view === 'all' ? 'full' : 'filtered'], 1)),
     )
     renderAt(PATH)
 
-    expect(await screen.findByText('text for filtered')).toBeDefined()
-    expect(screen.getByRole('button', { name: 'conversation only' }).getAttribute('aria-pressed')).toBe(
-      'true',
-    )
-    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, chat_only: true })
-    expect(fetchMessages).not.toHaveBeenCalledWith(1, { offset: 0, limit: 100 })
+    expect(await screen.findByText('text for full')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'all' }).getAttribute('aria-pressed')).toBe('true')
+    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, view: 'all' })
+    expect(fetchMessages).not.toHaveBeenCalledWith(1, { offset: 0, limit: 100, view: 'chat' })
   })
 })

@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BlockOut, MessageOut } from '../src/api/types'
 import { RawRecordInspector } from '../src/components/reader/RawRecordInspector'
+import type { ViewMode } from '../src/lib/viewMode'
 
 // Mock the api client module (useRawRecord imports fetchRawRecord directly) — same convention as
 // the other reader tests. Each test drives the raw payload per uuid so navigation is observable.
@@ -38,11 +39,11 @@ function payloadFor(uuid: string): string {
 function Harness({
   items,
   initialUuid,
-  parentChatOnly = false,
+  parentView = 'all',
 }: {
   items: MessageOut[]
   initialUuid: string
-  parentChatOnly?: boolean
+  parentView?: ViewMode
 }) {
   const [open, setOpen] = useState(false)
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -55,7 +56,7 @@ function Harness({
         <RawRecordInspector
           items={items}
           initialUuid={initialUuid}
-          parentChatOnly={parentChatOnly}
+          parentView={parentView}
           onClose={() => setOpen(false)}
         />
       )}
@@ -143,14 +144,14 @@ describe('pretty / raw toggle', () => {
   })
 })
 
-// --- navigation: traversal order, chatOnly filtering, edges --------------------------------
+// --- navigation: traversal order, view filtering, edges -------------------------------------
 
 describe('navigation', () => {
-  // A zero-block attachment is hidden under conversation-only; user rows flank it.
+  // A zero-block attachment is hidden under a filtered view; user rows flank it.
   const items = [msg('uuid-0'), msg('uuid-1', 'attachment', []), msg('uuid-2')]
 
-  it('prev/next skips conversation-only-hidden rows when the modal filter is on', async () => {
-    render(<Harness items={items} initialUuid="uuid-0" parentChatOnly />)
+  it('prev/next skips filtered-out rows when the modal filter is chat', async () => {
+    render(<Harness items={items} initialUuid="uuid-0" parentView="chat" />)
     await open()
     await screen.findByText(/content-uuid-0/)
 
@@ -166,26 +167,27 @@ describe('navigation', () => {
     await open()
     await screen.findByText(/content-uuid-0/)
 
-    // Filter off (default here): Right visits every loaded row, including the attachment.
+    // Filter off / view=all (default here): Right visits every loaded row, including the
+    // attachment.
     fireEvent.keyDown(dialog(), { key: 'ArrowRight' })
     await waitFor(() => expect(fetchRawRecord).toHaveBeenLastCalledWith('uuid-1'))
     fireEvent.keyDown(dialog(), { key: 'ArrowLeft' })
     await waitFor(() => expect(fetchRawRecord).toHaveBeenLastCalledWith('uuid-0'))
   })
 
-  it('the in-modal filter follows the parent by default and can be toggled off', async () => {
-    render(<Harness items={items} initialUuid="uuid-0" parentChatOnly />)
+  it('the in-modal filter follows the parent view by default and can be switched to all', async () => {
+    render(<Harness items={items} initialUuid="uuid-0" parentView="chat" />)
     await open()
-    const filterToggle = screen.getByRole('button', { name: 'conversation only' })
-    expect(filterToggle.getAttribute('aria-pressed')).toBe('true') // follows parent
+    const chatSegment = screen.getByRole('button', { name: 'chat' })
+    expect(chatSegment.getAttribute('aria-pressed')).toBe('true') // follows parent
 
-    // With the filter on, uuid-0's next is uuid-2 (attachment hidden).
+    // With the filter on chat, uuid-0's next is uuid-2 (attachment hidden).
     await userEvent.click(screen.getByRole('button', { name: 'Next record' }))
     await waitFor(() => expect(fetchRawRecord).toHaveBeenLastCalledWith('uuid-2'))
 
-    // Disable filtering: now the previously-hidden attachment (uuid-1) is reachable via prev.
-    await userEvent.click(filterToggle)
-    expect(filterToggle.getAttribute('aria-pressed')).toBe('false')
+    // Switch to all: now the previously-hidden attachment (uuid-1) is reachable via prev.
+    await userEvent.click(screen.getByRole('button', { name: 'all' }))
+    expect(chatSegment.getAttribute('aria-pressed')).toBe('false')
     await userEvent.click(screen.getByRole('button', { name: 'Previous record' }))
     await waitFor(() => expect(fetchRawRecord).toHaveBeenLastCalledWith('uuid-1'))
   })

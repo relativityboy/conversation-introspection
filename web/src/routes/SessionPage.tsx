@@ -8,11 +8,11 @@ import {
   ConversationSearchResults,
 } from '../components/search/ConversationSearch'
 import { ActionsMenu } from '../components/ActionsMenu'
-import { ChatOnlyToggle } from '../components/reader/ChatOnlyToggle'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
+import { ViewToggle } from '../components/reader/ViewToggle'
 import { TitleEditor } from '../components/TitleEditor'
-import { useChatOnly } from '../lib/chatOnly'
+import { useViewMode } from '../lib/viewMode'
 import { readProjects, writeProjects } from '../lib/urlState'
 
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', fontSize: 13, padding: '18px 24px' }
@@ -32,9 +32,9 @@ export function SessionPage() {
     readProjects(searchParams),
   ).toString()
   const query = useSession(uuid)
-  // The ONE owner of conversation-only state for this reader page (plan critique F4): the header
-  // toggle and the ConversationView body both read this same [chatOnly, setChatOnly].
-  const [chatOnly, setChatOnly] = useChatOnly()
+  // The ONE owner of view-mode state for this reader page (plan critique F4): the header toggle
+  // and the ConversationView body both read this same {view, setView}.
+  const { view, setView } = useViewMode()
 
   if (query.isPending) return <p style={MIST_TEXT}>…</p>
 
@@ -69,17 +69,15 @@ export function SessionPage() {
         <ConversationView
           transcriptId={main.id}
           initialAroundUuid={msgUuid}
-          chatOnly={chatOnly}
-          setChatOnly={setChatOnly}
+          view={view}
+          setView={setView}
         />
       )
     // trim(): useSearch gates on q.trim(), so a whitespace-only ?q= (e.g. ?q=%20) would mount
     // the results panel with a query that never fires — an eternal pending "…". Fall through to
     // the conversation instead.
     if (q.trim()) return <ConversationSearchResults sessionUuid={session.session_uuid} q={q} />
-    return (
-      <ConversationView transcriptId={main.id} chatOnly={chatOnly} setChatOnly={setChatOnly} />
-    )
+    return <ConversationView transcriptId={main.id} view={view} setView={setView} />
   }
 
   // Publish the transcript inventory (and the session uuid the subagent links need) for the
@@ -118,7 +116,7 @@ export function SessionPage() {
               archive all live inside this actions ▾ panel now (spec §3.1) — see ActionsMenu for
               the per-item detail. */}
             <ActionsMenu session={session} backSearch={backToArchiveSearch} />
-            <ChatOnlyToggle chatOnly={chatOnly} setChatOnly={setChatOnly} />
+            <ViewToggle view={view} setView={setView} />
           </div>
           <div style={{ margin: '14px 0 6px' }}>
             <HorizonBand start={session.started_at} end={session.last_activity_at} variant="full" />

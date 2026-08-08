@@ -2,10 +2,10 @@ import type { CSSProperties } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { useSession } from '../api/hooks'
-import { ChatOnlyToggle } from '../components/reader/ChatOnlyToggle'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
-import { useChatOnly } from '../lib/chatOnly'
+import { ViewToggle } from '../components/reader/ViewToggle'
+import { useViewMode } from '../lib/viewMode'
 import { readProjects, writeProjects } from '../lib/urlState'
 
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', fontSize: 13, padding: '18px 24px' }
@@ -30,9 +30,9 @@ export function SubagentPage() {
   // not routed through App.tsx's catch-all redirect, so it must carry the filter itself.
   const backSearch = writeProjects(new URLSearchParams(), readProjects(searchParams)).toString()
   const query = useSession(uuid)
-  // The ONE owner of conversation-only state for this reader page (plan critique F4), same shape
-  // as SessionPage — the header toggle and the ConversationView body share this single state.
-  const [chatOnly, setChatOnly] = useChatOnly()
+  // The ONE owner of view-mode state for this reader page (plan critique F4), same shape as
+  // SessionPage — the header toggle and the ConversationView body share this single state.
+  const { view, setView } = useViewMode()
 
   if (query.isPending) return <p style={MIST_TEXT}>…</p>
 
@@ -130,7 +130,7 @@ export function SubagentPage() {
               painted "conversation only" twice inches apart — the toggle beside it already
               carries the state, highlighted and aria-pressed. */}
             <span>{transcript.agent_hex_id?.slice(0, 8)}</span>
-            <ChatOnlyToggle chatOnly={chatOnly} setChatOnly={setChatOnly} />
+            <ViewToggle view={view} setView={setView} />
           </div>
         </header>
         <div style={{ flex: 1, minHeight: 0 }}>
@@ -139,8 +139,8 @@ export function SubagentPage() {
           <ConversationView
             transcriptId={transcript.id}
             initialAroundUuid={msgUuid}
-            chatOnly={chatOnly}
-            setChatOnly={setChatOnly}
+            view={view}
+            setView={setView}
           />
         </div>
       </div>

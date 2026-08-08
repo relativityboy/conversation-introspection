@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type MessagesOptions } from '../src/api/client'
 import type { MessageList, MessageOut } from '../src/api/types'
 import { ConversationView } from '../src/components/reader/ConversationView'
+import type { ViewMode } from '../src/lib/viewMode'
 
 // Windowing is tested at the LOGIC level per the task contract: jsdom has no layout engine, so
 // real react-virtuoso can never honestly fire startReached/endReached from scrolling. The mock
@@ -90,8 +91,8 @@ function pageOf(offset: number, count: number, total: number): MessageList {
 
 function renderView(
   initialAroundUuid?: string,
-  chatOnly = false,
-  setChatOnly: (value: boolean) => void = () => {},
+  view: ViewMode = 'all',
+  setView: (value: ViewMode) => void = () => {},
 ) {
   // We deliberately DON'T disable retry here: useMessages owns the retry policy (skip 404s,
   // else the default 3), and the 404/offline cases below exist to exercise exactly that.
@@ -102,8 +103,8 @@ function renderView(
       <ConversationView
         transcriptId={TRANSCRIPT_ID}
         initialAroundUuid={initialAroundUuid}
-        chatOnly={chatOnly}
-        setChatOnly={setChatOnly}
+        view={view}
+        setView={setView}
       />
     </QueryClientProvider>,
   )
@@ -122,7 +123,7 @@ describe('initial load without around', () => {
 
     expect(await screen.findAllByTestId('row')).toHaveLength(100)
     expect(fetchMessages).toHaveBeenCalledTimes(1)
-    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100, view: 'all' })
     expect(virtuosoProps.current?.firstItemIndex).toBe(0)
     expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(0)
   })
@@ -134,7 +135,11 @@ describe('around-seeded load', () => {
     renderView('uuid-90')
 
     expect(await screen.findAllByTestId('row')).toHaveLength(100)
-    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { around: 'uuid-90', limit: 100 })
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
+      around: 'uuid-90',
+      limit: 100,
+      view: 'all',
+    })
     expect(virtuosoProps.current?.firstItemIndex).toBe(40)
     // uuid-90 sits at array index 50 within the seeded page (items are uuid-40..uuid-139). The
     // OBJECT `{index, align}` form (final review fix — restored after walk fix 9b round 3's plain
@@ -178,7 +183,11 @@ describe('startReached', () => {
     fireEvent.click(screen.getByText('reach-start'))
 
     await waitFor(() => expect(virtuosoProps.current?.firstItemIndex).toBe(0))
-    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 40 })
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+      offset: 0,
+      limit: 40,
+      view: 'all',
+    })
 
     const rows = screen.getAllByTestId('row')
     expect(rows).toHaveLength(140)
@@ -209,7 +218,11 @@ describe('endReached', () => {
     fireEvent.click(screen.getByText('reach-end'))
 
     await waitFor(() => expect(screen.getAllByTestId('row')).toHaveLength(150))
-    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 100, limit: 100 })
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+      offset: 100,
+      limit: 100,
+      view: 'all',
+    })
 
     const rows = screen.getAllByTestId('row')
     expect(rows[99].textContent).toContain('message 99')
@@ -253,14 +266,22 @@ describe('around-target not found (404)', () => {
     renderView('uuid-x')
 
     expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
-    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { around: 'uuid-x', limit: 100 })
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
+      around: 'uuid-x',
+      limit: 100,
+      view: 'all',
+    })
 
     // Recovery: dropping the around-seed re-fetches offset 0 and renders the window.
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
     await userEvent.click(screen.getByRole('button', { name: 'view from the beginning' }))
 
     expect(await screen.findAllByTestId('row')).toHaveLength(100)
-    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+      offset: 0,
+      limit: 100,
+      view: 'all',
+    })
     expect(virtuosoProps.current?.firstItemIndex).toBe(0)
   })
 
@@ -317,36 +338,39 @@ describe('persistent deep-link marker', () => {
   })
 })
 
-// §14.4: chat_only must ride ALL THREE fetch sites — the seed, loadBefore, and loadAfter — so an
-// unfiltered edge page can never splice into a filtered window and corrupt the offset math.
-describe('chat_only threads through every fetch site', () => {
-  it('seeds offset 0 with chat_only when active', async () => {
+// §14.4: `view` must ride ALL THREE fetch sites — the seed, loadBefore, and loadAfter — so a
+// page fetched under a DIFFERENT view can never splice into the window and corrupt the offset
+// math. Unlike the retired boolean flag this replaces, `view` is never omitted from the opts
+// object — the server's own default ('all') differs from the client's ('chat'), so every call
+// site must say what it means.
+describe('view threads through every fetch site', () => {
+  it('seeds offset 0 with the current view', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
-    renderView(undefined, true)
+    renderView(undefined, 'chat')
 
     await screen.findAllByTestId('row')
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
       offset: 0,
       limit: 100,
-      chat_only: true,
+      view: 'chat',
     })
   })
 
-  it('seeds the around page with chat_only when active', async () => {
+  it('seeds the around page with the current view', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
-    renderView('uuid-90', true)
+    renderView('uuid-90', 'chat')
 
     await screen.findAllByTestId('row')
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
       around: 'uuid-90',
       limit: 100,
-      chat_only: true,
+      view: 'chat',
     })
   })
 
-  it('carries chat_only into loadBefore (startReached) and loadAfter (endReached)', async () => {
+  it('carries the current view into loadBefore (startReached) and loadAfter (endReached)', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
-    renderView('uuid-90', true)
+    renderView('uuid-90', 'chat')
     await screen.findAllByTestId('row')
 
     fetchMessages.mockResolvedValueOnce(pageOf(0, 40, 250))
@@ -355,7 +379,7 @@ describe('chat_only threads through every fetch site', () => {
     expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
       offset: 0,
       limit: 40,
-      chat_only: true,
+      view: 'chat',
     })
 
     fetchMessages.mockResolvedValueOnce(pageOf(140, 100, 250))
@@ -364,23 +388,27 @@ describe('chat_only threads through every fetch site', () => {
       expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
         offset: 140,
         limit: 100,
-        chat_only: true,
+        view: 'chat',
       }),
     )
   })
 
-  it('omits chat_only entirely from the opts object when inactive', async () => {
+  it('sends view explicitly even for the unfiltered default (all)', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
-    renderView(undefined, false)
+    renderView(undefined, 'all')
 
     await screen.findAllByTestId('row')
-    // Exactly the legacy opts shape — no chat_only key at all (server default is false).
-    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
+      offset: 0,
+      limit: 100,
+      view: 'all',
+    })
   })
 })
 
 // Top / End reader controls: quiet buttons that re-seed the window at offset 0 (top) or the last
-// page (end). Both must thread chat_only through the re-seed fetch and work in the shared reader.
+// page (end). Both must thread the current view through the re-seed fetch and work in the shared
+// reader.
 describe('top / end reader controls', () => {
   it('renders quiet top and end controls once the stream is loaded', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
@@ -401,7 +429,11 @@ describe('top / end reader controls', () => {
     await userEvent.click(screen.getByRole('button', { name: 'top' }))
 
     await waitFor(() => expect(virtuosoProps.current?.firstItemIndex).toBe(0))
-    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100 })
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+      offset: 0,
+      limit: 100,
+      view: 'all',
+    })
     // No target to align to on the Top-reseeded (remounted) window — plain number 0, not the
     // object form.
     expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(0)
@@ -416,7 +448,11 @@ describe('top / end reader controls', () => {
     await userEvent.click(screen.getByRole('button', { name: 'end' }))
 
     await waitFor(() =>
-      expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { offset: 150, limit: 100 }),
+      expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+        offset: 150,
+        limit: 100,
+        view: 'all',
+      }),
     )
     // Window seeded at the last page (firstItemIndex 150); array-local index of the last loaded
     // item is 99 (walk fix 9b round 4 confirmed this path is array-local too, not offset-adjusted
@@ -428,9 +464,9 @@ describe('top / end reader controls', () => {
     expect(rows[rows.length - 1].textContent).toContain('message 249')
   })
 
-  it('threads chat_only through the end re-seed fetch', async () => {
+  it('threads the current view through the end re-seed fetch', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
-    renderView(undefined, true)
+    renderView(undefined, 'chat')
     await screen.findAllByTestId('row')
 
     fetchMessages.mockResolvedValueOnce(pageOf(150, 100, 250))
@@ -440,7 +476,7 @@ describe('top / end reader controls', () => {
       expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
         offset: 150,
         limit: 100,
-        chat_only: true,
+        view: 'chat',
       }),
     )
   })
@@ -482,54 +518,55 @@ describe('raw-record inspector wiring', () => {
   })
 })
 
-// Critique #12: the around-404 notice gains a SECOND action under chat_only — "show all message
-// types" clears the toggle while KEEPING the same around= seed, so the target re-resolves in the
-// unfiltered set (distinct from "view from the beginning", which drops the around seed).
-describe('around-404 recovery under chat_only (critique #12)', () => {
-  it('offers "show all message types" only when chatOnly is active', async () => {
+// Critique #12: the around-404 notice gains a SECOND action when the view is filtered — "show all
+// message types" switches to 'all' while KEEPING the same around= seed, so the target re-resolves
+// in the unfiltered set (distinct from "view from the beginning", which drops the around seed).
+describe('around-404 recovery under a filtered view (critique #12)', () => {
+  it('offers "show all message types" only when the view is filtered', async () => {
     fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'filtered out'))
-    renderView('uuid-x', true)
+    renderView('uuid-x', 'chat')
 
     expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
     expect(screen.getByRole('button', { name: 'view from the beginning' })).toBeDefined()
     expect(screen.getByRole('button', { name: 'show all message types' })).toBeDefined()
   })
 
-  it('hides "show all message types" when chatOnly is off (meaningless there)', async () => {
+  it('hides "show all message types" when the view is already all (meaningless there)', async () => {
     fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'nope'))
-    renderView('uuid-x', false)
+    renderView('uuid-x', 'all')
 
     expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
     expect(screen.queryByRole('button', { name: 'show all message types' })).toBeNull()
     expect(screen.getByRole('button', { name: 'view from the beginning' })).toBeDefined()
   })
 
-  it('"show all message types" calls setChatOnly(false)', async () => {
-    const setChatOnly = vi.fn()
+  it('"show all message types" calls setView(\'all\')', async () => {
+    const setView = vi.fn()
     fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'filtered out'))
-    renderView('uuid-x', true, setChatOnly)
+    renderView('uuid-x', 'chat', setView)
 
     await screen.findByText(/message not found in this conversation/)
     await userEvent.click(screen.getByRole('button', { name: 'show all message types' }))
-    expect(setChatOnly).toHaveBeenCalledWith(false)
+    expect(setView).toHaveBeenCalledWith('all')
   })
 
-  it('full recovery: clearing the toggle re-resolves the SAME around target unfiltered', async () => {
-    // The trap-proof sequence: 404 under chat_only, 200 without — and the around seed is KEPT.
+  it('full recovery: switching to all re-resolves the SAME around target unfiltered', async () => {
+    // The trap-proof sequence: 404 under a filtered view, 200 under 'all' — and the around seed
+    // is KEPT.
     fetchMessages.mockImplementation((_id: number, opts: MessagesOptions) =>
-      opts.chat_only
+      opts.view !== 'all'
         ? Promise.reject(new ApiError(404, 'Not Found', 'filtered out'))
         : Promise.resolve(pageOf(40, 100, 250)),
     )
 
     function Harness() {
-      const [chatOnly, setChatOnly] = useState(true)
+      const [view, setView] = useState<ViewMode>('chat')
       return (
         <ConversationView
           transcriptId={TRANSCRIPT_ID}
           initialAroundUuid="uuid-90"
-          chatOnly={chatOnly}
-          setChatOnly={setChatOnly}
+          view={view}
+          setView={setView}
         />
       )
     }
@@ -544,7 +581,11 @@ describe('around-404 recovery under chat_only (critique #12)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'show all message types' }))
 
     expect(await screen.findAllByTestId('row')).toHaveLength(100)
-    // Same around seed, chat_only dropped — the target is found in the unfiltered set.
-    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, { around: 'uuid-90', limit: 100 })
+    // Same around seed, view switched to all — the target is found in the unfiltered set.
+    expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
+      around: 'uuid-90',
+      limit: 100,
+      view: 'all',
+    })
   })
 })

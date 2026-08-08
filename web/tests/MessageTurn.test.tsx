@@ -240,7 +240,7 @@ describe('block ordering and dispatch', () => {
   })
 })
 
-describe('conversation-only block hiding (chatOnly prop)', () => {
+describe('conversation-only block hiding (view prop)', () => {
   function toolBlock(index: number, over: Partial<BlockOut> = {}): BlockOut {
     return {
       block_index: index,
@@ -277,7 +277,7 @@ describe('conversation-only block hiding (chatOnly prop)', () => {
         },
       ],
     })
-    const { container } = renderTurn(<MessageTurn message={msg} chatOnly />)
+    const { container } = renderTurn(<MessageTurn message={msg} view="chat" />)
     // tool_use (as ToolBlock, no transcript match) and tool_result both vanish.
     expect(container.querySelector('.tool-block')).toBeNull()
     // conversational blocks remain.
@@ -298,14 +298,14 @@ describe('conversation-only block hiding (chatOnly prop)', () => {
     const msg = message({ blocks: [toolBlock(0)] })
     renderTurn(
       <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
-        <MessageTurn message={msg} chatOnly />
+        <MessageTurn message={msg} view="chat" />
       </TranscriptsProvider>,
     )
     expect(screen.queryByRole('link', { name: /view transcript/ })).toBeNull()
     expect(screen.queryByText(/subagent/)).toBeNull()
   })
 
-  it('renders tool blocks normally when chatOnly is off (default, no prop)', () => {
+  it('renders tool blocks normally when view is all (default, no prop)', () => {
     const msg = message({ blocks: [toolBlock(0, { block_kind: 'tool_result', text_content: 'x' })] })
     const { container } = renderTurn(<MessageTurn message={msg} />)
     expect(container.querySelector('.tool-block')).not.toBeNull()
@@ -314,7 +314,7 @@ describe('conversation-only block hiding (chatOnly prop)', () => {
 
 // Task P4-F1: a block-bearing attachment is a rescued human queued-command — labelled
 // SYSTEM (YOU), dawn (user) accent — while a zero-block attachment is harness furniture that
-// keeps the plain SYSTEM treatment in full mode and vanishes entirely under chatOnly.
+// keeps the plain SYSTEM treatment in full mode and vanishes entirely under a filtered view.
 describe('attachment voice (rescued queued commands)', () => {
   function accentOf(container: HTMLElement): string {
     const inner = container.querySelector<HTMLElement>('.message-turn > div')
@@ -339,16 +339,16 @@ describe('attachment voice (rescued queued commands)', () => {
     expect(accentOf(container)).toContain('var(--mist)')
   })
 
-  it('hides a zero-block attachment entirely when chatOnly is on', () => {
+  it('hides a zero-block attachment entirely under a filtered view', () => {
     const msg = message({ type: 'attachment', blocks: [] })
-    const { container } = renderTurn(<MessageTurn message={msg} chatOnly />)
+    const { container } = renderTurn(<MessageTurn message={msg} view="chat" />)
     expect(container.querySelector('.message-turn')).toBeNull()
     expect(container.textContent).toBe('')
   })
 
-  it('keeps a block-bearing attachment visible when chatOnly is on', () => {
+  it('keeps a block-bearing attachment visible under a filtered view', () => {
     const msg = message({ type: 'attachment', blocks: [textBlock(0, 'still a human turn')] })
-    const { container } = renderTurn(<MessageTurn message={msg} chatOnly />)
+    const { container } = renderTurn(<MessageTurn message={msg} view="chat" />)
     expect(container.querySelector('.message-turn')).not.toBeNull()
     expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM \(YOU\) · /)
     expect(container.textContent).toContain('still a human turn')

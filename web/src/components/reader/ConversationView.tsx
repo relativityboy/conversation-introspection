@@ -5,6 +5,7 @@ import { ApiError, fetchMessages } from '../../api/client'
 import { useMessages } from '../../api/hooks'
 import type { MessageList, MessageOut } from '../../api/types'
 import { applyGlow } from '../../lib/glow'
+import type { ViewMode } from '../../lib/viewMode'
 import { MessageTurn } from './MessageTurn'
 import { RawRecordInspector } from './RawRecordInspector'
 
@@ -26,19 +27,21 @@ export interface ConversationViewProps {
   /** Seed the window around this record and start scrolled to it. Accepted now so the
    * windowing model is complete; the route plumbing that supplies it lands in Task 7. */
   initialAroundUuid?: string
-  /** Conversation-only mode, OWNED by the page (useChatOnly) and passed in — never sourced
-   * locally, so header and body can't desync (plan critique F4). Threads through all three fetch
-   * sites and down to MessageTurn's block-level hiding. */
-  chatOnly: boolean
+  /** Reader view mode (authorship spec §5), OWNED by the page (useViewMode) and passed in — never
+   * sourced locally, so header and body can't desync (plan critique F4). Threads through all
+   * three fetch sites and down to MessageTurn's block-level hiding. */
+  view: ViewMode
   /** Passed only so the around-404 notice can offer "show all message types" (critique #12). */
-  setChatOnly: (value: boolean) => void
+  setView: (value: ViewMode) => void
 }
 
-// chat_only must ride EVERY fetch site (seed + both edge loaders): an unfiltered edge page spliced
-// into a filtered window would corrupt the offset math (§14.4). Absent (not `false`) when off, so
-// the opts object — and therefore the react-query key — stays identical to the pre-toggle shape.
-function withChatOnly<T extends object>(opts: T, chatOnly: boolean): T & { chat_only?: true } {
-  return chatOnly ? { ...opts, chat_only: true } : opts
+// `view` must ride EVERY fetch site (seed + both edge loaders): a differently-filtered edge page
+// spliced into a filtered window would corrupt the offset math (§14.4). ALWAYS explicit (never
+// omitted) — unlike the retired boolean flag this replaces, the server's own default ('all')
+// differs from the client's ('chat'), so omitting it would silently change what a bare fetch
+// returns.
+function withView<T extends object>(opts: T, view: ViewMode): T & { view: ViewMode } {
+  return { ...opts, view }
 }
 
 // NOTE(claude): fetch strategy — the INITIAL page goes through the useMessages react-query
@@ -50,8 +53,8 @@ function withChatOnly<T extends object>(opts: T, chatOnly: boolean): T & { chat_
 export function ConversationView({
   transcriptId,
   initialAroundUuid,
-  chatOnly,
-  setChatOnly,
+  view,
+  setView,
 }: ConversationViewProps) {
   // Re-seed control. `seedOverride` pins an explicit page — Top → offset 0, End → the last page,
   // and the 404 "view from the beginning" recovery → offset 0 — winning over the deep-link
@@ -74,13 +77,13 @@ export function ConversationView({
 
   const initial = useMessages(
     transcriptId,
-    withChatOnly(
+    withView(
       seedOverride
         ? { offset: seedOverride.offset, limit: PAGE_SIZE }
         : around
           ? { around, limit: PAGE_SIZE }
           : { offset: 0, limit: PAGE_SIZE },
-      chatOnly,
+      view,
     ),
   )
 
@@ -90,10 +93,11 @@ export function ConversationView({
     // not-found, not the archive being offline. Offer a calm jump to the start instead (and
     // useMessages' retry policy skips the react-query retry storm for these 404s).
     if (around && initial.error instanceof ApiError && initial.error.status === 404) {
-      // Under chat_only the 404 may mean "the target is a tool/system record filtered OUT of this
-      // set", not "not in this transcript at all" — so offer a second recovery that KEEPS the same
-      // around seed and just drops the filter (critique #12), distinct from "view from the
-      // beginning" which drops the around seed. Shown only when chatOnly (meaningless otherwise).
+      // Under a filtered view the 404 may mean "the target is a record filtered OUT of this set",
+      // not "not in this transcript at all" — so offer a second recovery that KEEPS the same
+      // around seed and just switches to 'all' (critique #12), distinct from "view from the
+      // beginning" which drops the around seed. Shown only when NOT already 'all' (meaningless
+      // there).
       return (
         <Calm>
           message not found in this conversation{' '}
@@ -104,12 +108,12 @@ export function ConversationView({
           >
             view from the beginning
           </button>
-          {chatOnly && (
+          {view !== 'all' && (
             <>
               {' · '}
               <button
                 type="button"
-                onClick={() => setChatOnly(false)}
+                onClick={() => setView('all')}
                 style={LINK_BUTTON_STYLE}
               >
                 show all message types
@@ -126,25 +130,25 @@ export function ConversationView({
   // The key resets the window state whenever the identity of the stream changes — a new
   // transcript or a new around-target must re-seed rather than mutate the old window. Keying on
   // the EFFECTIVE `around` also re-seeds cleanly when a Top/End/"view from the beginning" drops
-  // it, on `chatOnly` so toggling remounts the window (an unfiltered edge page mixed into a
-  // filtered window would corrupt the offset math, §14.4), and on `seedNonce` so a repeated Top/
-  // End press re-seeds even when the target page is unchanged. The remount is also the isolation
-  // boundary for an in-flight edge fetch — see MessageStream's pendingRef note.
+  // it, on `view` so switching views remounts the window (a differently-filtered edge page mixed
+  // into the old window would corrupt the offset math, §14.4), and on `seedNonce` so a repeated
+  // Top/End press re-seeds even when the target page is unchanged. The remount is also the
+  // isolation boundary for an in-flight edge fetch — see MessageStream's pendingRef note.
   const total = initial.data.total
   return (
     <div style={{ position: 'relative', height: '100%' }}>
       <MessageStream
-        key={`${transcriptId}:${around ?? ''}:${chatOnly ? 1 : 0}:${seedNonce}`}
+        key={`${transcriptId}:${around ?? ''}:${view}:${seedNonce}`}
         transcriptId={transcriptId}
         seed={initial.data}
         initialAroundUuid={around}
-        chatOnly={chatOnly}
+        view={view}
         landAtEnd={seedOverride?.landAtEnd ?? false}
       />
       <ReaderJumpControls
         onTop={() => reseed({ offset: 0, landAtEnd: false })}
-        // End pins the LAST page within the CURRENT chat_only filter — `total` already respects
-        // it (server-side), so the same arithmetic works filtered or not.
+        // End pins the LAST page within the CURRENT view filter — `total` already respects it
+        // (server-side), so the same arithmetic works filtered or not.
         onEnd={() => reseed({ offset: Math.max(0, total - PAGE_SIZE), landAtEnd: true })}
       />
     </div>
@@ -213,7 +217,7 @@ interface MessageStreamProps {
   transcriptId: number
   seed: MessageList
   initialAroundUuid?: string
-  chatOnly: boolean
+  view: ViewMode
   /** End re-seed: start scrolled to the LAST message of the seeded (last) page. */
   landAtEnd: boolean
 }
@@ -222,7 +226,7 @@ function MessageStream({
   transcriptId,
   seed,
   initialAroundUuid,
-  chatOnly,
+  view,
   landAtEnd,
 }: MessageStreamProps) {
   const [stream, setStream] = useState<StreamWindow>(() => ({
@@ -233,11 +237,11 @@ function MessageStream({
   // One edge fetch at a time — virtuoso can fire startReached/endReached repeatedly while a
   // page is still in flight; without the guard the same page would prepend/append twice.
   //
-  // pendingRef is per-INSTANCE (a fresh useRef per MessageStream), and so is `stream`. Toggling
-  // chatOnly changes ConversationView's key, unmounting THIS instance and mounting a new one: any
+  // pendingRef is per-INSTANCE (a fresh useRef per MessageStream), and so is `stream`. Switching
+  // `view` changes ConversationView's key, unmounting THIS instance and mounting a new one: any
   // edge fetch still in flight here resolves into a setStream on the unmounted instance (a React
-  // no-op) — it can never splice a stale unfiltered page into the new filtered window. The new
-  // instance starts with pendingRef=false and re-seeds from the fresh (filtered) `seed`.
+  // no-op) — it can never splice a page filtered under the OLD view into the new window. The new
+  // instance starts with pendingRef=false and re-seeds from the fresh (correctly filtered) `seed`.
   const pendingRef = useRef(false)
 
   // The raw-record inspector (§15.2) is a single reader-level instance, NOT one-per-row: a row's
@@ -318,7 +322,7 @@ function MessageStream({
       // would prepend duplicates.
       const page = await fetchMessages(
         transcriptId,
-        withChatOnly({ offset, limit: firstItemIndex - offset }, chatOnly),
+        withView({ offset, limit: firstItemIndex - offset }, view),
       )
       setStream((prev) => ({
         firstItemIndex: prev.firstItemIndex - page.items.length,
@@ -330,7 +334,7 @@ function MessageStream({
     } finally {
       pendingRef.current = false
     }
-  }, [stream, transcriptId, chatOnly])
+  }, [stream, transcriptId, view])
 
   const loadAfter = useCallback(async () => {
     const offset = stream.firstItemIndex + stream.items.length
@@ -339,7 +343,7 @@ function MessageStream({
     try {
       const page = await fetchMessages(
         transcriptId,
-        withChatOnly({ offset, limit: PAGE_SIZE }, chatOnly),
+        withView({ offset, limit: PAGE_SIZE }, view),
       )
       setStream((prev) => ({
         ...prev,
@@ -351,7 +355,7 @@ function MessageStream({
     } finally {
       pendingRef.current = false
     }
-  }, [stream, transcriptId, chatOnly])
+  }, [stream, transcriptId, view])
 
   // NOTE(claude): totalCount is the WINDOW length, not the archive total — deliberate
   // deviation from the plan's literal "totalCount=response.total". With firstItemIndex set,
@@ -393,7 +397,7 @@ function MessageStream({
               ref={isTarget ? glowTarget : undefined}
               style={{ padding: '0 24px' }}
             >
-              <MessageTurn message={message} chatOnly={chatOnly} onInspect={setInspectUuid} />
+              <MessageTurn message={message} view={view} onInspect={setInspectUuid} />
             </div>
           )
         }}
@@ -402,7 +406,7 @@ function MessageStream({
         <RawRecordInspector
           items={stream.items}
           initialUuid={inspectUuid}
-          parentChatOnly={chatOnly}
+          parentView={view}
           onClose={() => setInspectUuid(null)}
         />
       )}

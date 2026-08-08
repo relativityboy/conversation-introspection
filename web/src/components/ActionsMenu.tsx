@@ -28,7 +28,7 @@ function statusText(r: ResumeResult): string {
   }
 }
 
-// Mirrors ChatOnlyToggle's inactive pill: mono 11px, 1px solid var(--shore), radius 999, mist on
+// Mirrors ViewToggle's inactive pill: mono 11px, 1px solid var(--shore), radius 999, mist on
 // transparent.
 const TRIGGER_STYLE: CSSProperties = {
   fontFamily: 'var(--mono)',

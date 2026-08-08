@@ -2,7 +2,7 @@ import type { CSSProperties, MouseEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import type { BlockOut, MessageOut } from '../../api/types'
-import { isChatOnlyVisible } from '../../lib/chatOnly'
+import { isVisibleInView, type ViewMode } from '../../lib/viewMode'
 import { ImageBlock } from './ImageBlock'
 import { MarkdownProse } from './MarkdownProse'
 import { SubagentChip } from './SubagentChip'
@@ -59,16 +59,18 @@ function useEntryHref(recordUuid: string): string | null {
 
 export interface MessageTurnProps {
   message: MessageOut
-  /** Conversation-only mode: hide tool_use / tool_result blocks (and the subagent chips that ride
-   * tool_use) — see `Block`. Owned by the page via useChatOnly; false when omitted. */
-  chatOnly?: boolean
+  /** Reader view mode (authorship spec §5): gates both whole-message visibility
+   * (`isVisibleInView`) and block-level hiding of tool_use/tool_result — see `Block`. Owned by the
+   * page via useViewMode; defaults to 'all' (show everything) when omitted, matching the
+   * un-virtualized unit tests that predate this filtering. */
+  view?: ViewMode
   /** Opens the raw-record inspector for this row (§15.2), wired to the speaker-name button.
    * Supplied by the reader (MessageStream); absent in the un-virtualized unit tests, where the
    * name renders as plain text instead. */
   onInspect?: (recordUuid: string) => void
 }
 
-export function MessageTurn({ message, chatOnly = false, onInspect }: MessageTurnProps) {
+export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnProps) {
   const href = useEntryHref(message.record_uuid)
   const [copied, setCopied] = useState(false)
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -93,13 +95,14 @@ export function MessageTurn({ message, chatOnly = false, onInspect }: MessageTur
     }, 1600)
   }
 
-  // Conversation-only mode hides rows whose type doesn't qualify OR that show no content there
-  // (spec §4): thinking-only / tool-only / empty-text rows collapse to nothing, including the
-  // ~800 zero-block deferred_tools_delta / skill_listing / task_reminder attachment stubs, while a
-  // block-bearing attachment (a rescued human queued prompt) stays. `isChatOnlyVisible` is the
-  // SAME predicate the raw inspector's prev/next uses (lib/chatOnly), so the rows this reader
-  // hides and the rows that navigation skips can never drift.
-  if (chatOnly && !isChatOnlyVisible(message)) return null
+  // A filtered view hides rows whose authorship kind/type doesn't qualify OR that show no content
+  // there (spec §4/§5): thinking-only / tool-only / empty-text rows collapse to nothing, including
+  // the ~800 zero-block deferred_tools_delta / skill_listing / task_reminder attachment stubs,
+  // while a block-bearing attachment (a rescued human queued prompt) stays. `isVisibleInView` is
+  // the SAME predicate the raw inspector's prev/next uses (lib/viewMode) and mirrors the server's
+  // `_view_filter`, so the rows this reader hides and the rows that navigation skips can never
+  // drift.
+  if (!isVisibleInView(message, view)) return null
 
   const voice = voiceOf(message)
   const time = localHHMM(message.timestamp)
@@ -155,7 +158,7 @@ export function MessageTurn({ message, chatOnly = false, onInspect }: MessageTur
           </span>
         </div>
         {blocks.map((block) => (
-          <Block key={block.block_index} block={block} chatOnly={chatOnly} />
+          <Block key={block.block_index} block={block} view={view} />
         ))}
       </div>
     </article>
@@ -167,11 +170,13 @@ export function MessageTurn({ message, chatOnly = false, onInspect }: MessageTur
 // Unknown kinds render a mono chip rather than throwing — the archive may grow block kinds this
 // reader predates, and a forward-tolerant marker beats a crash.
 //
-// Under `chatOnly`, tool_use and tool_result are dropped block-level (subagent chips disappear
-// WITH their tool_use — ledger #7, intended, not special-cased). text / thinking / image (and
-// forward-tolerant unknowns) still render — this is a per-block visual filter, distinct from the
-// server's message-level `chat_only` filter on the seed.
-function Block({ block, chatOnly }: { block: BlockOut; chatOnly: boolean }) {
+// Outside `all`, tool_use and tool_result are dropped block-level (subagent chips disappear WITH
+// their tool_use — ledger #7, intended, not special-cased) in BOTH filtered views alike: `chat`
+// and `chat-harness` differ only in which whole MESSAGES survive `isVisibleInView`, not in which
+// blocks a surviving message shows. text / thinking / image (and forward-tolerant unknowns) still
+// render — this is a per-block visual filter, distinct from the server's message-level `view`
+// filter on the seed.
+function Block({ block, view }: { block: BlockOut; view: ViewMode }) {
   switch (block.block_kind) {
     case 'text':
       return block.text_content ? <MarkdownProse markdown={block.text_content} /> : null
@@ -180,9 +185,9 @@ function Block({ block, chatOnly }: { block: BlockOut; chatOnly: boolean }) {
     case 'image':
       return <ImageBlock />
     case 'tool_use':
-      return chatOnly ? null : <SubagentChip block={block} />
+      return view === 'all' ? <SubagentChip block={block} /> : null
     case 'tool_result':
-      return chatOnly ? null : <ToolBlock block={block} />
+      return view === 'all' ? <ToolBlock block={block} /> : null
     default:
       return <UnknownChip kind={block.block_kind} />
   }

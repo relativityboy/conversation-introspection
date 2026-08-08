@@ -39,7 +39,8 @@ vi.mock('react-virtuoso', () => ({
 }))
 
 beforeEach(() => {
-  // useChatOnly seeds from this key; clear it so the toggle starts OFF in every test.
+  // useViewMode seeds from this key; clear it so the view starts at its default ('chat') in
+  // every test.
   window.localStorage.clear()
   fetchSession.mockReset()
   fetchMessages.mockReset()
@@ -253,6 +254,11 @@ describe('found agentHex', () => {
 
 describe('lazy fetch contract', () => {
   it('fetches ONLY the main transcript on the session page; the subagent transcript only after drill-in', async () => {
+    // The drill-in link lives inside a tool_use block, which only renders under view='all' (a
+    // filtered view hides tool_use/tool_result blocks entirely, spec §5) -- seed the sticky view
+    // to 'all' so this test can isolate what it's actually about (fetch laziness), independent of
+    // useViewMode's own default ('chat').
+    window.localStorage.setItem('introspect.view.v1', 'all')
     fetchSession.mockResolvedValue(makeSession())
     fetchMessages.mockImplementation((transcriptId: number) =>
       Promise.resolve(
@@ -287,7 +293,7 @@ describe('lazy fetch contract', () => {
     await user.click(drillIn)
 
     await waitFor(() =>
-      expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100 }),
+      expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100, view: 'all' }),
     )
   })
 })
@@ -313,7 +319,11 @@ describe('SessionPage with whitespace-only ?q=', () => {
     // The MAIN conversation loads (useSearch would never fire for a blank q, so mounting the
     // results panel here would strand the body on a pending "…" forever).
     expect(await screen.findByText('text for m1')).toBeDefined()
-    expect(fetchMessages).toHaveBeenCalledWith(MAIN_TRANSCRIPT.id, { offset: 0, limit: 100 })
+    expect(fetchMessages).toHaveBeenCalledWith(MAIN_TRANSCRIPT.id, {
+      offset: 0,
+      limit: 100,
+      view: 'chat',
+    })
     expect(screen.queryByRole('button', { name: '← back to conversation' })).toBeNull()
   })
 })
@@ -327,31 +337,32 @@ describe('deep link', () => {
     renderAt('/s/uuid-1/a/deadbeef/m/msg-5')
 
     await waitFor(() =>
-      expect(fetchMessages).toHaveBeenCalledWith(42, { around: 'msg-5', limit: 100 }),
+      expect(fetchMessages).toHaveBeenCalledWith(42, { around: 'msg-5', limit: 100, view: 'chat' }),
     )
   })
 })
 
-// --- conversation-only toggle parity (ledger #6) ---------------------------------------------
-// SubagentPage owns its own useChatOnly (one owner per reader page) exactly like SessionPage;
-// toggling from its header must re-seed the subagent transcript body.
+// --- view toggle parity (ledger #6) -------------------------------------------------------------
+// SubagentPage owns its own useViewMode (one owner per reader page) exactly like SessionPage;
+// switching views from its header must re-seed the subagent transcript body.
 
-describe('SubagentPage conversation-only toggle parity', () => {
-  it('renders the toggle in the header and threads chat_only into the transcript fetch', async () => {
+describe('SubagentPage view toggle parity', () => {
+  it('renders the toggle in the header and threads the current view into the transcript fetch', async () => {
     fetchSession.mockResolvedValue(makeSession())
-    fetchMessages.mockImplementation((_id: number, opts?: { chat_only?: boolean }) =>
-      Promise.resolve(pageOf(0, [opts?.chat_only ? 'sub-filtered' : 'sub-full'], 1)),
+    fetchMessages.mockImplementation((_id: number, opts?: { view?: string }) =>
+      Promise.resolve(pageOf(0, [opts?.view === 'all' ? 'sub-full' : 'sub-filtered'], 1)),
     )
     renderAt('/s/uuid-1/a/deadbeef')
 
-    expect(await screen.findByText('text for sub-full')).toBeDefined()
-    const toggle = screen.getByRole('button', { name: 'conversation only' })
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
-
-    await userEvent.click(toggle)
-
+    // Body seeds filtered first — useViewMode's default is 'chat'.
     expect(await screen.findByText('text for sub-filtered')).toBeDefined()
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
-    expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100, chat_only: true })
+    const allSegment = screen.getByRole('button', { name: 'all' })
+    expect(allSegment.getAttribute('aria-pressed')).toBe('false')
+
+    await userEvent.click(allSegment)
+
+    expect(await screen.findByText('text for sub-full')).toBeDefined()
+    expect(allSegment.getAttribute('aria-pressed')).toBe('true')
+    expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100, view: 'all' })
   })
 })

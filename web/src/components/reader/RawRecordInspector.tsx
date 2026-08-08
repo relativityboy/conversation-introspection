@@ -2,8 +2,9 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRawRecord } from '../../api/hooks'
 import type { MessageOut } from '../../api/types'
-import { isChatOnlyVisible } from '../../lib/chatOnly'
+import { isVisibleInView, type ViewMode } from '../../lib/viewMode'
 import { MarkdownProse } from './MarkdownProse'
+import { ViewToggle } from './ViewToggle'
 
 // Still Water styling: a depth-toned backdrop over the reader, a lifted surface panel, mono
 // content. The fade-in lives on the `.raw-record-overlay` CSS class (theme.css) so reduced-motion
@@ -117,9 +118,9 @@ export interface RawRecordInspectorProps {
   items: MessageOut[]
   /** The record to open on (the row whose `{}` button was clicked). */
   initialUuid: string
-  /** Seeds the in-modal conversation-only filter — "follow parent" by default. Toggling it in the
-   * modal narrows/widens which rows prev/next visits, independently of the reader's own mode. */
-  parentChatOnly: boolean
+  /** Seeds the in-modal view filter — "follow parent" by default. Changing it in the modal
+   * narrows/widens which rows prev/next visits, independently of the reader's own mode. */
+  parentView: ViewMode
   onClose: () => void
 }
 
@@ -127,16 +128,16 @@ export interface RawRecordInspectorProps {
  * record) showing a record's exact stored `raw_line`. Pretty-prints the JSON with a "raw bytes"
  * toggle (falling back to the raw text with a notice when the line isn't valid JSON); ◀/▶ and
  * Left/Right navigate within the loaded window in the reader's traversal order, skipping rows the
- * conversation-only filter hides. Esc closes; focus is trapped while open and returned to the
- * opening button on close. */
+ * current view filter hides. Esc closes; focus is trapped while open and returned to the opening
+ * button on close. */
 export function RawRecordInspector({
   items,
   initialUuid,
-  parentChatOnly,
+  parentView,
   onClose,
 }: RawRecordInspectorProps) {
   const [currentUuid, setCurrentUuid] = useState(initialUuid)
-  const [filterChatOnly, setFilterChatOnly] = useState(parentChatOnly)
+  const [filterView, setFilterView] = useState<ViewMode>(parentView)
   const [showRaw, setShowRaw] = useState(false)
 
   const rootRef = useRef<HTMLDivElement>(null)
@@ -155,8 +156,8 @@ export function RawRecordInspector({
   }, [])
 
   const navigable = useMemo(
-    () => (filterChatOnly ? items.filter(isChatOnlyVisible) : items),
-    [items, filterChatOnly],
+    () => items.filter((m) => isVisibleInView(m, filterView)),
+    [items, filterView],
   )
   // -1 when the current record is filtered OUT of `navigable` (e.g. the filter was toggled ON
   // while sitting on a now-hidden row): both arrows disable, but the record itself still shows.
@@ -273,14 +274,7 @@ export function RawRecordInspector({
           >
             raw bytes
           </button>
-          <button
-            type="button"
-            aria-pressed={filterChatOnly}
-            onClick={() => setFilterChatOnly((v) => !v)}
-            style={toggleStyle(filterChatOnly)}
-          >
-            conversation only
-          </button>
+          <ViewToggle view={filterView} setView={setFilterView} />
         </div>
         <div style={CONTENT_STYLE}>
           <RawContent
