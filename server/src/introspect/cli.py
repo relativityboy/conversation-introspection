@@ -30,7 +30,7 @@ from pathlib import Path
 
 import uvicorn
 
-from introspect import config, cron
+from introspect import config, cron, update
 from introspect.api import create_app
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.export import SessionNotFoundError, TranscriptNotFoundError, export_session_to
@@ -125,6 +125,14 @@ def _build_parser() -> argparse.ArgumentParser:
     c_install.set_defaults(handler=_cmd_cron_install)
     c_remove = cron_sub.add_parser("remove", help="remove the scheduled import job")
     c_remove.set_defaults(handler=_cmd_cron_remove)
+
+    p_update = subparsers.add_parser(
+        "update", help="check for and apply updates from the repo's origin"
+    )
+    p_update.add_argument(
+        "--yes", "-y", action="store_true", help="apply without prompting"
+    )
+    p_update.set_defaults(handler=_cmd_update)
 
     return parser
 
@@ -365,6 +373,59 @@ def _cmd_cron_remove(args: argparse.Namespace) -> int:
         print(f"cron: {exc}", file=sys.stderr)
         return 1
     print("cron: removed" if removed else "cron: nothing to remove (not installed)")
+    return 0
+
+
+def _cmd_update(args: argparse.Namespace) -> int:
+    root = update.find_repo_root()
+    if root is None:
+        print("update requires a repo checkout (no .git found above the package)", file=sys.stderr)
+        return 1
+    try:
+        chk = update.check(root)
+    except update.UpdateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if chk.state is update.UpdateState.UP_TO_DATE:
+        print(f"already up to date ({chk.local_version})")
+        return 0
+    if chk.state is update.UpdateState.LOCAL_AHEAD:
+        print(
+            f"local checkout ({chk.local_version}) is ahead of origin ({chk.remote_version}) "
+            "-- nothing to update; push or reset is your call"
+        )
+        return 0
+    if chk.state is update.UpdateState.NO_CHANGELOG:
+        print(
+            "cannot compare versions (CHANGELOG.md missing or unreadable here or on origin) "
+            "-- update manually: git pull && ./install.sh",
+            file=sys.stderr,
+        )
+        return 1
+
+    # BEHIND: show the changelist, then confirm.
+    for entry in chk.new_entries:
+        print(f"## {entry.version} — {entry.date}")
+        for bullet in entry.bullets:
+            print(f"- {bullet}")
+    problems = update.preflight_problems(root)
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        return 1
+    if not args.yes:
+        reply = input(f"update to {chk.remote_version}? [y/N] ").strip().lower()
+        if reply not in ("y", "yes"):
+            print("not updating.")
+            return 0
+    result = update.apply(root, emit=print)
+    if not result.ok:
+        return 1
+    if result.server_changed:
+        print(
+            "server code changed -- restart any running `introspect tui` or "
+            "`introspect serve` processes to pick it up"
+        )
     return 0
 
 

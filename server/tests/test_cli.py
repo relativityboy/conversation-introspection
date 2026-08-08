@@ -23,6 +23,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from introspect import cli
+from introspect import update as update_mod
+from introspect.changelog import Entry
 from introspect.cli import main
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.ingest import run as run_module
@@ -351,3 +354,79 @@ def test_cli_cron_remove_shows_macos_notice_on_darwin(tmp_path, monkeypatch, cap
     _seed_crontab(monkeypatch, "MAILTO=me@example.com\n")
     assert main(["cron", "remove"]) == 0
     assert cron_mod.MACOS_PERMISSION_NOTICE in capsys.readouterr().out
+
+
+# --- update: introspect update -- check, changelist, [y/N] prompt, apply (spec §5) --------
+
+
+def test_update_up_to_date(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli.update, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        cli.update,
+        "check",
+        lambda root: update_mod.UpdateCheck(update_mod.UpdateState.UP_TO_DATE, "1.1.0", "1.1.0", ()),
+    )
+    assert cli.main(["update"]) == 0
+    assert "already up to date (1.1.0)" in capsys.readouterr().out
+
+
+def test_update_behind_yes_applies_and_reports_restart(monkeypatch, capsys) -> None:
+    entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
+    monkeypatch.setattr(cli.update, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        cli.update,
+        "check",
+        lambda root: update_mod.UpdateCheck(update_mod.UpdateState.BEHIND, "1.1.0", "1.2.0", (entry,)),
+    )
+    monkeypatch.setattr(cli.update, "preflight_problems", lambda root: [])
+    monkeypatch.setattr(
+        cli.update,
+        "apply",
+        lambda root, emit, update_script=None: update_mod.ApplyResult(ok=True, server_changed=True),
+    )
+    assert cli.main(["update", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "1.2.0" in out and "New thing." in out
+    assert "restart" in out  # server changed -> restart reminder
+
+
+def test_update_behind_prompt_declined(monkeypatch, capsys) -> None:
+    entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
+    monkeypatch.setattr(cli.update, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        cli.update,
+        "check",
+        lambda root: update_mod.UpdateCheck(update_mod.UpdateState.BEHIND, "1.1.0", "1.2.0", (entry,)),
+    )
+    monkeypatch.setattr(cli.update, "preflight_problems", lambda root: [])
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert cli.main(["update"]) == 0
+    assert "not updating" in capsys.readouterr().out
+
+
+def test_update_preflight_problems_block(monkeypatch, capsys) -> None:
+    entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
+    monkeypatch.setattr(cli.update, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        cli.update,
+        "check",
+        lambda root: update_mod.UpdateCheck(update_mod.UpdateState.BEHIND, "1.1.0", "1.2.0", (entry,)),
+    )
+    monkeypatch.setattr(
+        cli.update,
+        "preflight_problems",
+        lambda root: ["working tree has uncommitted changes to tracked files -- commit or stash them first"],
+    )
+
+    def _apply_should_not_be_called(root, emit, update_script=None):
+        raise AssertionError("apply must not be called when preflight problems are present")
+
+    monkeypatch.setattr(cli.update, "apply", _apply_should_not_be_called)
+    assert cli.main(["update", "--yes"]) == 1
+    err = capsys.readouterr().err
+    assert "working tree has uncommitted changes" in err
+
+
+def test_update_outside_repo(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli.update, "find_repo_root", lambda: None)
+    assert cli.main(["update"]) == 1
