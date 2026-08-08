@@ -8,6 +8,7 @@ import { MarkdownProse } from './MarkdownProse'
 import { SubagentChip } from './SubagentChip'
 import { ThinkingGlyph } from './ThinkingGlyph'
 import { ToolBlock } from './ToolBlock'
+import { useDispatchToolUseIds } from './transcripts-context'
 import './eyebrow.css'
 
 // NOTE(claude): speaker labels are deliberately generic — "YOU" / "CLAUDE" / "SYSTEM", never
@@ -183,6 +184,7 @@ export interface MessageTurnProps {
 
 export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnProps) {
   const href = useEntryHref(message.record_uuid)
+  const dispatchToolUseIds = useDispatchToolUseIds()
   const [copied, setCopied] = useState(false)
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -209,11 +211,14 @@ export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnPro
   // A filtered view hides rows whose authorship kind/type doesn't qualify OR that show no content
   // there (spec §4/§5): thinking-only / tool-only / empty-text rows collapse to nothing, including
   // the ~800 zero-block deferred_tools_delta / skill_listing / task_reminder attachment stubs,
-  // while a block-bearing attachment (a rescued human queued prompt) stays. `isVisibleInView` is
-  // the SAME predicate the raw inspector's prev/next uses (lib/viewMode) and mirrors the server's
-  // `_view_filter`, so the rows this reader hides and the rows that navigation skips can never
-  // drift.
-  if (!isVisibleInView(message, view)) return null
+  // while a block-bearing attachment (a rescued human queued prompt) stays. A RESOLVED dispatch
+  // row is the one exception carved back OUT of that trim (final review C1): its `tool_use` block
+  // is its only content, yet `dispatchToolUseIds` (this session's transcripts, threaded via
+  // `useDispatchToolUseIds`) keeps it past the gate so the chip below stays reachable outside
+  // `all`. `isVisibleInView` is the SAME predicate the raw inspector's prev/next uses
+  // (lib/viewMode) and mirrors the server's `_view_filter`, so the rows this reader hides and the
+  // rows that navigation skips can never drift.
+  if (!isVisibleInView(message, view, dispatchToolUseIds)) return null
 
   const { label, accent } = speakerFor(message)
   const voiceClass = voiceClassOf(message)

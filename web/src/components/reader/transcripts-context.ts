@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useMemo } from 'react'
 import type { TranscriptInfo } from '../../api/types'
 
 // NOTE(claude): the subagent JOIN lives here as context, not props. A tool_use block becomes a
@@ -23,4 +23,25 @@ export const TranscriptsProvider = TranscriptsContext.Provider
 
 export function useTranscripts(): TranscriptsContextValue {
   return useContext(TranscriptsContext)
+}
+
+// The set of tool_use_ids that resolve to a captured subagent transcript -- the client mirror
+// of the server's `_has_resolved_dispatch()` (routes/sessions.py `_view_filter`, final review
+// C1). Threaded into `isVisibleInView` by BOTH call sites that drive row visibility/navigation
+// (MessageTurn's row gate, RawRecordInspector's prev/next), so a resolved dispatch row -- one
+// whose SubagentChip actually renders a "view transcript →" link -- survives a filtered view
+// identically in the reader and in the modal: the SAME set, computed here once, is what keeps
+// them from ever drifting on which rows that is. Memoized on `transcripts` so re-renders of a
+// row deep in the tree don't rebuild the set from scratch every time.
+export function useDispatchToolUseIds(): ReadonlySet<string> {
+  const { transcripts } = useTranscripts()
+  return useMemo(
+    () =>
+      new Set(
+        transcripts
+          .map((t) => t.parent_tool_use_id)
+          .filter((id): id is string => id !== null),
+      ),
+    [transcripts],
+  )
 }

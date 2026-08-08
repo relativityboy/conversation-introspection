@@ -17,6 +17,7 @@ through ``run_import``'s next-run self-healing sweep.
 
 import json
 
+from introspect.db import get_engine, session_factory
 from introspect.export import export_transcript
 from introspect.ingest import capture as capture_mod
 from introspect.ingest import interpret as interpret_mod
@@ -304,6 +305,37 @@ def test_recapture_run_row_counts_this_files_anomalies_despite_rowid_reuse(db_se
     assert run is not None
     assert run.anomaly_count == 1
     assert run.status == "errors"
+
+
+def test_recapture_classifies_authorship_before_returning(db_session, tmp_path):
+    """Final review fold-in: recapture used to leave every re-inserted Message with a NULL
+    ``authorship_kind`` -- ``_capture_chunk``'s interpretation step never sets it (that's
+    ``classify_pending``'s job), and unlike ``run_import``/``reparse_all``, recapture never called
+    it -- so a recaptured session's rows sat unclassified until the next cron reparse/import
+    sweep. Assert the backfill lands DURABLY: re-open a completely FRESH engine/session bound to
+    the same DB file after ``recapture_file`` returns (the ``test_time_fold_across_fresh_engine``
+    idiom) and confirm no NULL survives there -- not just in the identity map of the session
+    that made the write.
+    """
+    root = tmp_path / "r"
+    slug = root / "-Users-x-authorship"
+    slug.mkdir(parents=True)
+    uuid = "c3c3c3c3-0000-4000-8000-00000000000c"
+    content = make_pretty(
+        make_user_line(text="run row heal", promptSource="typed", sessionId=uuid)
+    ) + make_assistant_line(text="native tail", sessionId=uuid)
+    (slug / f"{uuid}.jsonl").write_bytes(content)
+    _capture_shattered(db_session, root)
+
+    result = recapture_file(db_session, uuid)
+    assert result.reconciled is True
+
+    engine = get_engine(tmp_path / "archive.db")
+    with session_factory(engine)() as fresh:
+        kinds = [k for (k,) in fresh.query(Message.authorship_kind).all()]
+        assert kinds  # sanity: the heal really did produce Message rows
+        assert None not in kinds
+        assert "human_typed" in kinds  # the promptSource: typed user line classifies verifiably
 
 
 def test_recapture_isolates_a_failing_record_without_losing_sibling_units(

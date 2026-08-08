@@ -123,6 +123,54 @@ describe('isVisibleInView — authorship-kind parity', () => {
   })
 })
 
+// PARITY PIN: mirrors server test_api_sessions.py's
+// test_view_chat_and_harness_show_resolved_dispatch_rows_with_no_prose (final review C1) --
+// change both together. Production shape: a dispatch tool_use row carries NO prose of its own
+// (445 production rows, 0 with any text) -- `proseVisible` alone would hide the whole ROW,
+// stranding the SubagentChip outside `all`. The third `isVisibleInView` argument is the
+// resolved-dispatch tool_use id set (`useDispatchToolUseIds`, transcripts-context.ts in real
+// callers); this suite exercises the pure predicate directly with plain Sets.
+describe('isVisibleInView — resolved dispatch rows (final review C1)', () => {
+  function toolUseBlock(id: string): BlockOut {
+    return { block_index: 0, block_kind: 'tool_use', text_content: null, tool_name: 'Task', tool_use_id: id, is_error: null }
+  }
+
+  it('shows a prose-less dispatch row when its tool_use resolves to a captured subagent transcript', () => {
+    const dispatchOnly = message({
+      type: 'assistant',
+      authorship_kind: 'claude',
+      blocks: [toolUseBlock('tu-1')],
+    })
+    const resolved: ReadonlySet<string> = new Set(['tu-1'])
+    expect(isVisibleInView(dispatchOnly, 'chat', resolved)).toBe(true)
+    expect(isVisibleInView(dispatchOnly, 'chat-harness', resolved)).toBe(true)
+    expect(isVisibleInView(dispatchOnly, 'all', resolved)).toBe(true)
+  })
+
+  it('keeps hiding a prose-less tool_use row whose id resolves to nothing', () => {
+    const unresolved = message({
+      type: 'assistant',
+      authorship_kind: 'claude',
+      blocks: [toolUseBlock('tu-2')],
+    })
+    expect(isVisibleInView(unresolved, 'chat', new Set(['tu-other']))).toBe(false)
+    expect(isVisibleInView(unresolved, 'chat-harness', new Set(['tu-other']))).toBe(false)
+    // Still visible in `all` -- the dispatch-resolution rule only widens the FILTERED views.
+    expect(isVisibleInView(unresolved, 'all', new Set(['tu-other']))).toBe(true)
+  })
+
+  it('defaults to an empty dispatch set when the third argument is omitted', () => {
+    // Bare unit-test render safety (a call site with no TranscriptsProvider in reach): omitting
+    // the set must degrade to "no dispatch resolves", never throw.
+    const dispatchOnly = message({
+      type: 'assistant',
+      authorship_kind: 'claude',
+      blocks: [toolUseBlock('tu-3')],
+    })
+    expect(isVisibleInView(dispatchOnly, 'chat')).toBe(false)
+  })
+})
+
 beforeEach(() => {
   window.localStorage.clear()
 })

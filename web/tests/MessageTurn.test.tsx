@@ -296,10 +296,14 @@ describe('conversation-only block hiding (view prop)', () => {
   // RESOLVED subagent dispatch survives in every view — SubagentChip is the reader's sole doorway
   // into a subagent transcript, so filtering it out with ordinary tool noise would delete subagent
   // navigation from the default view. Only an UNRESOLVED tool_use (no matching transcript) stays
-  // hidden outside `all` (next test). A leading text block keeps the ROW itself past
-  // isVisibleInView's prose-visibility gate (lib/viewMode, untouched by this task) — a tool_use
-  // block alone never counts as "content" there, so a tool_use-only row would vanish at the ROW
-  // level regardless of the block-level behavior this test is isolating.
+  // hidden outside `all` (next test). This case pairs a leading text block with the dispatch —
+  // isVisibleInView's prose-visibility gate (lib/viewMode) already keeps the ROW past that block
+  // alone, so it isolates the BLOCK-level rendering (does a resolved tool_use always render the
+  // chip, never falling back to ToolBlock) from row-level survival. The row-level half of this fix
+  // — a dispatch with NO other content, final review C1 — gets its own test right below: without
+  // it, this test alone would pass on old (pre-fix) code too, since the leading text block was
+  // already enough to keep the row visible before `isVisibleInView` gained its dispatch-aware
+  // third argument.
   it.each(['chat', 'chat-harness'] as const)(
     'keeps the subagent chip when its tool_use resolves to a dispatch (view=%s)',
     (view) => {
@@ -312,6 +316,35 @@ describe('conversation-only block hiding (view prop)', () => {
         parent_tool_use_id: 'tu-1',
       }
       const msg = message({ blocks: [textBlock(0, 'dispatching'), toolBlock(1)] })
+      renderTurn(
+        <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
+          <MessageTurn message={msg} view={view} />
+        </TranscriptsProvider>,
+      )
+      expect(screen.getByRole('link', { name: /view transcript/ })).not.toBeNull()
+      expect(screen.getByText(/subagent/)).not.toBeNull()
+    },
+  )
+
+  // Production shape (final review C1): a REAL dispatch row's ONLY block is the tool_use itself
+  // — no accompanying text. Production: 445 dispatch rows, 0 with any prose. Before this fix,
+  // `isVisibleInView` had no way to know this tool_use resolves to a captured subagent transcript,
+  // so a content-less dispatch row vanished at the ROW level in every filtered view, taking the
+  // chip below it out with it — invisible in `chat`/`chat-harness` despite spec §6/§10.7(c)
+  // mandating it. This is the test the case above (with its leading text block) never actually
+  // exercised.
+  it.each(['chat', 'chat-harness'] as const)(
+    'keeps the subagent chip visible with NO other content — the real production shape (view=%s)',
+    (view) => {
+      const dispatch: TranscriptInfo = {
+        id: 2,
+        kind: 'subagent',
+        agent_hex_id: 'a1b2c3',
+        agent_type: 'Explore',
+        agent_description: null,
+        parent_tool_use_id: 'tu-1',
+      }
+      const msg = message({ blocks: [toolBlock(0)] })
       renderTurn(
         <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
           <MessageTurn message={msg} view={view} />

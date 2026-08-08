@@ -260,10 +260,12 @@ describe('found agentHex', () => {
 
 describe('lazy fetch contract', () => {
   it('fetches ONLY the main transcript on the session page; the subagent transcript only after drill-in', async () => {
-    // The drill-in link lives inside a tool_use block, which only renders under view='all' (a
-    // filtered view hides tool_use/tool_result blocks entirely, spec §5) -- seed the sticky view
-    // to 'all' so this test can isolate what it's actually about (fetch laziness), independent of
-    // useViewMode's own default ('chat').
+    // makeDispatchMessage()'s tool_use_id ('toolu_1') resolves to the subagent transcript's
+    // parent_tool_use_id, so this row is a RESOLVED dispatch -- it renders (chip included) in
+    // every view, `chat` included (final review C1), not just `all` as an older reading of
+    // spec §5 had it. Still seed the sticky view to 'all': this test isolates fetch laziness
+    // (not the view filter) and pins the later fetchMessages(42, {..., view: 'all'}) assertion
+    // to a known view, independent of useViewMode's own default ('chat').
     window.localStorage.setItem('introspect.view.v1', 'all')
     fetchSession.mockResolvedValue(makeSession())
     fetchMessages.mockImplementation((transcriptId: number) =>

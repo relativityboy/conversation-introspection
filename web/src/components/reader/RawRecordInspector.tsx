@@ -4,6 +4,7 @@ import { useRawRecord } from '../../api/hooks'
 import type { MessageOut } from '../../api/types'
 import { isVisibleInView, type ViewMode } from '../../lib/viewMode'
 import { MarkdownProse } from './MarkdownProse'
+import { useDispatchToolUseIds } from './transcripts-context'
 import { ViewToggle } from './ViewToggle'
 
 // Still Water styling: a depth-toned backdrop over the reader, a lifted surface panel, mono
@@ -157,6 +158,7 @@ export function RawRecordInspector({
   const [currentUuid, setCurrentUuid] = useState(initialUuid)
   const [filterView, setFilterView] = useState<ViewMode>(parentView)
   const [showRaw, setShowRaw] = useState(false)
+  const dispatchToolUseIds = useDispatchToolUseIds()
 
   const rootRef = useRef<HTMLDivElement>(null)
   const openerRef = useRef<HTMLElement | null>(null)
@@ -179,8 +181,8 @@ export function RawRecordInspector({
   const currentMessage = items.find((m) => m.record_uuid === currentUuid)
 
   const navigable = useMemo(
-    () => items.filter((m) => isVisibleInView(m, filterView)),
-    [items, filterView],
+    () => items.filter((m) => isVisibleInView(m, filterView, dispatchToolUseIds)),
+    [items, filterView, dispatchToolUseIds],
   )
   // -1 when the current record is filtered OUT of `navigable` (e.g. the filter was toggled ON
   // while sitting on a now-hidden row): both arrows disable, but the record itself still shows.

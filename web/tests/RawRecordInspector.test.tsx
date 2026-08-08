@@ -3,8 +3,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { BlockOut, MessageOut } from '../src/api/types'
+import type { BlockOut, MessageOut, TranscriptInfo } from '../src/api/types'
 import { RawRecordInspector } from '../src/components/reader/RawRecordInspector'
+import { TranscriptsProvider } from '../src/components/reader/transcripts-context'
 import type { ViewMode } from '../src/lib/viewMode'
 
 // Mock the api client module (useRawRecord imports fetchRawRecord directly) — same convention as
@@ -58,26 +59,33 @@ function Harness({
   items,
   initialUuid,
   parentView = 'all',
+  transcripts = [],
 }: {
   items: MessageOut[]
   initialUuid: string
   parentView?: ViewMode
+  /** Threaded through a real TranscriptsProvider (default: empty, matching the un-provided
+   * default context) so navigation tests can exercise the resolved-dispatch tool_use id set the
+   * same way MessageTurn does. */
+  transcripts?: TranscriptInfo[]
 }) {
   const [open, setOpen] = useState(false)
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={queryClient}>
-      <button type="button" onClick={() => setOpen(true)}>
-        opener
-      </button>
-      {open && (
-        <RawRecordInspector
-          items={items}
-          initialUuid={initialUuid}
-          parentView={parentView}
-          onClose={() => setOpen(false)}
-        />
-      )}
+      <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts }}>
+        <button type="button" onClick={() => setOpen(true)}>
+          opener
+        </button>
+        {open && (
+          <RawRecordInspector
+            items={items}
+            initialUuid={initialUuid}
+            parentView={parentView}
+            onClose={() => setOpen(false)}
+          />
+        )}
+      </TranscriptsProvider>
     </QueryClientProvider>
   )
 }
@@ -246,6 +254,52 @@ describe('navigation', () => {
     expect(chatSegment.getAttribute('aria-pressed')).toBe('false')
     await userEvent.click(screen.getByRole('button', { name: 'Previous record' }))
     await waitFor(() => expect(fetchRawRecord).toHaveBeenLastCalledWith('uuid-1'))
+  })
+
+  // Final review C1: prev/next must land on a RESOLVED dispatch row (its only block is the
+  // tool_use, production shape) instead of skipping it, and the SAME predicate MessageTurn uses
+  // to decide row visibility must drive this navigation — a real TranscriptsProvider is what
+  // supplies the resolved-dispatch tool_use id set here, exactly as it does in the reader.
+  it('prev/next lands on a resolved dispatch row (no prose) instead of skipping it', async () => {
+    function toolUseBlock(id: string): BlockOut {
+      return {
+        block_index: 0,
+        block_kind: 'tool_use',
+        text_content: null,
+        tool_name: 'Task',
+        tool_use_id: id,
+        is_error: null,
+      }
+    }
+    const dispatchOnly = msg('uuid-dispatch', 'assistant', [toolUseBlock('tu-1')], {
+      authorship_kind: 'claude',
+    })
+    const dispatchItems = [msg('uuid-0'), dispatchOnly, msg('uuid-2')]
+    const dispatchTranscript: TranscriptInfo = {
+      id: 2,
+      kind: 'subagent',
+      agent_hex_id: 'a1b2c3',
+      agent_type: 'Explore',
+      agent_description: null,
+      parent_tool_use_id: 'tu-1',
+    }
+
+    render(
+      <Harness
+        items={dispatchItems}
+        initialUuid="uuid-0"
+        parentView="chat"
+        transcripts={[dispatchTranscript]}
+      />,
+    )
+    await open()
+    await screen.findByText(/content-uuid-0/)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Next record' }))
+
+    // Landed on the resolved dispatch row, not skipped straight to uuid-2.
+    await waitFor(() => expect(fetchRawRecord).toHaveBeenLastCalledWith('uuid-dispatch'))
+    await screen.findByText(/content-uuid-dispatch/)
   })
 
   it('disables the arrow at each window edge (no edge-fetch from the modal)', async () => {

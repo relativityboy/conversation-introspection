@@ -64,14 +64,37 @@ function proseVisible(message: MessageOut): boolean {
   return message.blocks.some(blockShowsContent)
 }
 
+// Client mirror of the server's `_has_resolved_dispatch()` (routes/sessions.py, final review
+// C1): a dispatch tool_use block carries no prose of its own (production: 445 dispatch rows, 0
+// with any text), so `proseVisible` alone would hide the row and strand the SubagentChip outside
+// `all`. True when some block in the row is a `tool_use` whose id is in the caller-supplied set
+// of tool_use_ids that resolve to a CAPTURED subagent transcript (`useDispatchToolUseIds`,
+// transcripts-context.ts).
+function hasResolvedDispatch(message: MessageOut, dispatchToolUseIds: ReadonlySet<string>): boolean {
+  return message.blocks.some(
+    (b) =>
+      b.block_kind === 'tool_use' && b.tool_use_id != null && dispatchToolUseIds.has(b.tool_use_id),
+  )
+}
+
 /**
  * Client mirror of the server's `_view_filter` (`server/src/introspect/api/routes/sessions.py`,
  * using `CHAT_KINDS` from `server/src/introspect/schema/authorship.py`) — the SAME predicate, so
  * the rows the reader shows/hides and the rows the raw inspector's prev/next skip can never drift.
  * NULL-tolerant: a message not yet backfilled with an `authorship_kind` (migrate→reparse deploy
  * window) degrades to the legacy type+content rule rather than vanishing from every filtered view.
+ *
+ * `dispatchToolUseIds` (default: empty) is the resolved-dispatch tool_use id set — see
+ * `useDispatchToolUseIds` (transcripts-context.ts). A caller that can't reach the transcripts
+ * context (a bare unit-test render outside any `TranscriptsProvider`) safely omits it: every
+ * tool_use degrades to "unresolved", exactly matching the render-time behavior of `SubagentChip`
+ * under the same conditions.
  */
-export function isVisibleInView(message: MessageOut, view: ViewMode): boolean {
+export function isVisibleInView(
+  message: MessageOut,
+  view: ViewMode,
+  dispatchToolUseIds: ReadonlySet<string> = new Set(),
+): boolean {
   if (view === 'all') return true
 
   // `== null` (not `===`): tolerates `undefined` as well as `null` at this boundary — the wire
@@ -90,7 +113,7 @@ export function isVisibleInView(message: MessageOut, view: ViewMode): boolean {
         // clause is already true, so it never changes the result).
         (kind == null || kind !== 'tool_result') && LEGACY_TYPES.has(message.type)
 
-  return kindOk && proseVisible(message)
+  return kindOk && (proseVisible(message) || hasResolvedDispatch(message, dispatchToolUseIds))
 }
 
 function readStored(): ViewMode {

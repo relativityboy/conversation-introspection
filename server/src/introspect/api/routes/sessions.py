@@ -42,6 +42,7 @@ from introspect.models import (
     Transcript,
     UserTitle,
 )
+from introspect.schema.authorship import CHAT_KINDS
 from introspect.search import get_search_index
 
 router = APIRouter(prefix="/api/v1")
@@ -402,6 +403,30 @@ def _prose_visible() -> ColumnElement:
     )
 
 
+def _has_resolved_dispatch() -> ColumnElement:
+    """A row whose block set includes a ``tool_use`` that dispatched a captured subagent
+    transcript -- the join a resolved :class:`SubagentChip` renders client-side
+    (``Transcript.parent_tool_use_id == ContentBlock.tool_use_id``).
+
+    Layered onto ``_prose_visible()`` by `_view_filter` for `chat`/`chat-harness` (final review
+    C1): an assistant transcript record carries ONE content block each, so a dispatch row's
+    block IS its tool_use -- no text alongside it. ``_prose_visible()`` alone hides such a row
+    (a dispatch tool_use never counts as "content"), which strands the chip -- the reader's sole
+    doorway into that subagent transcript -- outside `all` even though spec §6/§10.7(c) mandate
+    it visible in every view. Production: 445 dispatch rows, 0 with any prose. SQL equality with
+    NULL is never true, so a row with no ``tool_use`` block, or a ``tool_use`` no captured
+    transcript claims, contributes nothing here -- no explicit IS NOT NULL guard needed."""
+    return exists(
+        select(1)
+        .select_from(ContentBlock)
+        .join(Transcript, Transcript.parent_tool_use_id == ContentBlock.tool_use_id)
+        .where(
+            ContentBlock.message_id == Message.id,
+            ContentBlock.block_kind == "tool_use",
+        )
+    )
+
+
 def _view_filter(view: str) -> ColumnElement:
     """Spec §5. NULL-tolerant: rows not yet backfilled (migrate→reparse window) degrade
     to the legacy type+content rule, never to an empty reader."""
@@ -411,15 +436,18 @@ def _view_filter(view: str) -> ColumnElement:
         Message.authorship_kind.is_(None), Message.type.in_(_LEGACY_TYPES)
     )
     if view == "chat":
-        from introspect.schema.authorship import CHAT_KINDS
-
         kind_ok = or_(Message.authorship_kind.in_(sorted(CHAT_KINDS)), legacy_fallback)
     else:  # chat-harness
-        kind_ok = or_(
-            Message.authorship_kind.is_(None), Message.authorship_kind != "tool_result"
+        # NB: no `or_(_, legacy_fallback)` wrapper here, unlike `chat` above -- legacy_fallback
+        # (kind IS NULL AND type qualifies) is already SUBSUMED by this branch's own first
+        # disjunct (kind IS NULL), so OR-ing it in would be a no-op that only reads as if it did
+        # something (final review minor, task 4 ledger). `chat`'s CHAT_KINDS membership test has
+        # no such NULL disjunct, so its legacy_fallback term is load-bearing there.
+        kind_ok = and_(
+            or_(Message.authorship_kind.is_(None), Message.authorship_kind != "tool_result"),
+            Message.type.in_(_LEGACY_TYPES),
         )
-        kind_ok = and_(or_(kind_ok, legacy_fallback), Message.type.in_(_LEGACY_TYPES))
-    return and_(kind_ok, _prose_visible())
+    return and_(kind_ok, or_(_prose_visible(), _has_resolved_dispatch()))
 
 
 @router.get("/transcripts/{transcript_id}/messages", response_model=MessageList)
@@ -445,9 +473,10 @@ def list_messages(
     # Built ONCE, applied at all four query sites below (total, around-target resolution,
     # around ordinal count, page fetch) -- missing any one desyncs totals/offsets/centering
     # (see module docstring + task-p4-5-brief.md). `view="all"` yields `True` (no-op filter),
-    # so the default path's generated SQL/results are unchanged. `_view_filter()`'s
-    # EXISTS-over-blocks clause (via `_prose_visible()`) rides along automatically since the
-    # filter is still built once here and reused at all four sites (authorship spec §5).
+    # so the default path's generated SQL/results are unchanged. `_view_filter()`'s two
+    # EXISTS-over-blocks clauses (`_prose_visible()` and `_has_resolved_dispatch()`) ride along
+    # automatically since the filter is still built once here and reused at all four sites
+    # (authorship spec §5; resolved-dispatch rows, final review C1).
     type_filter: ColumnElement = _view_filter(view)
 
     total = db.scalar(

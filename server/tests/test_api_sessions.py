@@ -9,6 +9,7 @@ their own request-scoped sessions via ``get_db`` and see the committed data (WAL
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1064,3 +1065,128 @@ def test_view_rejects_unknown_value(client: TestClient, seeded_transcript: int) 
         client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=bogus").status_code
         == 422
     )
+
+
+# --- Transcript messages -- resolved dispatch rows visible despite no prose (final review C1) --
+#
+# Production shape: an assistant transcript record's dispatch of a subagent carries ONE content
+# block -- the ``tool_use`` itself, no accompanying text (445 production rows, 0 with any prose).
+# `_prose_visible()` alone hides such a ROW in `chat`/`chat-harness`, stranding the SubagentChip
+# -- the reader's sole doorway into that subagent transcript -- outside `all`, contradicting spec
+# §6/§10.7(c). `_has_resolved_dispatch()` admits the row when its `tool_use` block resolves to a
+# CAPTURED child transcript (``Transcript.parent_tool_use_id == tool_use_id``); an ordinary
+# tool_use-only row that resolves to NOTHING must keep trimming exactly as before this fix.
+
+_VIEW_DISPATCH_SESSION_UUID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+_VIEW_DISPATCH_RESOLVED_TOOL_USE_ID = "toolu_viewdispatch_resolved"
+_VIEW_DISPATCH_UNRESOLVED_TOOL_USE_ID = "toolu_viewdispatch_unresolved"
+_VIEW_DISPATCH_AGENT_HEX_ID = "dead1234"  # valid hex only -- discovery's agent-<hex>.jsonl regex
+
+
+def _build_view_dispatch_tree(db: Session, tmp_path: Path) -> tuple[int, str, str]:
+    """Capture a main transcript with two content-less dispatch-shaped assistant rows -- one
+    ``tool_use`` resolves to a REALLY captured subagent transcript (own .jsonl + meta.json,
+    same join `test_subagent_transcript_info_join_key_matches_dispatching_block` exercises),
+    the other's ``tool_use_id`` matches no transcript at all -- then classifies authorship so
+    both carry the real (non-NULL) `claude` kind an assistant record always gets. Returns
+    ``(transcript_id, resolved_dispatch_uuid, unresolved_dispatch_uuid)``.
+    """
+    root = tmp_path / "view_dispatch_tree"
+    proj = root / "-Users-x-viewdispatch"
+    proj.mkdir(parents=True)
+    # `text=""` (empty text block) + `with_tool_use=True` is this file's established idiom for a
+    # "no visible prose, tool stuff only" row (see `_trim_tool_only_line` above) -- an empty text
+    # block is never counted as content by `_prose_visible()`, so the row's only VISIBLE content
+    # is the tool_use, exactly like the production shape this test targets.
+    lines = [
+        make_assistant_line(
+            text="",
+            with_tool_use=True,
+            tool_use_id=_VIEW_DISPATCH_RESOLVED_TOOL_USE_ID,
+            uuid="u-resolved-dispatch",
+            sessionId=_VIEW_DISPATCH_SESSION_UUID,
+        ),
+        make_assistant_line(
+            text="",
+            with_tool_use=True,
+            tool_use_id=_VIEW_DISPATCH_UNRESOLVED_TOOL_USE_ID,
+            uuid="u-unresolved-dispatch",
+            sessionId=_VIEW_DISPATCH_SESSION_UUID,
+        ),
+    ]
+    (proj / f"{_VIEW_DISPATCH_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
+
+    subagents_dir = proj / _VIEW_DISPATCH_SESSION_UUID / "subagents"
+    subagents_dir.mkdir(parents=True)
+    subagent_lines = [
+        make_user_line(
+            text="synthetic subagent prompt", sessionId=_VIEW_DISPATCH_SESSION_UUID
+        ),
+        make_assistant_line(
+            text="synthetic subagent reply", sessionId=_VIEW_DISPATCH_SESSION_UUID
+        ),
+    ]
+    (subagents_dir / f"agent-{_VIEW_DISPATCH_AGENT_HEX_ID}.jsonl").write_bytes(
+        make_session_file(subagent_lines)
+    )
+    (subagents_dir / f"agent-{_VIEW_DISPATCH_AGENT_HEX_ID}.meta.json").write_text(
+        json.dumps(
+            {
+                "agentType": "Explore",
+                "description": "Synthetic dispatch-resolution fixture agent.",
+                "toolUseId": _VIEW_DISPATCH_RESOLVED_TOOL_USE_ID,
+            }
+        )
+    )
+
+    _capture(db, root)
+    classify_pending(db)
+    db.commit()
+
+    tid = _main_transcript_id(db, _VIEW_DISPATCH_SESSION_UUID)
+    return tid, "u-resolved-dispatch", "u-unresolved-dispatch"
+
+
+def test_view_chat_and_harness_show_resolved_dispatch_rows_with_no_prose(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, resolved_uuid, unresolved_uuid = _build_view_dispatch_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    # Sanity: both rows really are classified 'claude' (assistant records always are) and carry
+    # NO prose block -- if either premise breaks, this test stops proving what it claims to.
+    kinds = dict(
+        db_session.query(Message.record_uuid, Message.authorship_kind)
+        .filter(Message.transcript_id == tid)
+        .all()
+    )
+    assert kinds[resolved_uuid] == "claude"
+    assert kinds[unresolved_uuid] == "claude"
+
+    for view in ("chat", "chat-harness"):
+        uuids = _message_uuids(
+            client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": view})
+        )
+        assert resolved_uuid in uuids, f"resolved dispatch row hidden under view={view}"
+        assert unresolved_uuid not in uuids, f"unresolved tool_use row wrongly shown under view={view}"
+
+    all_uuids = _message_uuids(
+        client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "all"})
+    )
+    assert resolved_uuid in all_uuids and unresolved_uuid in all_uuids
+
+
+def test_view_chat_around_resolved_dispatch_row_succeeds(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """The 404-avoidance half of the same fix: deep-linking `around=` a resolved dispatch row
+    under a filtered view must resolve it as a real ordinal, not 404 as if it were trimmed."""
+    tid, resolved_uuid, _unresolved_uuid = _build_view_dispatch_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    r = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"view": "chat", "around": resolved_uuid},
+    )
+    assert r.status_code == 200
+    assert resolved_uuid in _message_uuids(r)

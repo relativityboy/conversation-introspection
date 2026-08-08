@@ -119,8 +119,10 @@ def recapture_file(
     -- same "which file is this session" question; raises ``SessionNotFoundError`` /
     ``TranscriptNotFoundError`` identically when the session/transcript is unknown), gates the
     re-split against the stored bytes (see module docstring), and -- gate passing, ``dry_run``
-    False -- swaps the file's raw records for correctly reassembled ones and re-interprets
-    them, recording an :class:`~introspect.models.ImportRun` row (``trigger='recapture'``).
+    False -- swaps the file's raw records for correctly reassembled ones, re-interprets them,
+    backfills their authorship classification (:func:`introspect.ingest.interpret.classify_pending`,
+    the same post-pass ``run_import``/``reparse_all`` run), and records an
+    :class:`~introspect.models.ImportRun` row (``trigger='recapture'``).
     """
     source_file = _resolve_source_file(db, session_uuid, kind, agent_hex_id)
     path = Path(source_file.path)
@@ -238,6 +240,11 @@ def recapture_file(
             status=status,
         )
     )
+    # Authorship post-pass (mirrors reparse_all/run_import): the records re-inserted above all
+    # landed with a NULL authorship_kind (apply() never sets it) -- backfill now, in the SAME
+    # transaction this function's own commit finalizes, so a recaptured session's rows are
+    # classified immediately rather than waiting for the next cron reparse/import sweep.
+    interpret.classify_pending(db)
     db.commit()
 
     return RecaptureStats(
