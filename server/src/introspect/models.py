@@ -149,6 +149,9 @@ class ParseAnomaly(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_messages_transcript_id", "transcript_id", "id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     raw_record_id: Mapped[int] = mapped_column(ForeignKey("raw_records.id"), unique=True)
