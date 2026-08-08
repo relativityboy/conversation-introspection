@@ -68,8 +68,8 @@ Claude Code's transcript format drifts: new CLI versions add or rename fields. T
 tolerant (`parse_line` never raises; forward drift is an `info` anomaly, an unknown record type a
 `warn`, broken JSON an `error`), so drift never loses data — it surfaces as anomalies you then teach
 the schema about. The running generation is `SCHEMA_VERSION` in
-`server/src/introspect/schema/v1.py` (currently `introspect-schema/4`). The precedent for extending
-it — versions /2, /3, and /4 — is right there in the same file's `DIFF_NOTES`. The loop:
+`server/src/introspect/schema/v1.py` (currently `introspect-schema/7`). The precedent for extending
+it — every version bump so far — is right there in the same file's `DIFF_NOTES`. The loop:
 
 1. **Observe the drift.** After a CLI upgrade, `introspect status` shows a jump in `info` (or
    `warn`/`error`) anomalies. The anomaly `kind`s and `detail` (field *names*, not content) tell you
@@ -77,7 +77,7 @@ it — versions /2, /3, and /4 — is right there in the same file's `DIFF_NOTES
 2. **Declare the fields** at their verified locations on the relevant Pydantic record models in
    `schema/v1.py`. Prefer opaque/`Any` for payloads you don't need to interpret yet — the point is to
    stop them registering as drift, not to model everything. (Version /3 shows the other kind of
-   change: interpretation-only, declaring no new fields.)
+   change: interpretation-only, declaring no new fields — /7 is the same shape, see below.)
 3. **Bump `SCHEMA_VERSION`** to the next `introspect-schema/N` and add its `DIFF_NOTES[N]` entry —
    one honest paragraph describing what changed and, ideally, the before/after anomaly floor.
 4. **Add a migration** under `server/alembic/versions/` only if you changed a *storage* table. Pure
@@ -94,6 +94,21 @@ it — versions /2, /3, and /4 — is right there in the same file's `DIFF_NOTES
 This is exactly how the ~17,500-anomaly production drift event was resolved: the fields were
 declared, `reparse` rebuilt the affected records from bytes already on disk, and the floor collapsed
 to a handful.
+
+`introspect-schema/7` is the other shape of bump, following the /3 precedent: interpretation-only, no
+new declared fields. It points at the authorship classifier —
+`server/src/introspect/schema/authorship.py`, a pure, DB-free function living beside the schema
+registry (the same binding tenet as `v1.py`'s module docstring) that assigns every `messages` row an
+`authorship_kind` / `authorship_basis` / `authorship_detail`. The classifier itself never touches the
+database; a separate ingest post-pass, `classify_pending` (`ingest/interpret.py`), does that — it
+classifies every `messages` row with a NULL `authorship_kind` and is called after both `import` and
+`reparse` finish interpreting. An incremental import only ever sees its own new rows; `reparse` resets
+every row to NULL before rebuilding, so — same as the fields loop above — a classifier rule change
+needs a `reparse` to reach the whole archive, not just new imports. `reparse` is also the one path that
+prints the resulting census — a count by kind — and flags `unclassified`: the classifier is total and
+never raises, so any record shape it doesn't recognize lands on that kind instead of silently
+mislabeling authorship. `unclassified` is the drift alarm for this generation, the same role `info`/
+`warn` anomaly counts play for schema drift; watch it the same way after a CLI upgrade.
 
 ## The recapture command (healing hand-edited transcripts)
 

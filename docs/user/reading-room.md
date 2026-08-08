@@ -98,7 +98,7 @@ archive title.
 
 ## Session header
 
-The reader's header holds the conversation title, a message count, and an **`actions ▾`** dropdown menu. The conversation-only toggle sits beside the menu, outside it.
+The reader's header holds the conversation title, a message count, and an **`actions ▾`** dropdown menu. The three-way **view** control sits beside the menu, outside it — see "View modes" below.
 
 The **actions menu** contains three controls, each with status feedback:
 
@@ -106,22 +106,52 @@ The **actions menu** contains three controls, each with status feedback:
 - **`↓ .jsonl`** — Download the byte-identical transcript as a `.jsonl` file (works with right-click and save-as).
 - **Archive** — Removes the session from all read paths (sidebar, search, deep links) and drops you back at the home view. There's no confirmation dialog and no separate "archived" list; archived sessions are only recoverable via CLI with `introspect unarchive <uuid>` (you need to know the uuid — it's never listed anywhere).
 
-## Conversation-only mode
+## View modes
 
-The reader's header has a **"conversation only"** toggle. On, it strips the transcript down to the
-back-and-forth and hides the machinery:
+The reader's header has a three-way **view** control — **`chat`** · **`chat+harness`** · **`all`** —
+that decides how much of the transcript you see, from pure conversation up to everything the archive
+actually stored:
 
-- **Kept:** what you typed, what you pasted (queued/pasted prompts show up labeled "SYSTEM (YOU)"),
-  and Claude's replies (its prose and thinking).
-- **Hidden:** `system` records, and the tool-call / tool-result blocks inside messages (so subagent
-  chips vanish along with the tool call that spawned them).
+- **`chat`** (the default): the back-and-forth itself — what you typed or queued, Claude's replies
+  (its prose and thinking), and the moments that belong to the story even though the words are
+  harness-delivered: interruption markers and queued/pasted prompts. It also keeps the doorway into
+  subagent work — a dispatched subagent's opening prompt and any mid-run dispatcher chatter render as
+  Claude-voiced turns, and the chip linking into that subagent's own transcript stays visible even
+  though ordinary tool calls don't. Everything else — tool calls, tool results, skill/system
+  injections, task notifications, command furniture — is hidden.
+- **`chat+harness`**: adds all of that back, honestly labeled — skill expansions, task notifications,
+  command output, reminders, every other piece of harness prose the archive holds — except tool
+  **results**, which stay hidden.
+- **`all`**: everything, with nothing hidden.
 
-In conversation-only mode, entire message rows **disappear** if all their blocks render nothing there — rows containing only tool calls, thinking-only content, or empty text. Full mode always shows every row and every block, including the machinery and the thinking marker (◌).
+In `chat` and `chat+harness`, a message row still **disappears** entirely if every one of its blocks
+renders nothing there — rows containing only tool calls, thinking-only content, or empty text. `all`
+always shows every row and every block, including the thinking marker (◌).
 
-If a shared deep link targets a row that's been trimmed, the "view from the beginning" recovery also offers a "show all message types" option to disable the filter and bring the trimmed row back into view.
+If a shared deep link targets a row that's been filtered out, the "view from the beginning" recovery
+also offers a "show all message types" option, which switches to `all` — the only view guaranteed to
+contain every record — and brings the trimmed row back into view.
 
-The toggle is **sticky across sessions** — it's remembered in your browser's local storage, not in
-the URL — so once you turn it on it stays on until you turn it off.
+The view you pick is **sticky across sessions** — it's remembered in your browser's local storage, not
+in the URL — so it stays put until you change it.
+
+## Message labels
+
+Every message's eyebrow says, as precisely as the data allows, who actually produced it — not just
+which role the transcript happened to file it under. **YOU** means exactly that and nothing else: it
+never labels something the harness generated on your behalf.
+
+| Label | Meaning |
+|---|---|
+| **YOU** (dawn) | Something you actually typed or queued. A pasted/queued prompt rescued from an attachment record shows as **SYSTEM (YOU)** instead — materially delivered by the harness, but source-accurate to your own words — and keeps the same dawn accent. |
+| **CLAUDE** (dragonfly) | Claude's own reply. |
+| **CLAUDE (DISPATCH)** | Claude briefing a subagent. |
+| **CLAUDE (COORDINATOR)** | The dispatching orchestrator's own chatter, mid-run, on a subagent transcript. |
+| **SYSTEM (…)** (mist) | Everything else. The qualifier names the actual source: a skill injection (`SYSTEM (SKILL: brainstorming)`), a tool result, a tool-injected payload, a task notification, an automation/SDK prompt, a slash-command expansion or its output, a reminder or caveat, an interruption marker, a compaction summary. **SYSTEM (UNCLASSIFIED)** is the honest floor — it means the archive holds a record shape nothing recognizes yet, rather than a guess. |
+
+Click the speaker name to open the raw-record inspector (below) — it shows the full classification for
+that record: the kind, whether it was decided by an explicit harness field (`verified`) or by the
+shape of the content (`heuristic`), and the specific signal that decided it.
 
 ## Sharing a moment
 
@@ -135,6 +165,10 @@ Click the **speaker name** in the message eyebrow to open the exact stored trans
 
 - **Pretty-printed** JSON by default (with syntax colorizing), plus a **"raw bytes"** toggle that shows the line verbatim.
   (If a line isn't valid JSON, it falls back to raw under a "Not valid JSON" notice.)
+- An **authorship line** — `authorship: skill_injection (verified — sourceToolUseID → Skill —
+  superpowers:brainstorming)` — states the record's classification kind, its basis (`verified` /
+  `heuristic`), and the deciding signal, unabridged. This is where the full detail lives even when
+  the eyebrow's label is condensed (a stripped skill/plugin prefix, a truncated qualifier, and so on).
 - **◀ / ▶** buttons — or the **Left / Right arrow keys** — step through neighbouring records without
   leaving the inspector.
 - **Escape** closes it.
@@ -201,7 +235,7 @@ The app never pretends. Unknown or missing things get honest, recoverable states
   back to the conversation.
 - A **deep link to a message that isn't in the transcript** → "message not found in this
   conversation," with a "view from the beginning" recovery (and a "show all message types" option if
-  conversation-only mode was hiding it).
+  the active view mode was hiding it — see "View modes" above).
 - A **raw record that's gone** → "Couldn't load this record."
 - **Empty or offline** lists render calm states rather than errors: "archive offline," "Archive is
   empty — run `introspect import`," "No conversations match," "No matches for …".
@@ -219,5 +253,5 @@ The bottom of the reading room shows archive stats (last import time, session/re
 <!-- SCREENSHOTS: this page is text-only for V1. If screenshots are added later they must be
      generated from the SYNTHETIC fixture archive only (build a scratch DB from server/tests
      fixtures, serve it, capture) — never from a real archive. Good spots: the sidebar with a
-     content-only snippet, the project chip bar, an open raw-record inspector, and a
-     conversation-only-mode reader. -->
+     content-only snippet, the project chip bar, an open raw-record inspector, and a reader in
+     `chat` view. -->
