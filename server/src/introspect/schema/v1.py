@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag
 # NOTE(claude): the module name (v1) is code organization; this constant tracks the
 # registry GENERATION stamped on parsed rows. They diverge by design — bumping the
 # generation does not require forking a new module.
-SCHEMA_VERSION = "introspect-schema/6"
+SCHEMA_VERSION = "introspect-schema/7"
 
 # Per-generation, human-readable old-vs-new summaries. This is the runtime source of truth
 # the ``schema_versions`` provenance table self-populates from (see
@@ -91,6 +91,12 @@ DIFF_NOTES: dict[str, str] = {
         "of these four names are left in place (harmless, optional) — this bump adds their "
         "verified locations rather than removing the earlier, wrong ones. Drives the "
         "unknown_field floor to 0."
+    ),
+    "introspect-schema/7": (
+        "Interpretation change only, no new declared fields (the /3 precedent): the "
+        "authorship classifier (schema/authorship.py, spec 2026-08-07) populates "
+        "authorship_kind/basis/detail on messages via the classify_pending ingest "
+        "post-pass. 16-rule first-match tree; unclassified is the drift alarm."
     ),
 }
 

@@ -122,6 +122,16 @@ def reparse_all(db: Session) -> ReparseStats:
             records_reparsed += 1
         db.commit()
 
+    # Authorship post-pass (spec 2026-08-07 §4): every Message row was just rebuilt with a
+    # NULL authorship_kind (apply() never sets it), so this re-derives all of them. Reparse
+    # is also the one caller that reports the census -- it is the deliberate full-archive
+    # backfill/regeneration path, unlike the continuously-running cron import.
+    census = interpret.classify_pending(db)
+    for kind, count in sorted(census.items(), key=lambda kv: -kv[1]):
+        print(f"  authorship {kind}: {count}")
+    if census.get("unclassified"):
+        print(f"  !! unclassified: {census['unclassified']} — drift alarm (spec §7)")
+
     anomalies_after = db.query(ParseAnomaly).count()
     return ReparseStats(records_reparsed, anomalies_before, anomalies_after)
 

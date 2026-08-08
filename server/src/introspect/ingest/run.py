@@ -220,6 +220,10 @@ def _run_locked(db, root: Path, trigger: str, run_id: int | None = None) -> Impo
 
         gone_flipped = detect_gone(db, discovered)
         records_swept = _sweep_unparsed(db)
+        # Authorship post-pass (spec 2026-08-07 §4): classifies every message row this run
+        # (or an earlier crashed run) left with a NULL authorship_kind. Idempotent and driven
+        # purely by that NULL, so it costs nothing on a run that added no new messages.
+        interpret.classify_pending(db)
 
         this_run_anomalies = db.query(ParseAnomaly).filter(
             ParseAnomaly.id > baseline_anomaly_id

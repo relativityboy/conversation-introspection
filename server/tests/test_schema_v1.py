@@ -72,7 +72,7 @@ def test_thin_meta_records_parse():
 
 
 def test_schema_version_constant():
-    assert SCHEMA_VERSION == "introspect-schema/6"
+    assert SCHEMA_VERSION == "introspect-schema/7"
 
 
 def test_anomaly_severity_is_warn_for_unknown_type():

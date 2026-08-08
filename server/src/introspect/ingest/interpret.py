@@ -24,8 +24,10 @@ Signature is pinned by the task brief; keep it exactly ``apply(db, pr, raw)``.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from introspect.models import (
@@ -39,7 +41,8 @@ from introspect.models import (
     TokenUsage,
     Transcript,
 )
-from introspect.schema import SCHEMA_VERSION, ParseResult
+from introspect.schema import SCHEMA_VERSION, ParseResult, parse_line
+from introspect.schema.authorship import AuthorshipContext, ToolUseRef, classify
 from introspect.search import get_search_index
 
 # Records that carry a conversational envelope and become a Message + ContentBlocks.
@@ -296,3 +299,78 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+# --- Authorship post-pass (spec 2026-08-07 §4) -------------------------------------------
+#
+# classify_pending runs AFTER interpretation (apply() above never touches authorship_kind),
+# driven purely by `authorship_kind IS NULL` -- an incremental import only sees its own new
+# rows, and reparse (which wipes every Message and rebuilds from raw_records) sees all of
+# them again. The classifier itself (introspect.schema.authorship) is DB-free and pure; the
+# DB access -- building the per-transcript tool_use map and re-parsing raw_line -- lives here.
+
+
+def _transcript_context(db: Session, transcript_id: int) -> AuthorshipContext:
+    """Whole-transcript tool_use map, built in memory BEFORE classifying any record --
+    this is what makes rules 2-4 order-independent (a production tool_result can precede
+    its tool_use in file order) and O(1) per record instead of a full content_blocks scan.
+    """
+    rows = db.execute(
+        select(ContentBlock.tool_use_id, ContentBlock.tool_name, ContentBlock.payload)
+        .join(Message, ContentBlock.message_id == Message.id)
+        .where(
+            Message.transcript_id == transcript_id,
+            ContentBlock.block_kind == "tool_use",
+            ContentBlock.tool_use_id.is_not(None),
+        )
+    ).all()
+    tool_uses = {}
+    for tool_use_id, tool_name, payload in rows:
+        skill = None
+        if tool_name == "Skill" and isinstance(payload, dict):
+            value = payload.get("skill")
+            skill = value if isinstance(value, str) else None
+        tool_uses[tool_use_id] = ToolUseRef(name=tool_name or "", skill=skill)
+    kind = db.scalar(select(Transcript.kind).where(Transcript.id == transcript_id))
+    return AuthorshipContext(transcript_kind=kind or "main", tool_uses=tool_uses)
+
+
+def classify_pending(db: Session) -> Counter:
+    """Classify every ``messages`` row with a NULL ``authorship_kind``. Idempotent post-pass
+    called by both import and reparse after interpretation completes; returns the census by
+    kind. Re-parses each pending row's ``raw_line`` (interpretation itself never keeps the
+    parsed record around) and feeds it to the pure, DB-free classifier alongside the
+    transcript's whole tool_use map.
+    """
+    census: Counter = Counter()
+    pending_transcripts = db.scalars(
+        select(Message.transcript_id).where(Message.authorship_kind.is_(None)).distinct()
+    ).all()
+    for transcript_id in pending_transcripts:
+        ctx = _transcript_context(db, transcript_id)
+        rows = db.execute(
+            select(Message.id, RawRecord.raw_line)
+            .join(RawRecord, Message.raw_record_id == RawRecord.id)
+            .where(
+                Message.transcript_id == transcript_id,
+                Message.authorship_kind.is_(None),
+            )
+        ).all()
+        for message_id, raw_line in rows:
+            text = (
+                raw_line.decode("utf-8", errors="replace")
+                if isinstance(raw_line, bytes)
+                else raw_line
+            )
+            authorship = classify(parse_line(text).record, ctx)
+            db.execute(
+                update(Message)
+                .where(Message.id == message_id)
+                .values(
+                    authorship_kind=authorship.kind,
+                    authorship_basis=authorship.basis,
+                    authorship_detail=authorship.detail,
+                )
+            )
+            census[authorship.kind] += 1
+    return census
