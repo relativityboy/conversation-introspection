@@ -20,6 +20,10 @@ vi.mock('../src/api/client', async () => {
   return { ...actual, fetchStatus, triggerImport, fetchImportRun }
 })
 
+// Version chip tests pin the UI's own version, not the build-time baked value (which is
+// 'unknown' outside a real vite build) — see web/src/version.ts's typeof guard.
+vi.mock('../src/version', () => ({ UI_VERSION: '1.2.0' }))
+
 beforeEach(() => {
   fetchStatus.mockReset()
   triggerImport.mockReset()
@@ -45,6 +49,7 @@ function makeImportRun(over: Partial<ImportRun> = {}): ImportRun {
 
 function makeStatus(over: Partial<StatusOut> = {}): StatusOut {
   return {
+    version: '1.2.0',
     sessions: 5,
     files: 143,
     records: 14312,
@@ -93,6 +98,31 @@ describe('renders status', () => {
 
     const anomalies = await screen.findByText('4 anomalies')
     expect(anomalies.style.color).toBe('var(--ember)')
+  })
+})
+
+// --- version chip -----------------------------------------------------------------------
+// UI_VERSION is mocked to '1.2.0' above; these three pin the agree/differ/unknown display
+// rules from spec §3.
+
+describe('version chip', () => {
+  it('shows a single version chip when ui and server agree', async () => {
+    fetchStatus.mockResolvedValue(makeStatus({ version: '1.2.0' }))
+    setup()
+    expect(await screen.findByText('v1.2.0')).toBeDefined()
+  })
+
+  it('shows both versions when they differ', async () => {
+    fetchStatus.mockResolvedValue(makeStatus({ version: '1.3.0' }))
+    setup()
+    expect(await screen.findByText('ui v1.2.0 · server v1.3.0')).toBeDefined()
+  })
+
+  it('omits the chip when the server version is unknown', async () => {
+    fetchStatus.mockResolvedValue(makeStatus({ version: 'unknown' }))
+    setup()
+    await screen.findByText(/last import/) // bar rendered
+    expect(screen.queryByText(/^v|ui v/)).toBeNull()
   })
 })
 

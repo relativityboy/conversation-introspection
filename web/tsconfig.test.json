@@ -25,5 +25,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["tests"]
+  // src/globals.d.ts is explicit here (not just "tests") because it's a pure ambient
+  // declaration file — nothing imports it, so it's only visible to a program whose "include"
+  // glob matches it directly. Without this, `tsc -b`'s test project type-checks src/version.ts
+  // (pulled in transitively via test imports) but can't see __APP_VERSION__.
+  "include": ["tests", "src/globals.d.ts"]
 }

@@ -162,6 +162,7 @@ export interface AnomalyBreakdown {
 }
 
 export interface StatusOut {
+  version: string
   sessions: number
   files: number
   records: number

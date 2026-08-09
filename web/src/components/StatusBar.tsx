@@ -4,6 +4,7 @@ import { ApiError, fetchImportRun, triggerImport } from '../api/client'
 import { useStatus } from '../api/hooks'
 import { ActionButton } from './ActionButton'
 import type { StatusOut } from '../api/types'
+import { UI_VERSION } from '../version'
 
 const BAR_STYLE: CSSProperties = {
   display: 'grid',
@@ -43,6 +44,14 @@ function relativeTime(iso: string | null): string {
 // conventions, not a missing shared util — see the matching NOTE there.
 function formatMb(bytes: number): string {
   return (bytes / 1_000_000).toFixed(1)
+}
+
+// Agree -> single 'vX.Y.Z' chip; differ -> both, labeled; either side unknown -> no chip (a
+// stale/non-vite build or a version not yet in the DB shouldn't render a misleading compare).
+function versionText(serverVersion: string): string | null {
+  if (serverVersion === 'unknown' || UI_VERSION === 'unknown') return null
+  if (serverVersion === UI_VERSION) return `v${UI_VERSION}`
+  return `ui v${UI_VERSION} · server v${serverVersion}`
 }
 
 function leftText(status: StatusOut): string {
@@ -119,6 +128,7 @@ export function StatusBar() {
       <span style={{ justifySelf: 'end', display: 'flex', gap: 18 }}>
         {status && (
           <>
+            {versionText(status.version) && <span>{versionText(status.version)}</span>}
             <span
               style={{
                 color:
