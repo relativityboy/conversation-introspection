@@ -4,6 +4,10 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.2.2 — 2026-08-09
+- Fully fixed the fresh-install failure on stricter npm versions: the lockfile now carries the required peer packages older npm validates (1.2.1's fix was one half of a pair), and a new test lints the lockfile so an incomplete one can't ship again.
+- Updated the `undici` dependency, resolving six npm-audit security findings (1 moderate, 5 high).
+
 ## 1.2.1 — 2026-08-09
 - Fixed a fresh-install/update failure (`npm ci` reporting "Missing @emnapi/... from lock file") on machines that need the build toolchain's WASM fallback — the lockfile now includes those optional packages.
 

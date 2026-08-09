@@ -52,6 +52,11 @@ entry exists, is honest, and lands with the work.
   exception is `test_repo_changelog_conforms`, which exists to lint the real
   `CHANGELOG.md`.
 - Python runs via `uv run` from `server/`; web via npm from `web/`.
+- `web/package-lock.json` is authored with `npx -y npm@10 install --package-lock-only`
+  (and `npx -y npm@10 audit fix`) — never a bare `npm install` on newer npm: npm 11+
+  prunes required-peer entries of optional platform packages that older npm records
+  and validates, which breaks `npm ci` on those machines.
+  `server/tests/test_web_lockfile.py` lints the committed lock's resolution closure.
 - Stage with explicit paths and commit with explicit pathspecs — never `git add -A`
   and never a bare `git commit` over an index you didn't fully build: the index may
   hold someone else's staged work.
