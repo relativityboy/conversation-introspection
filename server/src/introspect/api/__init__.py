@@ -126,6 +126,14 @@ def create_app(
             @app.middleware("http")
             async def _serve_ui_fallback(request: Request, call_next) -> Response:
                 response = await call_next(request)
+                # NOTE(claude): vite content-hashes /assets filenames, so they are safe to
+                # cache forever; index.html is NOT hashed and must revalidate every load
+                # (no-cache != no-store: ETag/Last-Modified still make the common case a 304).
+                # Without this split a stale browser cache can hide a fresh build -- the
+                # 2026-08-08 work-machine bug's second layer.
+                if request.url.path.startswith("/assets/") and response.status_code == 200:
+                    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                    return response
                 if response.status_code != 404 or request.method not in ("GET", "HEAD"):
                     return response
                 path = request.url.path.lstrip("/")
@@ -138,8 +146,10 @@ def create_app(
                     except ValueError:
                         candidate = None
                     if candidate is not None and candidate.is_file():
-                        return FileResponse(candidate)
-                return FileResponse(resolved_ui_dist / "index.html")
+                        return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
+                return FileResponse(
+                    resolved_ui_dist / "index.html", headers={"Cache-Control": "no-cache"}
+                )
 
     app.state.ui_dist = resolved_ui_dist
     return app

@@ -239,3 +239,20 @@ def test_serve_logs_api_only_when_no_dist_found(
 
     assert main(["serve", "--db", str(tmp_path / "a.db")]) == 0
     assert "UI: not built (API only)" in capsys.readouterr().out
+
+
+# --- Cache policy (Task 7) -----------------------------------------------------------------------
+
+
+def test_index_and_spa_fallback_are_no_cache(client_with_ui: TestClient) -> None:
+    # index.html must not be cached forever since it's not content-hashed
+    assert client_with_ui.get("/").headers["cache-control"] == "no-cache"
+    # SPA fallback also gets no-cache so a stale cache doesn't hide a fresh build
+    assert client_with_ui.get("/some/spa/route").headers["cache-control"] == "no-cache"
+
+
+def test_hashed_assets_are_immutable(client_with_ui: TestClient) -> None:
+    # Vite content-hashes asset filenames, so they are safe to cache forever
+    resp = client_with_ui.get("/assets/app.js")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
