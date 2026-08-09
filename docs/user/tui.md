@@ -37,11 +37,13 @@ and caveats. The commands, in the order `/help` lists them:
 | `/import` | Ingest new/changed transcripts. Runs the *same* import as the CLI/cron entry point (in-process, under the shared advisory lock), on a background worker so the UI stays live. If a cron import already holds the lock it reports `already_running` and does nothing — a no-op, not a failure. |
 | `/reparse` | Rebuild interpretation from the stored raw bytes (no source files needed). Takes the same lock as import; reports records reparsed and anomaly counts before/after — the drift-fix loop. |
 | `/export <uuid> [path]` | Reconstruct a session's transcript byte-for-byte. With no path, writes `<uuid>.jsonl` into the current directory. An unknown uuid reports a not-found message and writes nothing. See [Export](export.md). |
-| `/status` | Archive counts (sessions, archived, files, records, anomalies by severity), the last import run, the schema line, the in-process web-server state, and the cron line. `archived` is an aggregate count only — no archived identities are ever shown. |
+| `/status` | The running version (first line), then archive counts (sessions, archived, files, records, anomalies by severity), the last import run, the schema line, the in-process web-server state, and the cron line. `archived` is an aggregate count only — no archived identities are ever shown. |
 | `/unarchive <uuid>` | Restore an archived session so it's readable again. The uuid must be known out-of-band — by design, nothing lists archived sessions. A uuid that's unknown or simply not archived reports a message and changes nothing. |
 | `/start-web [public]` | Start the in-process web server. Bare, it binds `127.0.0.1:8765`. Add `public` to bind `0.0.0.0` instead — see the warning below. If the port is already held by another process, it refuses cleanly. |
 | `/stop-web` | Stop the web server the TUI started (exiting the TUI stops it too). |
 | `/cron [install [minutes] \| remove]` | Schedule or unschedule periodic imports via your user crontab. See [Keeping it running (cron)](cron.md) for the full story. |
+| `/update [yes]` | Bare, checks `origin` and prints the pending changelist without changing anything. `/update yes` applies it — runs `update.sh`, restarts the web server if one was running, and prints a `/restart` hint if server code changed. See [Updating](update.md) for the full story. |
+| `/restart` | Relaunch the TUI as a fresh process, so code an `/update yes` just applied actually loads (a same-process reload would keep the old code in memory). |
 | `/quit` | Exit the app (stopping any web server it started). Ctrl-C does the same. |
 
 ## A warning about public bind

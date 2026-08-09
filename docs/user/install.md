@@ -62,6 +62,10 @@ When a step fails, the installer tells you *which* step, shows the tail of that 
 > warm npm cache that is about 2 seconds; a whole no-change re-run (`uv sync` + `npm ci` + build)
 > measured ~3 seconds. A cold cache costs whatever downloading your dependencies costs.
 
+Re-running `./install.sh` always works, but it's not the only way to update later — `/update` in
+the TUI, `introspect update` on the CLI, and `./update.sh` all do the pull-and-rebuild for you and
+check first instead of running unconditionally. See [Updating](update.md) for the full story.
+
 ## The manual path
 
 You never *need* the installer. If you'd rather run the steps yourself (or the installer isn't a

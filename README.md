@@ -80,10 +80,10 @@ cd conversation-introspection
 `install.sh` checks your machine has what it needs, then runs the whole setup: it creates the
 Python environment (`uv sync`), installs and builds the reading room (`npm ci && npm run build`),
 and runs your first archive import. **Re-running it is always safe** — every step re-converges, so
-the same command repairs a half-finished install, and re-running after `git pull` picks up new
-dependencies and rebuilds the reading room. (Prefer to do it by hand, or want the details? See
-[`docs/user/install.md`](docs/user/install.md). Flags: `--yes` to accept every prompt
-non-interactively, `--skip-import` to set up the tooling without importing yet.)
+the same command repairs a half-finished install. (Prefer to do it by hand, or want the details?
+See [`docs/user/install.md`](docs/user/install.md). Flags: `--yes` to accept every prompt
+non-interactively, `--skip-import` to set up the tooling without importing yet.) Re-running it is
+one way to update an existing checkout — see [Updating](#updating) below for the faster ones.
 
 Your first import prints a summary line like:
 
@@ -178,6 +178,23 @@ echo $?
 whole point of this tool, verified on your own data. More on the guarantee:
 [`docs/user/export.md`](docs/user/export.md). And any time you want the archive's counts and the
 last import run, `uv run introspect status` (or `/status` in the TUI) prints them.
+
+### Updating
+
+`git pull` alone doesn't update this tool — the web UI still needs rebuilding, and a running
+`introspect tui` or `introspect serve` keeps whatever code it already loaded. Three ways to do the
+whole job:
+
+- **`/update`** in the TUI — checks for a new version and shows what's new; `/update yes` applies
+  it (rebuilds the web UI, restarts the web server if one's running, and tells you if you need to
+  `/restart` the TUI itself).
+- **`./update.sh`** from a shell — the same pull-and-rebuild, promptless, for scripts or when you'd
+  rather skip the TUI.
+- **Re-running `./install.sh`** still works too, as noted above.
+
+All three are fast-forward-only and never touch uncommitted work. Full story — including the
+version chip in the reading room's status bar and what a mismatch means — in
+[`docs/user/update.md`](docs/user/update.md).
 
 ## Keep it running (the 15-minute belt)
 
@@ -345,7 +362,8 @@ be reviewed into having them later.
 
 - **[User guide](docs/user/README.md)** — task-by-task: [install](docs/user/install.md), the
   [TUI](docs/user/tui.md), the [reading room](docs/user/reading-room.md),
-  [cron](docs/user/cron.md), [export](docs/user/export.md), and the one-page concept model,
+  [cron](docs/user/cron.md), [export](docs/user/export.md), [updating](docs/user/update.md), and
+  the one-page concept model,
   [How the archive protects you](docs/user/how-the-archive-protects-you.md).
 - **[Developer guide](docs/dev/README.md)** — architecture pointer, running the tests, and the
   schema-extension loop.

@@ -139,6 +139,24 @@ Two operational rules follow from the byte-reconciliation gate and the transcrip
   *different* transcript of the same session is dropped until that other transcript is also recaptured,
   reparsed, or re-imported.
 
+## Release ritual
+
+There are no git tags: `CHANGELOG.md`'s top entry *is* the current version, read at runtime by
+`introspect.changelog.app_version()` and degrading to `"unknown"` (never raising) if the file is
+missing or malformed. Every surface that reports a version — the TUI banner and `/status`, the
+API's `StatusOut.version`, and the reading room's build-time `UI_VERSION` compared against it in
+the status bar — reads from that same top entry, directly or through the API. `/update` and
+`introspect update` also diff against it: they parse `origin`'s `CHANGELOG.md` and compare its top
+entry to the local one to decide whether there's anything to pull.
+
+That means **any user-visible change lands with a `CHANGELOG.md` entry in the same commit series**
+that makes it true, not a follow-up — a plan that changes user-visible behavior isn't complete
+until its task list includes the changelog edit. Grammar: a heading is `## MAJOR.MINOR.PATCH —
+YYYY-MM-DD` (em-dash canonical, plain hyphen accepted), followed by `- ` bullets naming what
+changed *for a user*, not commit subjects. One trap worth knowing: the parser reads each bullet as
+a single physical line — text wrapped onto a following line without its own `- ` is silently
+dropped, not joined. Keep every bullet on one line in the file, however long.
+
 ## House rules
 
 - Keep diffs small and self-contained; prefer new modules over growing large files.
