@@ -58,8 +58,14 @@ update cold with an honest message instead of stashing, merging, or resetting an
 
 - **Dirty tree:** `working tree has uncommitted changes to tracked files -- commit or stash them
   first (update never stashes)`. Commit or stash by hand, then retry.
-- **No upstream:** `the current branch has no upstream -- set one (git branch
-  --set-upstream-to=...) or pull manually`.
+- **No upstream:** `/update` and `introspect update` never reach a friendly message for this one —
+  `check()` calls `git rev-parse` to find the upstream before anything else, so a missing upstream
+  fails *that* call and you see the raw git error instead: `git rev-parse --abbrev-ref
+  --symbolic-full-name @{u} failed:` followed by git's own `fatal: no upstream configured for
+  branch '<name>'` (the TUI prefixes it with `update: `). The friendly `the current branch has no
+  upstream -- set one (git branch --set-upstream-to=...) or pull manually.` only shows up when you
+  run `./update.sh` directly. Either way: set an upstream
+  (`git branch --set-upstream-to=origin/<branch>`) or pull manually, then retry.
 - **Local commits origin doesn't have:** if you're behind on version but your branch also has
   commits `origin` lacks, the CLI/TUI stop before touching anything with `local branch has commits
   origin doesn't -- resolve manually (update never merges)`; `update.sh` hits the same wall as a
