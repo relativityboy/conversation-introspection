@@ -4,6 +4,9 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.2.1 — 2026-08-09
+- Fixed a fresh-install/update failure (`npm ci` reporting "Missing @emnapi/... from lock file") on machines that need the build toolchain's WASM fallback — the lockfile now includes those optional packages.
+
 ## 1.2.0 — 2026-08-08
 - The reading room and TUI now show which version they're running; the status bar flags when the UI and server versions differ (a stale build is now visible).
 - `/update` in the TUI (and `introspect update` in the CLI) checks for new versions, shows what's new, and applies the update — including rebuilding the web UI, the step `git pull` alone never did.
