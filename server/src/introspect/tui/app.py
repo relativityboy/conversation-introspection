@@ -25,7 +25,7 @@ from textual.suggester import SuggestFromList
 from textual.widgets import Footer, Input, OptionList, RichLog
 from textual.widgets.option_list import Option
 
-from introspect import config
+from introspect import changelog, config
 from introspect.cron import CrontabIO
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.tui.commands import Command, CommandContext, build_registry, parse_command
@@ -136,7 +136,9 @@ class IntrospectApp(App):
 
     def on_mount(self) -> None:
         log = self.query_one("#log", RichLog)
-        log.write("introspect TUI -- type to search, /help for commands, /quit to exit")
+        version = changelog.app_version()
+        label = f"v{version}" if version != "unknown" else "(version unknown)"
+        log.write(f"introspect {label} -- type to search, /help for commands, /quit to exit")
         self.query_one("#cmd", Input).focus()
 
     # --- Input routing -------------------------------------------------------------------
@@ -278,10 +280,16 @@ def _session_factory_for(engine):  # noqa: ANN001, ANN202 -- Engine -> sessionma
     return session_factory(engine)
 
 
-def run_tui(*, db_path: Path, source_root: Path) -> None:
-    """Build and run the TUI, stopping any web server it started on the way out."""
+def run_tui(*, db_path: Path, source_root: Path) -> object | None:
+    """Build and run the TUI, stopping any web server it started on the way out.
+
+    Returns ``App.run()``'s result -- the ``/restart`` command exits with the string
+    ``"restart"``, which ``_cmd_tui`` (cli.py) checks AFTER this returns to re-exec a fresh
+    process (terminal already restored by then; never exec from inside a running Textual app).
+    """
     app = IntrospectApp(db_path=db_path, source_root=source_root)
     try:
-        app.run()
+        result = app.run()
     finally:
         app.stop_web()
+    return result

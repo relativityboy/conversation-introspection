@@ -9,11 +9,16 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import Mock
 
+from introspect import changelog
+from introspect import update as upd
+from introspect.changelog import Entry
 from introspect.cron import CrontabIO
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.ingest.run import run_import
 from introspect.tui.commands import (
     CommandContext,
+    _cmd_restart,
+    _cmd_update,
     build_registry,
     parse_command,
 )
@@ -31,6 +36,8 @@ VERBS = {
     "start-web",
     "stop-web",
     "cron",
+    "update",
+    "restart",
     "quit",
 }
 
@@ -62,6 +69,10 @@ class FakeWeb:
 
     def local_url(self) -> str:
         return "http://127.0.0.1:8765"
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
 
     def describe(self) -> str:
         if self._running:
@@ -377,6 +388,144 @@ def test_cron_remove_shows_macos_notice_on_darwin(tmp_path: Path, monkeypatch) -
     ctx, emitted = _ctx(tmp_path / "a.db", crontab=_fake_crontab("MAILTO=x\n"))
     _run(ctx, "/cron remove")
     assert cron_mod.MACOS_PERMISSION_NOTICE in emitted
+
+
+# --- /update / /restart (TUI consent idiom: check -> show + hint; 'yes' -> apply) ---------
+# Two-step by design (spec §5 adapted for the TUI): a bare /update never applies -- it always
+# monkeypatches `introspect.tui.commands.upd` (the same module object `commands.py` imports
+# as `upd`), so patching it here patches what the handler sees.
+
+
+class RecordingWeb(FakeWeb):
+    """FakeWeb that also records whether stop()/start() were invoked -- proves /update's web
+    bounce actually calls both, not just one."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.stopped = False
+        self.started = False
+
+    def stop(self) -> bool:
+        self.stopped = True
+        return super().stop()
+
+    def start(self, host: str) -> StartResult:
+        self.started = True
+        return super().start(host)
+
+
+def test_update_check_shows_changelist_and_hint(tmp_path: Path, monkeypatch) -> None:
+    entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
+    monkeypatch.setattr(upd, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        upd,
+        "check",
+        lambda root: upd.UpdateCheck(upd.UpdateState.BEHIND, "1.1.0", "1.2.0", (entry,)),
+    )
+    monkeypatch.setattr(upd, "preflight_problems", lambda root: [])
+
+    def _apply_should_not_be_called(root, emit, update_script=None):
+        raise AssertionError("apply must not be called by a bare /update")
+
+    monkeypatch.setattr(upd, "apply", _apply_should_not_be_called)
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _cmd_update(ctx, [])
+    out = "\n".join(emitted)
+    assert "1.2.0" in out and "New thing." in out
+    assert "/update yes" in out  # the consent hint
+
+
+def test_update_yes_applies_bounces_web_and_hints_restart(tmp_path: Path, monkeypatch) -> None:
+    entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
+    monkeypatch.setattr(upd, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        upd,
+        "check",
+        lambda root: upd.UpdateCheck(upd.UpdateState.BEHIND, "1.1.0", "1.2.0", (entry,)),
+    )
+    monkeypatch.setattr(upd, "preflight_problems", lambda root: [])
+    monkeypatch.setattr(
+        upd,
+        "apply",
+        lambda root, emit, update_script=None: upd.ApplyResult(ok=True, server_changed=True),
+    )
+    web = RecordingWeb(running=True)
+    ctx, emitted = _ctx(tmp_path / "a.db", web=web)
+    _cmd_update(ctx, ["yes"])
+    out = "\n".join(emitted)
+    assert web.stopped and web.started  # bounced
+    assert "/restart" in out  # server changed -> restart hint
+
+
+def test_update_yes_web_only_reports_updated(tmp_path: Path, monkeypatch) -> None:
+    entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
+    monkeypatch.setattr(upd, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        upd,
+        "check",
+        lambda root: upd.UpdateCheck(upd.UpdateState.BEHIND, "1.1.0", "1.2.0", (entry,)),
+    )
+    monkeypatch.setattr(upd, "preflight_problems", lambda root: [])
+    monkeypatch.setattr(
+        upd,
+        "apply",
+        lambda root, emit, update_script=None: upd.ApplyResult(ok=True, server_changed=False),
+    )
+    ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb(running=False))
+    _cmd_update(ctx, ["yes"])
+    assert any("updated to 1.2.0" in line for line in emitted)
+    assert not any("/restart" in line for line in emitted)
+
+
+def test_update_up_to_date(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(upd, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        upd,
+        "check",
+        lambda root: upd.UpdateCheck(upd.UpdateState.UP_TO_DATE, "1.1.0", "1.1.0", ()),
+    )
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _cmd_update(ctx, [])
+    assert any("already up to date (1.1.0)" in line for line in emitted)
+
+
+def test_update_preflight_problems_block_apply(tmp_path: Path, monkeypatch) -> None:
+    entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
+    monkeypatch.setattr(upd, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        upd,
+        "check",
+        lambda root: upd.UpdateCheck(upd.UpdateState.BEHIND, "1.1.0", "1.2.0", (entry,)),
+    )
+    monkeypatch.setattr(
+        upd,
+        "preflight_problems",
+        lambda root: ["working tree has uncommitted changes to tracked files"],
+    )
+
+    def _apply_should_not_be_called(root, emit, update_script=None):
+        raise AssertionError("apply must not be called when preflight problems are present")
+
+    monkeypatch.setattr(upd, "apply", _apply_should_not_be_called)
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _cmd_update(ctx, ["yes"])
+    assert any("uncommitted" in line for line in emitted)
+
+
+def test_restart_exits_with_marker(tmp_path: Path) -> None:
+    exit_calls: list[object] = []
+    ctx, _ = _ctx(tmp_path / "a.db", exit_fn=exit_calls.append)
+    _cmd_restart(ctx, [])
+    assert exit_calls == ["restart"]  # ctx.exit called with the marker
+
+
+def test_status_includes_version_line(tmp_path: Path, fixture_tree: Path, monkeypatch) -> None:
+    monkeypatch.setattr(changelog, "app_version", lambda: "1.2.0")
+    dbp = tmp_path / "a.db"
+    run_import(dbp, fixture_tree)
+    ctx, emitted = _ctx(dbp)
+    _run(ctx, "/status")
+    assert any(line == "version: 1.2.0" for line in emitted)
 
 
 # --- web management -----------------------------------------------------------------------

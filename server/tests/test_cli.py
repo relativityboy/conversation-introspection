@@ -21,6 +21,7 @@ generally producing sane output.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from introspect import cli
@@ -436,3 +437,28 @@ def test_update_preflight_problems_block(monkeypatch, capsys) -> None:
 def test_update_outside_repo(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli.update, "find_repo_root", lambda: None)
     assert cli.main(["update"]) == 1
+
+
+# --- tui: restart marker triggers a same-process-argv re-exec (spec §5, "fresh imports") ---
+# `_cmd_tui` imports `run_tui` lazily inside the handler (`from introspect.tui.app import
+# run_tui`), so patching the NAME on `introspect.cli` would miss it -- the source module path
+# is what must be monkeypatched, exactly like the lazy `from introspect.tui.app import run_tui`
+# re-resolves it on every call.
+
+
+def test_tui_restart_marker_execs_fresh_process(tmp_path, monkeypatch) -> None:
+    execs: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(cli.os, "execvp", lambda file, argv: execs.append((file, argv)))
+    monkeypatch.setattr("introspect.tui.app.run_tui", lambda **kw: "restart")
+    dbp = str(tmp_path / "a.db")
+    assert cli.main(["tui", "--db", dbp]) == 0
+    assert execs == [(sys.argv[0], sys.argv)]
+
+
+def test_tui_normal_exit_does_not_exec(tmp_path, monkeypatch) -> None:
+    execs: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(cli.os, "execvp", lambda file, argv: execs.append((file, argv)))
+    monkeypatch.setattr("introspect.tui.app.run_tui", lambda **kw: None)
+    dbp = str(tmp_path / "a.db")
+    assert cli.main(["tui", "--db", dbp]) == 0
+    assert execs == []

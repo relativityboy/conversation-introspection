@@ -19,7 +19,8 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from introspect import cron
+from introspect import changelog, cron
+from introspect import update as upd
 from introspect.cron import CrontabIO
 from introspect.export import (
     SessionNotFoundError,
@@ -44,7 +45,9 @@ class CommandContext:
     """Everything a handler needs from the running app, and nothing more.
 
     ``emit`` appends one line to the log area; on the background-worker path the app supplies a
-    thread-safe ``emit`` (marshalled to the UI thread). ``exit`` ends the app (``/quit``).
+    thread-safe ``emit`` (marshalled to the UI thread). ``exit`` ends the app (``/quit``,
+    ``/restart``) -- it binds Textual's ``App.exit(result=None)``, so it takes an optional
+    positional result (``/restart`` passes the ``"restart"`` marker).
     """
 
     db_path: Path
@@ -52,7 +55,7 @@ class CommandContext:
     session_factory: Callable[[], Session]
     web: WebServerManager
     emit: Callable[[str], None]
-    exit: Callable[[], None]
+    exit: Callable[..., None]
     registry: "CommandRegistry"
     # The user-crontab edge for /cron. A field (like `web`) so tests inject a fake and no test
     # ever shells out to the real crontab; the app supplies one real instance.
@@ -192,6 +195,7 @@ def _cmd_export(ctx: CommandContext, args: list[str]) -> None:
 
 
 def _cmd_status(ctx: CommandContext, args: list[str]) -> None:
+    ctx.emit(f"version: {changelog.app_version()}")
     with ctx.session_factory() as db:
         snap = collect_status(db)
     ctx.emit(counts_line(snap))
@@ -307,6 +311,70 @@ def _cmd_stop_web(ctx: CommandContext, args: list[str]) -> None:
         ctx.emit("stop-web: web server stopped")
     else:
         ctx.emit("stop-web: no web server was running")
+
+
+def _cmd_update(ctx: CommandContext, args: list[str]) -> None:
+    # TUI consent idiom (spec §5 adapted): a bare /update only checks and shows the changelist,
+    # hinting at '/update yes' -- it NEVER applies. Only args == ["yes"] reaches upd.apply below.
+    if args not in ([], ["yes"]):
+        ctx.emit("usage: /update [yes]")
+        return
+    root = upd.find_repo_root()
+    if root is None:
+        ctx.emit("update: requires a repo checkout (no .git found)")
+        return
+    try:
+        chk = upd.check(root)
+    except upd.UpdateError as exc:
+        ctx.emit(f"update: {exc}")
+        return
+    if chk.state is upd.UpdateState.UP_TO_DATE:
+        ctx.emit(f"already up to date ({chk.local_version})")
+        return
+    if chk.state is upd.UpdateState.LOCAL_AHEAD:
+        ctx.emit(
+            f"local checkout ({chk.local_version}) is ahead of origin "
+            f"({chk.remote_version}) -- nothing to update"
+        )
+        return
+    if chk.state is upd.UpdateState.NO_CHANGELOG:
+        ctx.emit("update: cannot compare versions -- update manually: git pull && ./install.sh")
+        return
+
+    for entry in chk.new_entries:
+        ctx.emit(f"## {entry.version} — {entry.date}")
+        for bullet in entry.bullets:
+            ctx.emit(f"- {bullet}")
+    problems = upd.preflight_problems(root)
+    if problems:
+        for problem in problems:
+            ctx.emit(f"update: {problem}")
+        return
+    if args != ["yes"]:
+        ctx.emit(f"new version {chk.remote_version} available -- type '/update yes' to apply")
+        return
+
+    result = upd.apply(root, emit=ctx.emit)
+    if not result.ok:
+        ctx.emit("update failed -- fix the problem above, then '/update yes' to retry")
+        return
+    if ctx.web.is_running:
+        ctx.web.stop()
+        started = ctx.web.start(LOCAL_HOST)
+        if started is StartResult.STARTED:
+            ctx.emit(f"web server restarted with the new UI at {ctx.web.local_url()}")
+        else:
+            ctx.emit(f"web server did not restart cleanly ({started.name}) -- /start-web to retry")
+    if result.server_changed:
+        ctx.emit("server code changed -- type /restart to relaunch the TUI on the new code")
+    else:
+        ctx.emit(f"updated to {chk.remote_version}")
+
+
+def _cmd_restart(ctx: CommandContext, args: list[str]) -> None:
+    # No same-process reload: exits with the "restart" marker so `_cmd_tui` (cli.py) can
+    # `os.execvp` a fresh process AFTER app.run() returns -- see that module for why.
+    ctx.exit("restart")
 
 
 def _cmd_quit(ctx: CommandContext, args: list[str]) -> None:
@@ -462,6 +530,42 @@ def build_registry() -> CommandRegistry:
             ),
             examples=["/cron", "/cron install", "/cron install 5", "/cron remove"],
             handler=_cmd_cron,
+        )
+    )
+    registry.register(
+        Command(
+            name="update",
+            summary="check for a new version; 'yes' applies it",
+            usage="/update [yes]",
+            long_help=(
+                "With no argument, fetches origin and compares CHANGELOG.md versions, printing\n"
+                "the pending changelist and stopping there -- nothing is applied. '/update yes'\n"
+                "re-checks, refuses if the working tree has uncommitted changes or the local\n"
+                "branch has commits origin lacks (update never stashes or merges), then runs the\n"
+                "same update.sh `introspect update` runs, streaming its output into the log.\n"
+                "If the web server was running, it is stopped and restarted so a changed UI\n"
+                "serves fresh assets. If server/ code changed, prints a hint to run /restart --\n"
+                "this process's already-imported modules stay stale until then.\n"
+                "Caveat: requires a git checkout (no .git found reports and does nothing)."
+            ),
+            examples=["/update", "/update yes"],
+            handler=_cmd_update,
+            background=True,
+        )
+    )
+    registry.register(
+        Command(
+            name="restart",
+            summary="relaunch the TUI (picks up updated code)",
+            usage="/restart",
+            long_help=(
+                "Exits this process and re-execs a fresh one with the same arguments -- the way\n"
+                "to pick up code that /update just applied. A same-process reload would keep\n"
+                "every already-imported module (the OLD code); this starts over with fresh\n"
+                "imports. Any web server this TUI started is stopped first, same as /quit."
+            ),
+            examples=["/restart"],
+            handler=_cmd_restart,
         )
     )
     registry.register(

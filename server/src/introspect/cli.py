@@ -25,6 +25,7 @@ Summary lines go to stdout; error/detail messages go to stderr.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -324,7 +325,12 @@ def _cmd_tui(args: argparse.Namespace) -> int:
     # never pay for. Keeping this import inside the handler is the seam that guarantees it.
     from introspect.tui.app import run_tui
 
-    run_tui(db_path=dbp, source_root=config.source_root(args.source_root))
+    result = run_tui(db_path=dbp, source_root=config.source_root(args.source_root))
+    if result == "restart":
+        # A same-process relaunch would keep every already-imported module -- old code. app.run()
+        # has returned (terminal restored), so exec a fresh process here, never from inside
+        # Textual, so the updated server code from /update actually loads.
+        os.execvp(sys.argv[0], sys.argv)
     return 0
 
 
