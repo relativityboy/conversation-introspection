@@ -368,7 +368,10 @@ def test_update_up_to_date(monkeypatch, capsys) -> None:
         lambda root: update_mod.UpdateCheck(update_mod.UpdateState.UP_TO_DATE, "1.1.0", "1.1.0", ()),
     )
     assert cli.main(["update"]) == 0
-    assert "already up to date (1.1.0)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "already up to date (1.1.0)" in out
+    assert "this check compares versions only" in out
+    assert "./update.sh to rebuild" in out
 
 
 def test_update_behind_yes_applies_and_reports_restart(monkeypatch, capsys) -> None:
@@ -401,6 +404,25 @@ def test_update_behind_prompt_declined(monkeypatch, capsys) -> None:
     )
     monkeypatch.setattr(cli.update, "preflight_problems", lambda root: [])
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert cli.main(["update"]) == 0
+    assert "not updating" in capsys.readouterr().out
+
+
+def test_update_behind_prompt_eof_treated_as_decline(monkeypatch, capsys) -> None:
+    """Closed stdin (input() raises EOFError) must not traceback -- treat like a decline."""
+    entry = Entry(version="1.2.0", date="2026-08-08", bullets=("New thing.",))
+    monkeypatch.setattr(cli.update, "find_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(
+        cli.update,
+        "check",
+        lambda root: update_mod.UpdateCheck(update_mod.UpdateState.BEHIND, "1.1.0", "1.2.0", (entry,)),
+    )
+    monkeypatch.setattr(cli.update, "preflight_problems", lambda root: [])
+
+    def _input_raises_eof(prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _input_raises_eof)
     assert cli.main(["update"]) == 0
     assert "not updating" in capsys.readouterr().out
 

@@ -330,6 +330,10 @@ def _cmd_update(ctx: CommandContext, args: list[str]) -> None:
         return
     if chk.state is upd.UpdateState.UP_TO_DATE:
         ctx.emit(f"already up to date ({chk.local_version})")
+        ctx.emit(
+            "(this check compares versions only -- after a manual git pull, run "
+            "./update.sh to rebuild)"
+        )
         return
     if chk.state is upd.UpdateState.LOCAL_AHEAD:
         ctx.emit(

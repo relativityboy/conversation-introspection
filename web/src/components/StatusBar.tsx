@@ -48,8 +48,10 @@ function formatMb(bytes: number): string {
 
 // Agree -> single 'vX.Y.Z' chip; differ -> both, labeled; either side unknown -> no chip (a
 // stale/non-vite build or a version not yet in the DB shouldn't render a misleading compare).
+// The falsy check also covers a still-running pre-1.2.0 server: its StatusOut has no `version`
+// field at all, so a fresh bundle would otherwise render `server vundefined`.
 function versionText(serverVersion: string): string | null {
-  if (serverVersion === 'unknown' || UI_VERSION === 'unknown') return null
+  if (!serverVersion || serverVersion === 'unknown' || UI_VERSION === 'unknown') return null
   if (serverVersion === UI_VERSION) return `v${UI_VERSION}`
   return `ui v${UI_VERSION} · server v${serverVersion}`
 }

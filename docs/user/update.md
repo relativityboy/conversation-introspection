@@ -38,7 +38,8 @@ uv run introspect update --yes      # or -y: apply without prompting, for script
 Same check, same changelist, same `update.sh` underneath. Without `--yes` you get an interactive
 `update to 1.2.0? [y/N]` prompt after the changelist; declining prints `not updating.` and exits
 `0` — declining is not an error. Exit codes: `0` for up to date, updated, declined, or local-ahead;
-`1` if there's a problem (a dirty tree, a diverged branch, or the update itself failing).
+`1` if there's a problem (a dirty tree, a diverged branch, the update itself failing, or
+`CHANGELOG.md` missing or unreadable here or on origin so versions can't be compared).
 
 ## `update.sh` — no TUI or CLI needed
 
@@ -74,15 +75,24 @@ update cold with an honest message instead of stashing, merging, or resetting an
   normal state if you're hacking on this repo yourself and haven't pushed yet — `/update` and
   `introspect update` print `local checkout (X) is ahead of origin (Y) -- nothing to update; push
   or reset is your call` and exit `0`. Not an error, just nothing to pull.
+- **Coming from a manual `git pull` or an older checkout:** `git pull` by hand brings
+  `CHANGELOG.md` itself up to date along with everything else, so `/update` and `introspect
+  update` — which only *compare* `CHANGELOG.md` versions — will report `already up to date` and
+  rebuild nothing even though the web UI was never rebuilt. Run `./update.sh` once by hand to
+  reconverge (rebuild the web UI, reinstall dependencies); after that, `/update`'s version check
+  and reality agree again.
 
 ## The version chip in the status bar
 
 The reading room's status bar shows the version it's running: a single `v1.2.0` chip when the UI
 you're looking at and the server serving it agree. If they don't — `ui v1.1.0 · server v1.2.0` —
 that's a **stale build**: the browser (or the served `web/dist`) is older than the server's own
-code, usually because a build finished without a rebuild reaching the browser yet. Run `/update` or
-`./update.sh` to bring both back in sync; no chip at all means the version couldn't be determined
-(an unreadable or missing `CHANGELOG.md`) rather than a real mismatch.
+code, usually because a build finished without a rebuild reaching the browser yet. Run
+`./update.sh` to bring both back in sync — it always rebuilds the web UI. `/update` alone is often
+*not* enough to fix this: it only compares `CHANGELOG.md` versions, so if the mismatch came from a
+manual `git pull` rather than through `/update`/`update.sh` (see above), `/update` will report
+`already up to date` and do nothing. No chip at all means the version couldn't be determined (an
+unreadable or missing `CHANGELOG.md`) rather than a real mismatch.
 
 You shouldn't need a hard-refresh to see a fresh build land — the reading room's shell revalidates
 on every load, so a plain reload after an update is enough.

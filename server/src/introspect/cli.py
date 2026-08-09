@@ -394,6 +394,10 @@ def _cmd_update(args: argparse.Namespace) -> int:
         return 1
     if chk.state is update.UpdateState.UP_TO_DATE:
         print(f"already up to date ({chk.local_version})")
+        print(
+            "(this check compares versions only -- after a manual git pull, run "
+            "./update.sh to rebuild)"
+        )
         return 0
     if chk.state is update.UpdateState.LOCAL_AHEAD:
         print(
@@ -420,7 +424,13 @@ def _cmd_update(args: argparse.Namespace) -> int:
             print(problem, file=sys.stderr)
         return 1
     if not args.yes:
-        reply = input(f"update to {chk.remote_version}? [y/N] ").strip().lower()
+        try:
+            reply = input(f"update to {chk.remote_version}? [y/N] ").strip().lower()
+        except EOFError:
+            # Closed stdin (e.g. a non-interactive/scripted invocation without --yes) -- treat
+            # like a decline rather than letting the bare EOFError traceback out.
+            print("not updating.")
+            return 0
         if reply not in ("y", "yes"):
             print("not updating.")
             return 0

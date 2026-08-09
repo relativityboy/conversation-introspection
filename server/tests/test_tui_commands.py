@@ -487,6 +487,8 @@ def test_update_up_to_date(tmp_path: Path, monkeypatch) -> None:
     ctx, emitted = _ctx(tmp_path / "a.db")
     _cmd_update(ctx, [])
     assert any("already up to date (1.1.0)" in line for line in emitted)
+    assert any("this check compares versions only" in line for line in emitted)
+    assert any("./update.sh to rebuild" in line for line in emitted)
 
 
 def test_update_preflight_problems_block_apply(tmp_path: Path, monkeypatch) -> None:

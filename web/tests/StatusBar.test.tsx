@@ -124,6 +124,13 @@ describe('version chip', () => {
     await screen.findByText(/last import/) // bar rendered
     expect(screen.queryByText(/^v|ui v/)).toBeNull()
   })
+
+  it('omits the chip when the server version is missing (a still-running pre-1.2.0 server)', async () => {
+    fetchStatus.mockResolvedValue(makeStatus({ version: undefined as unknown as string }))
+    setup()
+    await screen.findByText(/last import/) // bar rendered
+    expect(screen.queryByText(/^v|ui v/)).toBeNull()
+  })
 })
 
 // --- import trigger (ActionButton's onClick is StatusBar's `runImport`) --------------------

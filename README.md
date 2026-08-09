@@ -192,8 +192,11 @@ whole job:
   rather skip the TUI.
 - **Re-running `./install.sh`** still works too, as noted above.
 
-All three are fast-forward-only and never touch uncommitted work. Full story — including the
-version chip in the reading room's status bar and what a mismatch means — in
+All three are fast-forward-only and never touch uncommitted work. Coming from a manual `git pull`
+or an older checkout? `/update` and `introspect update` only *compare* `CHANGELOG.md` versions, so
+a bare pull (which already brings `CHANGELOG.md` itself up to date) leaves them reporting `already
+up to date` while the web UI stays unbuilt. Run `./update.sh` once to reconverge. Full story —
+including the version chip in the reading room's status bar and what a mismatch means — in
 [`docs/user/update.md`](docs/user/update.md).
 
 ## Keep it running (the 15-minute belt)

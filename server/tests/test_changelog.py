@@ -1,5 +1,6 @@
 """Changelog parsing: CHANGELOG.md is the single source of truth for the release version."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -104,3 +105,27 @@ def test_app_version_handles_invalid_utf8(tmp_path: Path) -> None:
     (repo / ".git").mkdir(parents=True)
     (repo / "CHANGELOG.md").write_bytes(b"## 1.0.0 \xe2\x80\x94 2026-08-08\n- \xff\xfe\n")
     assert app_version(repo / "server") == "unknown"
+
+
+def test_repo_changelog_conforms() -> None:
+    """Repo-content lint, not a unit test: unlike every test above, this DELIBERATELY reads the
+    real CHANGELOG.md at the repo root rather than a fixture string, so a hand-edited entry that
+    breaks the grammar (or drops out of sync with the web build's separate extraction) fails CI
+    instead of surfacing only at runtime as a silent 'unknown' version.
+    """
+    path = find_changelog(Path(__file__).resolve())
+    assert path is not None, "repo CHANGELOG.md not found by find_changelog"
+    text = path.read_text(encoding="utf-8")
+
+    entries = parse_changelog(text)
+    assert len(entries) >= 3
+    for entry in entries:
+        assert len(entry.bullets) >= 1, f"entry {entry.version} has no bullets"
+
+    # Pin cross-extractor agreement: web/vite.config.ts's changelogVersion() extracts the top
+    # version with this same regex (independently, in TypeScript, at build time) so the UI can
+    # bake its own version without duplicating CHANGELOG.md's parser. If the two ever disagree,
+    # the version chip in the reading room's status bar would silently lie.
+    vite_match = re.search(r"^## (\d+\.\d+\.\d+) ", text, re.MULTILINE)
+    assert vite_match is not None
+    assert vite_match.group(1) == entries[0].version
