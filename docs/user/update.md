@@ -60,11 +60,14 @@ update cold with an honest message instead of stashing, merging, or resetting an
   first (update never stashes)`. Commit or stash by hand, then retry.
 - **No upstream:** `the current branch has no upstream -- set one (git branch
   --set-upstream-to=...) or pull manually`.
-- **Diverged / local ahead:** if your checkout has commits `origin` doesn't — the normal state if
-  you're hacking on this repo yourself — you'll see `local checkout (X) is ahead of origin (Y) --
-  nothing to update; push or reset is your call` (CLI/TUI) or a failed fast-forward from
-  `update.sh` directly. This is the `LOCAL_AHEAD` state: not an error, just "there's nothing to
-  pull that you don't already have"; resolving the divergence is on you.
+- **Local commits origin doesn't have:** if you're behind on version but your branch also has
+  commits `origin` lacks, the CLI/TUI stop before touching anything with `local branch has commits
+  origin doesn't -- resolve manually (update never merges)`; `update.sh` hits the same wall as a
+  failed fast-forward pull. Rebase, merge, or push yourself, then retry.
+- **`LOCAL_AHEAD`:** if your own `CHANGELOG.md` version doesn't appear anywhere in origin's — the
+  normal state if you're hacking on this repo yourself and haven't pushed yet — `/update` and
+  `introspect update` print `local checkout (X) is ahead of origin (Y) -- nothing to update; push
+  or reset is your call` and exit `0`. Not an error, just nothing to pull.
 
 ## The version chip in the status bar
 
