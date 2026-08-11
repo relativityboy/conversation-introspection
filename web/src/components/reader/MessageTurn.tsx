@@ -222,7 +222,7 @@ export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnPro
 
   const { label, accent } = speakerFor(message)
   const voiceClass = voiceClassOf(message)
-  const time = localHHMM(message.timestamp)
+  const time = localStamp(message.timestamp)
   const blocks = [...message.blocks].sort((a, b) => a.block_index - b.block_index)
 
   // 28px inter-turn spacing lives as PADDING on the article, not margin: react-virtuoso
@@ -329,11 +329,14 @@ function UnknownChip({ kind }: { kind: string }) {
   )
 }
 
-/** Local wall-clock "HH:MM" for the eyebrow; null when the timestamp is absent or unparsable. */
-function localHHMM(iso: string | null): string | null {
+/** Local wall-clock "YYYY.MM.DD HH:MM" for the eyebrow; null when the timestamp is absent or
+ *  unparsable. The dotted date rides with the time because the archive crosses midnight — a bare
+ *  HH:MM loses which day a turn happened on. */
+function localStamp(iso: string | null): string | null {
   if (!iso) return null
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return null
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const ymd = `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(date.getDate())}`
+  return `${ymd} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }

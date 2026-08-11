@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { useSession } from '../api/hooks'
@@ -16,6 +17,58 @@ import { useViewMode } from '../lib/viewMode'
 import { readProjects, writeProjects } from '../lib/urlState'
 
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', fontSize: 13, padding: '18px 24px' }
+
+// Reset so the button reads as the surrounding mono metadata text, but clickable (the .turn-speaker
+// reset in eyebrow.css, inlined here to match this file's inline-style convention).
+const SESSION_ID_STYLE: CSSProperties = {
+  font: 'inherit',
+  letterSpacing: 'inherit',
+  color: 'inherit',
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  cursor: 'pointer',
+}
+
+// The session uuid shown as its first 8 chars. Hover reveals the full id (native title — the
+// RawRecordInspector precedent for full-uuid-on-hover); a click copies the whole id and flashes a
+// brief confirmation (the MessageTurn copy-on-click pattern). The transient "copied" whisper is
+// the only thing that reflows this row, and it self-clears — unlike a persistent suffix.
+function SessionIdChip({ uuid }: { uuid: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  function copy() {
+    void navigator.clipboard?.writeText(uuid).catch(() => {})
+    setCopied(true)
+    if (timerRef.current !== null) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null
+      setCopied(false)
+    }, 1600)
+  }
+
+  return (
+    <span>
+      <button
+        type="button"
+        onClick={copy}
+        title={uuid}
+        aria-label="copy session id"
+        style={SESSION_ID_STYLE}
+      >
+        {uuid.slice(0, 8)}
+      </button>
+      {copied && <span style={{ color: 'var(--dragonfly)', marginLeft: 6 }}>copied</span>}
+    </span>
+  )
+}
 
 // The reading room: session header (title, mono metadata, full HorizonBand) above the MAIN
 // transcript's ConversationView. Subagent transcripts are Task 6+ material — only kind==='main'
@@ -101,7 +154,7 @@ export function SessionPage() {
               marginTop: 6,
             }}
           >
-            <span>{session.session_uuid.slice(0, 8)}</span>
+            <SessionIdChip uuid={session.session_uuid} />
             {/* Always the UNFILTERED archive count — never a second server count for the filtered
               set (critique #6). "total" is what keeps that honest when conversation-only hides
               rows, and it is UNCONDITIONAL on purpose: a suffix that appears on toggle widened

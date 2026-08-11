@@ -164,6 +164,44 @@ describe('SessionPage header wiring', () => {
   })
 })
 
+// --- session-id fragment: the first 8 chars of the uuid, hover reveals the full id, click copies
+// it to the clipboard. -------------------------------------------------------------------------
+
+describe('SessionPage session id fragment', () => {
+  it('shows the first 8 chars of the session uuid', async () => {
+    fetchSession.mockResolvedValue(makeSession())
+    renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+    const chip = await screen.findByRole('button', { name: 'copy session id' })
+    expect(chip.textContent).toBe('aaaaaaaa')
+  })
+
+  it('reveals the full uuid on hover via the native title', async () => {
+    fetchSession.mockResolvedValue(makeSession())
+    renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+    const chip = await screen.findByRole('button', { name: 'copy session id' })
+    expect(chip.getAttribute('title')).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+  })
+
+  it('copies the full uuid to the clipboard on click and flashes "copied"', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+    fetchSession.mockResolvedValue(makeSession())
+    renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+    const chip = await screen.findByRole('button', { name: 'copy session id' })
+    fireEvent.click(chip)
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    )
+    expect(await screen.findByText('copied')).toBeDefined()
+
+    // @ts-expect-error - deleting a stubbed test-only global
+    delete navigator.clipboard
+  })
+})
+
 // --- 404 back-link (Phase 4 fixwave THE IMPORTANT, half 2): a genuine deep link back into the
 // app -- must carry the active project filter, mirroring SubagentPage's identical link. ---------
 

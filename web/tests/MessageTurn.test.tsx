@@ -93,17 +93,18 @@ describe('eyebrow', () => {
     delete navigator.clipboard
   })
 
-  it('renders "SPEAKER · HH:MM" with the local time', () => {
+  it('renders "SPEAKER · YYYY.MM.DD HH:MM" with the local dotted date and time', () => {
     const iso = '2026-07-19T14:03:00Z'
     const { container } = renderTurn(
       <MessageTurn message={message({ type: 'user', timestamp: iso })} />,
     )
     const local = new Date(iso)
-    const hhmm = `${String(local.getHours()).padStart(2, '0')}:${String(
-      local.getMinutes(),
-    ).padStart(2, '0')}`
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const stamp = `${local.getFullYear()}.${pad(local.getMonth() + 1)}.${pad(
+      local.getDate(),
+    )} ${pad(local.getHours())}:${pad(local.getMinutes())}`
     const eyebrow = container.querySelector('.turn-eyebrow')
-    expect(eyebrow?.textContent).toBe(`YOU · ${hhmm}`)
+    expect(eyebrow?.textContent).toBe(`YOU · ${stamp}`)
   })
 
   it('labels assistant turns CLAUDE and system turns SYSTEM', () => {
