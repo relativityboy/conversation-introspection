@@ -14,15 +14,20 @@ Esc clears; Ctrl-C / ``/quit`` exit, stopping any web server the TUI started.
 
 from __future__ import annotations
 
+import re
+import subprocess
+import sys
 import webbrowser
 from pathlib import Path
 
+from rich.style import Style
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.events import MouseDown, MouseMove, MouseUp
 from textual.suggester import SuggestFromList
-from textual.widgets import Footer, Input, OptionList, RichLog
+from textual.widgets import Footer, Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 from introspect import changelog, config
@@ -34,6 +39,39 @@ from introspect.tui.webserver import (
     WebServerManager,
     right_arrow_url,
 )
+
+
+_URL_RE = re.compile(r"https?://\S+")
+# Trailing prose punctuation is not part of a URL ("opening http://x." must not link the dot).
+_URL_TRAILING = ".,;:)"
+
+
+def linkify(line: str) -> Text:
+    """Upgrade URL substrings in a log line into interactive spans.
+
+    Plain click copies (the span's ``@click`` meta targets :meth:`IntrospectApp.action_copy_url`
+    -- handled by Textual itself, so it works in ANY terminal); the same span carries a real
+    hyperlink (``Style.link`` -> OSC 8), so terminals that support it also open the URL on
+    cmd+click. Built with ``Text.append`` and explicit ``Style`` objects -- never markup
+    parsing -- so log content can never inject styles (same rule as ``_format_row``).
+    """
+    text = Text()
+    pos = 0
+    for match in _URL_RE.finditer(line):
+        url = match.group().rstrip(_URL_TRAILING)
+        text.append(line[pos : match.start()])
+        text.append(
+            url,
+            style=Style(
+                color="#6FD3C7",
+                underline=True,
+                link=url,
+                meta={"@click": f"app.copy_url({url!r})"},
+            ),
+        )
+        pos = match.start() + len(url)
+    text.append(line[pos:])
+    return text
 
 
 class CommandInput(Input):
@@ -55,6 +93,39 @@ class CommandInput(Input):
             self.cursor_position = len(self.value)
         else:
             self.app.action_focus_next()
+
+
+#: Log-panel height bounds. The results list keeps at least this many rows however far the
+#: log grows; RESERVED = results minimum (5) + divider (1) + bordered input (3) + footer (1).
+MIN_LOG_HEIGHT = 3
+_RESERVED_ROWS = 10
+
+
+class PanelDivider(Static):
+    """The draggable seam between the results list and the log.
+
+    Mouse-drag moves the boundary (mouse capture keeps the drag alive even when the pointer
+    outruns the 1-row widget); the alt+up/alt+down bindings on the app are the keyboard route.
+    Bare arrows stay free -- Up/Down navigate results today and are reserved for command
+    history tomorrow.
+    """
+
+    def on_mouse_down(self, event: MouseDown) -> None:
+        event.stop()
+        self.capture_mouse()
+
+    def on_mouse_up(self, event: MouseUp) -> None:
+        event.stop()
+        self.release_mouse()
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        if self.app.mouse_captured is not self:
+            return
+        log = self.screen.query_one("#log", RichLog)
+        # The log's bottom row is pinned (input + footer below are fixed); the divider row
+        # itself sits directly above the log, so a divider dragged to screen row y gives the
+        # log rows y+1 .. bottom.
+        self.app._set_log_height(log.region.bottom - event.screen_offset.y - 1)  # type: ignore[attr-defined]
 
 
 class ResultsList(OptionList):
@@ -89,6 +160,13 @@ class IntrospectApp(App):
         background: #24344f;
         color: #E5A54B;
     }
+    #divider {
+        height: 1;
+        background: #24344f;
+        color: #4a5d80;
+        text-align: center;
+    }
+    #divider:hover { background: #6FD3C7; color: #0B1220; }
     #log {
         height: 12;
         border: round #24344f;
@@ -98,7 +176,16 @@ class IntrospectApp(App):
     #cmd { border: round #6FD3C7; }
     """
 
-    BINDINGS = [Binding("escape", "clear", "Clear")]
+    BINDINGS = [
+        Binding("escape", "clear", "Clear"),
+        # Panel resize. NOT bare arrows (results-nav today, command history tomorrow) and NOT
+        # plain ctrl+arrows (macOS Mission Control swallows those before the terminal sees
+        # them). ctrl+shift variants are twins for terminals that don't pass alt+arrows.
+        Binding("alt+up", "grow_log", "Grow log", show=False),
+        Binding("alt+down", "shrink_log", "Shrink log", show=False),
+        Binding("ctrl+shift+up", "grow_log", "Grow log", show=False),
+        Binding("ctrl+shift+down", "shrink_log", "Shrink log", show=False),
+    ]
 
     def __init__(
         self,
@@ -121,11 +208,19 @@ class IntrospectApp(App):
         self._crontab = crontab if crontab is not None else CrontabIO()
         self._command_registry = build_registry()
         self._results: list[SearchResultRow] = []
+        # The log panel's intended height, tracked as state rather than read back from
+        # region geometry: regions update only on layout, so repeated resize steps inside
+        # one frame (held key, drag) would read stale rows and lose steps. Matches the
+        # CSS default (#log height: 12).
+        self._log_height = 12
 
     # --- Layout --------------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield ResultsList(id="results")
+        divider = PanelDivider("· ─ ·", id="divider")
+        divider.tooltip = "drag to resize (or alt+↑ / alt+↓)"
+        yield divider
         yield RichLog(id="log", markup=False, wrap=True, highlight=False)
         yield CommandInput(
             id="cmd",
@@ -269,7 +364,33 @@ class IntrospectApp(App):
         self.query_one("#cmd", Input).focus()
 
     def _append_log(self, line: str) -> None:
-        self.query_one("#log", RichLog).write(line)
+        self.query_one("#log", RichLog).write(linkify(line))
+
+    def action_grow_log(self) -> None:
+        self._set_log_height(self._log_height + 1)
+
+    def action_shrink_log(self) -> None:
+        self._set_log_height(self._log_height - 1)
+
+    def _set_log_height(self, height: int) -> None:
+        """Resize the log panel (the results list is 1fr and absorbs the rest), clamped so
+        neither panel can be crushed away."""
+        max_height = max(MIN_LOG_HEIGHT, self.size.height - _RESERVED_ROWS)
+        self._log_height = max(MIN_LOG_HEIGHT, min(height, max_height))
+        self.query_one("#log", RichLog).styles.height = self._log_height
+
+    def action_copy_url(self, url: str) -> None:
+        """Click handler for linkified URLs: copy to the clipboard, confirm in the log."""
+        self._copy_text(url)
+        self._append_log(f"copied {url} to clipboard")
+
+    def _copy_text(self, text: str) -> None:
+        # pbcopy on macOS: unconditional, terminal-independent. Elsewhere fall back to
+        # Textual's OSC 52 copy, which needs terminal support but is the only portable option.
+        if sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode())
+        else:
+            self.copy_to_clipboard(text)
 
     def stop_web(self) -> None:
         """Stop any web server the TUI started (called on exit by :func:`run_tui`)."""

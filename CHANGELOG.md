@@ -4,6 +4,12 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.4.0 — 2026-08-11
+- TUI: `/start-web` and `/stop-web` are replaced by `/web [start [public] | stop | status]` — bare `/web` reports server state, matching the `/cron` shape. The old commands are gone (no aliases).
+- TUI: server URLs in the log are now interactive — click one to copy it to the clipboard, or cmd+click to open it in terminals that support hyperlinks (iTerm2 and friends).
+- TUI: new `/changelog` command — the newest release's changes at a glance, or the whole release history with `/changelog all`.
+- TUI: the results/log split is now adjustable — drag the divider between the panels with the mouse, or use alt+↑/alt+↓ (ctrl+shift+↑/↓ also works). Plain Up/Down still navigate results.
+
 ## 1.3.1 — 2026-08-11
 - Resume links now open the session in an interactive login shell, so per-project environment loaders (direnv and friends) run and MCP servers that need `.env` tokens work the same as when you type `claude --resume` by hand.
 

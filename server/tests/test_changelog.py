@@ -8,6 +8,7 @@ import pytest
 from introspect.changelog import (
     ChangelogError,
     Entry,
+    app_entries,
     app_version,
     current_version,
     entries_newer_than,
@@ -98,6 +99,22 @@ def test_app_version_best_effort(tmp_path: Path) -> None:
     nowhere = tmp_path / "nowhere"
     (nowhere / ".git").mkdir(parents=True)
     assert app_version(nowhere) == "unknown"
+
+
+def test_app_entries_best_effort(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "CHANGELOG.md").write_text(WELL_FORMED, encoding="utf-8")
+    entries = app_entries(repo / "server")
+    assert entries is not None
+    assert [e.version for e in entries] == ["1.2.0", "1.1.0", "1.0.0"]
+
+    (repo / "CHANGELOG.md").write_text("garbage\n", encoding="utf-8")
+    assert app_entries(repo / "server") is None
+
+    nowhere = tmp_path / "nowhere"
+    (nowhere / ".git").mkdir(parents=True)
+    assert app_entries(nowhere) is None
 
 
 def test_app_version_handles_invalid_utf8(tmp_path: Path) -> None:

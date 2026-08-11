@@ -1,7 +1,7 @@
 # The reading room
 
 The reading room is the web UI — the "Still Water" front-end over your archive. Start it from the
-TUI with `/start-web`, or standalone with `uv run introspect serve`, then open
+TUI with `/web start`, or standalone with `uv run introspect serve`, then open
 <http://127.0.0.1:8765>. One process, one port: the API and the UI are served together.
 
 > The UI is built once by the installer (`npm run build` → `web/dist`). If you started the server

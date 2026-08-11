@@ -134,6 +134,8 @@ def _cmd_help(ctx: CommandContext, args: list[str]) -> None:
     ctx.emit("  Up/Down navigate results; Enter or Right opens the best-matching message")
     ctx.emit("  in your browser. Either auto-starts the web server on 127.0.0.1 if it is")
     ctx.emit("  stopped (a browser launch needs a server).")
+    ctx.emit("panels: drag the divider with the mouse, or alt+up / alt+down")
+    ctx.emit("  (ctrl+shift+up/down also works) to resize the log area.")
     ctx.emit("/help <command> for a command's details, examples, and caveats.")
 
 
@@ -282,10 +284,23 @@ def _cmd_unarchive(ctx: CommandContext, args: list[str]) -> None:
     ctx.emit(f"unarchive: restored {session_uuid}")
 
 
-def _cmd_start_web(ctx: CommandContext, args: list[str]) -> None:
-    public = len(args) == 1 and args[0].lower() == "public"
-    if args and not public:
-        ctx.emit("usage: /start-web [public]")
+def _cmd_web(ctx: CommandContext, args: list[str]) -> None:
+    # Subcommand shape mirrors /cron: bare name = status.
+    sub = args[0].lower() if args else "status"
+    if sub == "status":
+        ctx.emit(ctx.web.describe())
+    elif sub == "start":
+        _web_start(ctx, args[1:])
+    elif sub == "stop":
+        _web_stop(ctx)
+    else:
+        ctx.emit("usage: /web [start [public] | stop | status]")
+
+
+def _web_start(ctx: CommandContext, rest: list[str]) -> None:
+    public = len(rest) == 1 and rest[0].lower() == "public"
+    if rest and not public:
+        ctx.emit("usage: /web [start [public] | stop | status]")
         return
     if public:
         # Mandatory warning BEFORE the bind attempt (§16) -- the user sees the risk regardless
@@ -294,23 +309,23 @@ def _cmd_start_web(ctx: CommandContext, args: list[str]) -> None:
     host = PUBLIC_HOST if public else LOCAL_HOST
     result = ctx.web.start(host)
     if result is StartResult.ALREADY_RUNNING:
-        ctx.emit(f"start-web: already running at {ctx.web.local_url()}")
+        ctx.emit(f"web: already running at {ctx.web.local_url()}")
     elif result is StartResult.PORT_IN_USE:
         ctx.emit(
-            f"start-web: cannot start -- port {ctx.web.port} is already in use by another "
+            f"web: cannot start -- port {ctx.web.port} is already in use by another "
             f"process. Stop it, or free the port, and try again."
         )
     elif result is StartResult.FAILED:
-        ctx.emit(f"start-web: failed to bind {host}:{ctx.web.port}")
+        ctx.emit(f"web: failed to bind {host}:{ctx.web.port}")
     else:
-        ctx.emit(f"start-web: serving at {ctx.web.local_url()} (bound {host}:{ctx.web.port})")
+        ctx.emit(f"web: serving at {ctx.web.local_url()} (bound {host}:{ctx.web.port})")
 
 
-def _cmd_stop_web(ctx: CommandContext, args: list[str]) -> None:
+def _web_stop(ctx: CommandContext) -> None:
     if ctx.web.stop():
-        ctx.emit("stop-web: web server stopped")
+        ctx.emit("web: server stopped")
     else:
-        ctx.emit("stop-web: no web server was running")
+        ctx.emit("web: no web server was running")
 
 
 def _cmd_update(ctx: CommandContext, args: list[str]) -> None:
@@ -368,11 +383,29 @@ def _cmd_update(ctx: CommandContext, args: list[str]) -> None:
         if started is StartResult.STARTED:
             ctx.emit(f"web server restarted with the new UI at {ctx.web.local_url()}")
         else:
-            ctx.emit(f"web server did not restart cleanly ({started.name}) -- /start-web to retry")
+            ctx.emit(f"web server did not restart cleanly ({started.name}) -- /web start to retry")
     if result.server_changed:
         ctx.emit("server code changed -- type /restart to relaunch the TUI on the new code")
     else:
         ctx.emit(f"updated to {chk.remote_version}")
+
+
+def _cmd_changelog(ctx: CommandContext, args: list[str]) -> None:
+    sub = args[0].lower() if args else ""
+    if args and (sub != "all" or len(args) > 1):
+        ctx.emit("usage: /changelog [all]")
+        return
+    entries = changelog.app_entries()
+    if entries is None:
+        ctx.emit("changelog: no readable CHANGELOG.md found")
+        return
+    shown = entries if sub == "all" else entries[:1]
+    for entry in shown:
+        ctx.emit(f"## {entry.version} — {entry.date}")
+        for bullet in entry.bullets:
+            ctx.emit(f"- {bullet}")
+    if sub != "all" and len(entries) > 1:
+        ctx.emit(f"({len(entries) - 1} older entries -- '/changelog all' for the full history)")
 
 
 def _cmd_restart(ctx: CommandContext, args: list[str]) -> None:
@@ -398,7 +431,7 @@ def build_registry() -> CommandRegistry:
                 "search key bindings. With a command name, prints that command's usage,\n"
                 "full description, examples, and caveats."
             ),
-            examples=["/help", "/help export", "/help start-web"],
+            examples=["/help", "/help export", "/help web"],
             handler=_cmd_help,
         )
     )
@@ -484,32 +517,22 @@ def build_registry() -> CommandRegistry:
     )
     registry.register(
         Command(
-            name="start-web",
-            summary="start the in-process web server (add 'public' to expose it)",
-            usage="/start-web [public]",
+            name="web",
+            summary="web server: status, start (add 'public' to expose), stop",
+            usage="/web [start [public] | stop | status]",
             long_help=(
-                "Starts the archive web server in-process on 127.0.0.1:8765. Add 'public' to\n"
-                "bind 0.0.0.0 instead.\n"
+                "With no argument, reports the web server's state (same line as /status shows).\n"
+                "'start' runs the archive web server in-process on 127.0.0.1:8765; add 'public'\n"
+                "to bind 0.0.0.0 instead. 'stop' stops the server the TUI started, if any --\n"
+                "exiting the TUI stops it too.\n"
                 "CAVEAT (public): the archive has NO authentication -- a public bind makes every\n"
                 "captured message readable by anyone on your network. A mandatory warning prints\n"
-                "before the bind. If the port is already held by another process, this refuses\n"
+                "before the bind. If the port is already held by another process, start refuses\n"
                 "cleanly (no crash). The server also auto-starts on 127.0.0.1 when you open a\n"
                 "search result in the browser."
             ),
-            examples=["/start-web", "/start-web public"],
-            handler=_cmd_start_web,
-        )
-    )
-    registry.register(
-        Command(
-            name="stop-web",
-            summary="stop the in-process web server",
-            usage="/stop-web",
-            long_help=(
-                "Stops the web server the TUI started, if any. Exiting the TUI stops it too."
-            ),
-            examples=["/stop-web"],
-            handler=_cmd_stop_web,
+            examples=["/web", "/web start", "/web start public", "/web stop"],
+            handler=_cmd_web,
         )
     )
     registry.register(
@@ -555,6 +578,22 @@ def build_registry() -> CommandRegistry:
             examples=["/update", "/update yes"],
             handler=_cmd_update,
             background=True,
+        )
+    )
+    registry.register(
+        Command(
+            name="changelog",
+            summary="show the current release's changes; 'all' for the full history",
+            usage="/changelog [all]",
+            long_help=(
+                "With no argument, prints the newest CHANGELOG.md entry -- what the version\n"
+                "you are running changed -- plus a count of older entries. '/changelog all'\n"
+                "prints the entire release history, newest first.\n"
+                "Caveat: if no readable CHANGELOG.md is found (or it is malformed), this\n"
+                "reports that and shows nothing -- same degradation as the version banner."
+            ),
+            examples=["/changelog", "/changelog all"],
+            handler=_cmd_changelog,
         )
     )
     registry.register(

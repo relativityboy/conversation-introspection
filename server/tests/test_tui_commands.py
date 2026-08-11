@@ -33,10 +33,10 @@ VERBS = {
     "export",
     "status",
     "unarchive",
-    "start-web",
-    "stop-web",
+    "web",
     "cron",
     "update",
+    "changelog",
     "restart",
     "quit",
 }
@@ -533,37 +533,105 @@ def test_status_includes_version_line(tmp_path: Path, fixture_tree: Path, monkey
 # --- web management -----------------------------------------------------------------------
 
 
-def test_start_web_local(tmp_path: Path) -> None:
+def test_web_bare_reports_status(tmp_path: Path) -> None:
+    # /web mirrors /cron: no subcommand = status.
     ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb())
-    _run(ctx, "/start-web")
+    _run(ctx, "/web")
+    assert any(line == "web server: stopped" for line in emitted)
+
+
+def test_web_status_while_running(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb(running=True))
+    _run(ctx, "/web status")
+    assert any("running at http://127.0.0.1:8765" in line for line in emitted)
+
+
+def test_web_start_local(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb())
+    _run(ctx, "/web start")
     assert any("serving at http://127.0.0.1:8765" in line for line in emitted)
 
 
-def test_start_web_public_prints_mandatory_warning(tmp_path: Path) -> None:
+def test_web_start_public_prints_mandatory_warning(tmp_path: Path) -> None:
     ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb())
-    _run(ctx, "/start-web public")
+    _run(ctx, "/web start public")
     assert PUBLIC_BIND_WARNING in emitted
 
 
-def test_start_web_refuses_when_port_in_use(tmp_path: Path) -> None:
+def test_web_start_refuses_when_port_in_use(tmp_path: Path) -> None:
     ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb(start_result=StartResult.PORT_IN_USE))
-    _run(ctx, "/start-web")
+    _run(ctx, "/web start")
     assert any("already in use" in line for line in emitted)
 
 
-def test_start_web_already_running(tmp_path: Path) -> None:
+def test_web_start_already_running(tmp_path: Path) -> None:
     ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb(running=True))
-    _run(ctx, "/start-web")
+    _run(ctx, "/web start")
     assert any("already running" in line for line in emitted)
 
 
-def test_stop_web_when_running_and_not(tmp_path: Path) -> None:
+def test_web_stop_when_running_and_not(tmp_path: Path) -> None:
     ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb(running=True))
-    _run(ctx, "/stop-web")
+    _run(ctx, "/web stop")
     assert any("stopped" in line for line in emitted)
     emitted.clear()
-    _run(ctx, "/stop-web")
+    _run(ctx, "/web stop")
     assert any("no web server" in line for line in emitted)
+
+
+def test_web_unknown_subcommand_prints_usage(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb())
+    _run(ctx, "/web bogus")
+    assert any("usage: /web" in line for line in emitted)
+
+
+def test_web_start_rejects_unknown_arg(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db", web=FakeWeb())
+    _run(ctx, "/web start bogus")
+    assert any("usage: /web" in line for line in emitted)
+    assert not any("serving at" in line for line in emitted)
+
+
+def _stub_entries() -> list[Entry]:
+    return [
+        Entry("1.2.0", "2026-08-08", ("Versions everywhere.", "`/update` in the TUI.")),
+        Entry("1.1.0", "2026-08-07", ("Authorship labels.",)),
+    ]
+
+
+def test_changelog_bare_shows_latest_entry_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(changelog, "app_entries", _stub_entries)
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/changelog")
+    blob = "\n".join(emitted)
+    assert "## 1.2.0 — 2026-08-08" in blob
+    assert "- Versions everywhere." in blob
+    assert "1.1.0" not in blob  # older entries stay hidden without 'all'
+    assert any("/changelog all" in line for line in emitted)  # hint at the rest
+
+
+def test_changelog_all_shows_full_history(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(changelog, "app_entries", _stub_entries)
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/changelog all")
+    blob = "\n".join(emitted)
+    assert "## 1.2.0 — 2026-08-08" in blob
+    assert "## 1.1.0 — 2026-08-07" in blob
+    assert "- Authorship labels." in blob
+
+
+def test_changelog_unknown_arg_prints_usage(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(changelog, "app_entries", _stub_entries)
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/changelog bogus")
+    assert any("usage: /changelog" in line for line in emitted)
+
+
+def test_changelog_unreadable_reports_cleanly(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(changelog, "app_entries", lambda: None)
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/changelog")
+    assert any("no readable CHANGELOG" in line for line in emitted)
 
 
 def test_quit_invokes_exit(tmp_path: Path) -> None:

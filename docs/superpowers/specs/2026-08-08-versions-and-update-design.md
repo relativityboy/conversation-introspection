@@ -121,7 +121,7 @@ both surfaces calling it:
    then confirm: `update to v1.2.0? [y/N]`.
 5. On yes: run `update.sh`, streaming its output.
 6. TUI only: if the in-process web server is running, bounce it (existing
-   stop-web/start-web internals) so the new `dist` is picked up.
+   web stop/start internals) so the new `dist` is picked up.
 7. If the pulled range touched `server/` (`git diff --name-only old..new -- server/`
    nonempty): the running process is stale code. TUI: offer
    `restart the TUI now? [y/N]`; on yes the app exits with a restart marker and the

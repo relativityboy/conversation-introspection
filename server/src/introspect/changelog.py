@@ -95,3 +95,16 @@ def app_version(start: Path | None = None) -> str:
         return current_version(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return "unknown"
+
+
+def app_entries(start: Path | None = None) -> list[Entry] | None:
+    """Best-effort full entry list (newest first) for runtime surfaces; ``None`` on any
+    failure -- same degradation contract as :func:`app_version`."""
+    origin = start if start is not None else Path(__file__).resolve()
+    try:
+        path = find_changelog(origin)
+        if path is None:
+            return None
+        return parse_changelog(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None

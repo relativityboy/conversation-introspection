@@ -26,6 +26,14 @@ full-text query. In the results list:
 Opening a result needs a web server, so if one isn't already running the TUI **auto-starts it on
 `127.0.0.1`** first. Subagent (sub-session) hits deep-link straight into that subagent's transcript.
 
+## Resizing the panels
+
+The seam between the results list and the log is a **draggable divider** — grab it with the mouse
+to move the boundary. From the keyboard, **alt+↑ / alt+↓** grow and shrink the log area
+(**ctrl+shift+↑/↓** do the same, for terminals that don't pass alt+arrows through). Bare Up/Down
+stay reserved for results navigation. Neither panel can be crushed away — the log keeps at least
+3 rows and the results at least 5.
+
 ## Slash commands
 
 Type `/help` for the live list, or `/help <command>` for one command's full description, examples,
@@ -39,21 +47,21 @@ and caveats. The commands, in the order `/help` lists them:
 | `/export <uuid> [path]` | Reconstruct a session's transcript byte-for-byte. With no path, writes `<uuid>.jsonl` into the current directory. An unknown uuid reports a not-found message and writes nothing. See [Export](export.md). |
 | `/status` | The running version (first line), then archive counts (sessions, archived, files, records, anomalies by severity), the last import run, the schema line, the in-process web-server state, and the cron line. `archived` is an aggregate count only — no archived identities are ever shown. |
 | `/unarchive <uuid>` | Restore an archived session so it's readable again. The uuid must be known out-of-band — by design, nothing lists archived sessions. A uuid that's unknown or simply not archived reports a message and changes nothing. |
-| `/start-web [public]` | Start the in-process web server. Bare, it binds `127.0.0.1:8765`. Add `public` to bind `0.0.0.0` instead — see the warning below. If the port is already held by another process, it refuses cleanly. |
-| `/stop-web` | Stop the web server the TUI started (exiting the TUI stops it too). |
+| `/web [start [public] \| stop \| status]` | Manage the in-process web server. Bare (or `status`), reports its state. `start` binds `127.0.0.1:8765`; `start public` binds `0.0.0.0` instead — see the warning below. If the port is already held by another process, start refuses cleanly. `stop` stops the server the TUI started (exiting the TUI stops it too). The server URL in the log is interactive: click it to copy, ⌘-click to open it (in terminals that support hyperlinks, e.g. iTerm2). |
 | `/cron [install [minutes] \| remove]` | Schedule or unschedule periodic imports via your user crontab. See [Keeping it running (cron)](cron.md) for the full story. |
 | `/update [yes]` | Bare, checks `origin` and prints the pending changelist without changing anything. `/update yes` applies it — runs `update.sh`, restarts the web server if one was running, and prints a `/restart` hint if server code changed. See [Updating](update.md) for the full story. |
+| `/changelog [all]` | Show the newest release entry — what the version you're running changed — plus a count of older entries. `all` prints the entire release history, newest first. |
 | `/restart` | Relaunch the TUI as a fresh process, so code an `/update yes` just applied actually loads (a same-process reload would keep the old code in memory). |
 | `/quit` | Exit the app (stopping any web server it started). Ctrl-C does the same. |
 
 ## A warning about public bind
 
-`/start-web public` (and the CLI's `introspect serve --host 0.0.0.0`) binds the web server to a
+`/web start public` (and the CLI's `introspect serve --host 0.0.0.0`) binds the web server to a
 network-facing interface. **The archive has no authentication.** A public bind makes every captured
 message — everything you and Claude have ever said in an archived session — readable by anyone who
 can reach your machine on that port.
 
-Because of that, `/start-web public` prints a mandatory warning *before* it even attempts the bind,
+Because of that, `/web start public` prints a mandatory warning *before* it even attempts the bind,
 so you see the risk regardless of whether the start then succeeds. Don't use it unless you fully
 understand the exposure. The default `127.0.0.1` bind keeps the reader on localhost only, which is
 what you want almost always.

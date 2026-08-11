@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy.orm import Session
-from textual.widgets import Input
+from textual.widgets import Input, RichLog
 
 from introspect.cron import CrontabIO
-from introspect.tui.app import IntrospectApp
+from introspect.tui.app import IntrospectApp, PanelDivider, linkify
 from introspect.tui.webserver import PUBLIC_BIND_WARNING, WebServerManager
 from tests.conftest import AGENT_HEX_ID, SESSION_UUID_1
 from tests.test_cron import FakeRunner
@@ -206,14 +206,14 @@ def test_app_tab_accepts_completion(tmp_path: Path) -> None:
         app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
         async with app.run_test() as pilot:
             inp = app.query_one("#cmd", Input)
-            await _type_and_settle(pilot, inp, "/start-")
+            await _type_and_settle(pilot, inp, "/w")
             await pilot.press("tab")
             await pilot.pause()
             result["value"] = inp.value
             result["focused_is_input"] = app.focused is inp
 
     asyncio.run(scenario())
-    assert result["value"] == "/start-web"
+    assert result["value"] == "/web"
     assert result["focused_is_input"] is True  # Tab accepted, did NOT move focus
 
 
@@ -224,13 +224,13 @@ def test_app_right_accepts_completion_at_end(tmp_path: Path) -> None:
         app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
         async with app.run_test() as pilot:
             inp = app.query_one("#cmd", Input)
-            await _type_and_settle(pilot, inp, "/start-")
+            await _type_and_settle(pilot, inp, "/w")
             await pilot.press("right")
             await pilot.pause()
             result["value"] = inp.value
 
     asyncio.run(scenario())
-    assert result["value"] == "/start-web"
+    assert result["value"] == "/web"
 
 
 def test_app_tab_without_suggestion_moves_focus(tmp_path: Path) -> None:
@@ -269,7 +269,7 @@ def test_app_start_web_then_status_roundtrips_state(
         async with app.run_test() as pilot:
             _spy_log(app, recorded)
             inp = app.query_one("#cmd", Input)
-            inp.value = "/start-web"
+            inp.value = "/web start"
             await pilot.press("enter")
             await pilot.pause()
             inp.value = "/status"
@@ -308,7 +308,7 @@ def test_app_start_web_port_refusal(
         app = IntrospectApp(db_path=tmp_path / "a.db")  # real manager, port always "taken"
         async with app.run_test() as pilot:
             _spy_log(app, recorded)
-            app.query_one("#cmd", Input).value = "/start-web"
+            app.query_one("#cmd", Input).value = "/web start"
             await pilot.press("enter")
             await pilot.pause()
 
@@ -323,9 +323,188 @@ def test_app_public_bind_warning_present(tmp_path: Path) -> None:
         app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
         async with app.run_test() as pilot:
             _spy_log(app, recorded)
-            app.query_one("#cmd", Input).value = "/start-web public"
+            app.query_one("#cmd", Input).value = "/web start public"
             await pilot.press("enter")
             await pilot.pause()
 
     asyncio.run(scenario())
     assert PUBLIC_BIND_WARNING in recorded
+
+
+# --- Clickable URLs in the log ------------------------------------------------------------
+
+
+def test_linkify_line_without_url_passes_through_unstyled(tmp_path: Path) -> None:
+    out = linkify("import: files=3 records=12 status=ok")
+    assert out.plain == "import: files=3 records=12 status=ok"
+    assert not any(getattr(span.style, "link", None) for span in out.spans)
+
+
+def test_linkify_url_span_carries_copy_action_and_hyperlink(tmp_path: Path) -> None:
+    line = "web: serving at http://127.0.0.1:8765 (bound 127.0.0.1:8765)"
+    out = linkify(line)
+    assert out.plain == line  # visible text unchanged, only styling added
+    url_spans = [s for s in out.spans if getattr(s.style, "link", None)]
+    assert len(url_spans) == 1
+    span = url_spans[0]
+    assert line[span.start : span.end] == "http://127.0.0.1:8765"
+    assert span.style.link == "http://127.0.0.1:8765"  # OSC 8: cmd+click opens
+    assert span.style.meta["@click"] == "app.copy_url('http://127.0.0.1:8765')"  # click copies
+
+
+def test_linkify_url_at_end_of_line(tmp_path: Path) -> None:
+    url = f"http://127.0.0.1:8765/s/{SESSION_UUID_1}"
+    out = linkify(f"opening {url}")
+    url_spans = [s for s in out.spans if getattr(s.style, "link", None)]
+    assert len(url_spans) == 1
+    assert url_spans[0].style.link == url
+
+
+def test_app_action_copy_url_copies_and_confirms(tmp_path: Path) -> None:
+    recorded: list[str] = []
+    copied: list[str] = []
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test() as pilot:
+            _spy_log(app, recorded)
+            app._copy_text = copied.append  # type: ignore[method-assign]
+            app.action_copy_url("http://127.0.0.1:8765")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert copied == ["http://127.0.0.1:8765"]
+    assert any("copied http://127.0.0.1:8765" in line for line in recorded)
+
+
+def test_copy_text_uses_pbcopy_on_macos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        calls["argv"] = argv
+        calls["input"] = kwargs.get("input")
+
+    monkeypatch.setattr("introspect.tui.app.subprocess.run", fake_run)
+    monkeypatch.setattr("introspect.tui.app.sys.platform", "darwin")
+    app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+    app._copy_text("http://127.0.0.1:8765")
+    assert calls["argv"] == ["pbcopy"]
+    assert calls["input"] == b"http://127.0.0.1:8765"
+
+
+def test_copy_text_falls_back_to_osc52_off_macos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("introspect.tui.app.sys.platform", "linux")
+    app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+    osc52: list[str] = []
+    monkeypatch.setattr(app, "copy_to_clipboard", osc52.append)
+    app._copy_text("http://127.0.0.1:8765")
+    assert osc52 == ["http://127.0.0.1:8765"]
+
+
+# --- Panel resize (divider + hotkeys) -----------------------------------------------------
+
+
+def test_app_resize_actions_change_log_height(tmp_path: Path) -> None:
+    heights: dict[str, int] = {}
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test(size=(100, 40)) as pilot:
+            log = app.query_one("#log", RichLog)
+            heights["start"] = log.region.height
+            app.action_grow_log()
+            await pilot.pause()
+            heights["grown"] = log.region.height
+            app.action_shrink_log()
+            app.action_shrink_log()
+            await pilot.pause()
+            heights["shrunk"] = log.region.height
+
+    asyncio.run(scenario())
+    assert heights["grown"] == heights["start"] + 1
+    assert heights["shrunk"] == heights["grown"] - 2
+
+
+def test_app_resize_respects_bounds(tmp_path: Path) -> None:
+    sizes: dict[str, int] = {}
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test(size=(100, 40)) as pilot:
+            for _ in range(50):
+                app.action_shrink_log()
+            await pilot.pause()
+            sizes["log_min"] = app.query_one("#log", RichLog).region.height
+            for _ in range(100):
+                app.action_grow_log()
+            await pilot.pause()
+            sizes["log_max"] = app.query_one("#log", RichLog).region.height
+            sizes["results_left"] = app.query_one("#results").region.height
+
+    asyncio.run(scenario())
+    assert sizes["log_min"] == 3  # never collapses to nothing
+    assert sizes["results_left"] >= 5  # growing the log can't crush the results away
+
+
+def test_app_alt_arrows_resize_log(tmp_path: Path) -> None:
+    heights: dict[str, int] = {}
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test(size=(100, 40)) as pilot:
+            log = app.query_one("#log", RichLog)
+            heights["start"] = log.region.height
+            await pilot.press("alt+up")
+            heights["grown"] = log.region.height
+            await pilot.press("alt+down")
+            heights["back"] = log.region.height
+
+    asyncio.run(scenario())
+    assert heights["grown"] == heights["start"] + 1
+    assert heights["back"] == heights["start"]
+
+
+def test_app_divider_sits_between_results_and_log(tmp_path: Path) -> None:
+    rows: dict[str, int] = {}
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            rows["results_bottom"] = app.query_one("#results").region.bottom
+            divider = app.query_one(PanelDivider)
+            rows["divider_y"] = divider.region.y
+            rows["divider_h"] = divider.region.height
+            rows["log_y"] = app.query_one("#log", RichLog).region.y
+
+    asyncio.run(scenario())
+    assert rows["divider_h"] == 1
+    assert rows["results_bottom"] == rows["divider_y"]
+    assert rows["log_y"] == rows["divider_y"] + 1
+
+
+def test_app_set_log_height_clamps(tmp_path: Path) -> None:
+    heights: dict[str, int] = {}
+
+    async def scenario() -> None:
+        app = IntrospectApp(db_path=tmp_path / "a.db", web=FakeWeb())
+        async with app.run_test(size=(100, 40)) as pilot:
+            app._set_log_height(7)
+            await pilot.pause()
+            heights["exact"] = app.query_one("#log", RichLog).region.height
+            app._set_log_height(0)
+            await pilot.pause()
+            heights["low"] = app.query_one("#log", RichLog).region.height
+            app._set_log_height(999)
+            await pilot.pause()
+            heights["high"] = app.query_one("#log", RichLog).region.height
+            heights["results_left"] = app.query_one("#results").region.height
+
+    asyncio.run(scenario())
+    assert heights["exact"] == 7
+    assert heights["low"] == 3
+    assert heights["results_left"] >= 5
