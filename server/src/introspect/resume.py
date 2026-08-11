@@ -3,9 +3,15 @@
 cron.py architecture: pure text builders + an orchestration function whose subprocess edge is an
 injectable Runner. The launch artifact is a `.command` script executed by the terminal app via
 LaunchServices (`open -a`) — deliberately NOT AppleScript, so no TCC Automation prompt. The script
-runs `#!/bin/zsh -l` (login shell): `claude` resolves against the USER's PATH, not the server's,
-and the claude-not-on-PATH fallback (pbcopy + message) executes in the only environment where
-launchability is actually decidable (§17.1.4).
+runs `#!/bin/zsh -il` (interactive login shell): login so `claude` resolves against the USER's
+PATH, not the server's, and the claude-not-on-PATH fallback (pbcopy + message) executes in the
+only environment where launchability is actually decidable (§17.1.4); interactive so `.zshrc`
+is sourced — that's where direnv/autoenv-style hooks live, so the script's `cd` loads the
+project's `.env`/`.envrc` exactly as a hand-opened terminal would. Without `-i`, MCP servers
+whose tokens come from project-root `.env` wake dead in resumed sessions (found 2026-08-11 on
+a work machine: sonarqube MCP dead via resume button, alive via hand-typed `claude --resume`).
+`.zshrc` is also where nvm/asdf-style PATH additions live, so `-i` strengthens the §17.1.4
+claude-resolution rationale rather than weakening it.
 """
 
 from __future__ import annotations
@@ -49,7 +55,7 @@ def build_resume_command(session_uuid: str) -> str:
 def build_launch_script(cwd: str, session_uuid: str) -> str:
     command = build_resume_command(session_uuid)
     return (
-        "#!/bin/zsh -l\n"
+        "#!/bin/zsh -il\n"
         f"cd {shlex.quote(cwd)} || exit 1\n"
         "if command -v claude >/dev/null 2>&1; then\n"
         f"  exec claude --resume {shlex.quote(session_uuid)}\n"

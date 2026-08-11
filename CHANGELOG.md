@@ -4,6 +4,9 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.3.1 — 2026-08-11
+- Resume links now open the session in an interactive login shell, so per-project environment loaders (direnv and friends) run and MCP servers that need `.env` tokens work the same as when you type `claude --resume` by hand.
+
 ## 1.3.0 — 2026-08-10
 - Message timestamps now include the date (e.g. `2026.07.19 14:03`), so turns in conversations that cross midnight are no longer ambiguous.
 - The session id at the top of a conversation is now click-to-copy — hover to see the full id, click to copy it to your clipboard.

@@ -21,7 +21,9 @@ def test_resume_command_shape() -> None:
 def test_launch_script_happy_shape() -> None:
     script = resume.build_launch_script("/Users/casey/projects/myapp", "abc-123")
     lines = script.splitlines()
-    assert lines[0] == "#!/bin/zsh -l"
+    # -il: login (user PATH via .zprofile) AND interactive (.zshrc → direnv/chpwd hooks),
+    # so resume-launched sessions get the same per-project env a hand-opened terminal gets.
+    assert lines[0] == "#!/bin/zsh -il"
     assert "cd /Users/casey/projects/myapp || exit 1" in script
     assert "command -v claude" in script
     assert "exec claude --resume abc-123" in script
