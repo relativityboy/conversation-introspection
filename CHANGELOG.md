@@ -4,6 +4,9 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.5.0 — 2026-08-15
+- Search now defaults to the chat — what you and Claude actually said to each other — instead of everything: subagent transcripts and harness records are excluded until you ask for them. In the TUI, widen with `--agents`, `--system`, or `--all` in the search text; on the API, with `sources=agents,system` or `sources=all`. The web reading room still searches everything, unchanged.
+
 ## 1.4.0 — 2026-08-11
 - TUI: `/start-web` and `/stop-web` are replaced by `/web [start [public] | stop | status]` — bare `/web` reports server state, matching the `/cron` shape. The old commands are gone (no aliases).
 - TUI: server URLs in the log are now interactive — click one to copy it to the clipboard, or cmd+click to open it in terminals that support hyperlinks (iTerm2 and friends).

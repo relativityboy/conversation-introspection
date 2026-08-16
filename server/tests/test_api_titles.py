@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from introspect.api import create_app
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
+from introspect.ingest.interpret import classify_pending
 from introspect.ingest.reparse import reparse_all
 from introspect.ingest.run import run_import
 from introspect.models import UserTitle
@@ -32,6 +33,9 @@ from tests.conftest import SESSION_UUID_1, SESSION_UUID_2
 def _capture(db: Session, root: Path) -> None:
     for f in discover(root):
         capture_file(db, f)
+    # Production-shaped (import/reparse both classify): search's chat-default sources
+    # filter on authorship, so an unclassified fixture tests a state production never has.
+    classify_pending(db)
     db.commit()
 
 

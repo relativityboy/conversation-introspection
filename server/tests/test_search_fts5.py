@@ -17,7 +17,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from introspect.models import ContentBlock, Message
+from introspect.models import ContentBlock, Message, Transcript
+from introspect.schema.authorship import CHAT_KINDS, DIALOGUE_KINDS
 from introspect.search import BestSnippet, SearchHit, get_search_index, sanitize_query
 from introspect.search.fts5 import _TEXT_PREDICATE
 from tests.conftest import (
@@ -454,3 +455,98 @@ def test_search_project_slugs_empty_matches_nothing(db_session, indexed_fixture)
 def test_search_project_slugs_never_raises(db_session, indexed_fixture, evil):
     hits, total = idx.search(db_session, evil, project_slugs=[PROJECT_SLUG_1])  # must not raise
     assert isinstance(hits, list) and isinstance(total, int)
+
+
+# --- Source filtering (spec 2026-08-15: sources axis over chat/agents/system) --------------
+
+
+def test_dialogue_kinds_is_the_you_and_me_set():
+    """DIALOGUE_KINDS is the strict human<->Claude set -- deliberately narrower than the
+    room's CHAT_KINDS: dispatch briefings and coordinator relays are Claude talking to
+    minions/harness, not to the human (relativityboy ruling 2026-08-15)."""
+    assert DIALOGUE_KINDS == frozenset({
+        "human_typed", "human_queued", "human_inferred",
+        "attachment_queued_human", "interrupt_marker", "claude",
+    })
+    assert "dispatch" in CHAT_KINDS and "dispatch" not in DIALOGUE_KINDS
+    assert "coordinator" in CHAT_KINDS and "coordinator" not in DIALOGUE_KINDS
+
+
+def _seed_sourced_block(db, transcript_kind: str, authorship: str | None, marker: str, n: int):
+    """Retag an existing message to ``authorship`` and give it a fresh indexed text block."""
+    msg = (
+        db.query(Message)
+        .join(Transcript, Transcript.id == Message.transcript_id)
+        .filter(Transcript.kind == transcript_kind)
+        .order_by(Message.id)
+        .offset(n)
+        .first()
+    )
+    msg.authorship_kind = authorship
+    block = ContentBlock(
+        message_id=msg.id, block_index=800 + n, block_kind="text",
+        text_content=f"srcmark {marker}",
+    )
+    db.add(block)
+    db.flush()
+    idx.index_blocks(db, [block.id])
+    return block.id
+
+
+def _seed_source_buckets(db):
+    """One 'srcmark' block per bucket: chat (main+dialogue), agents (subagent), system
+    (main+harness), plus a NULL-authorship main block (mid-import state)."""
+    _seed_sourced_block(db, "main", "human_typed", "srcchat", 0)
+    _seed_sourced_block(db, "subagent", "claude", "srcagent", 0)
+    _seed_sourced_block(db, "main", "task_notification", "srcsystem", 1)
+    _seed_sourced_block(db, "main", None, "srcnull", 2)
+
+
+def test_sources_chat_returns_only_dialogue_main(db_session, indexed_fixture):
+    _seed_source_buckets(db_session)
+    hits, total = idx.search(db_session, "srcmark", sources=frozenset({"chat"}))
+    assert total == 1
+    assert "srcchat" in _strip_marks(hits[0].snippet)
+
+
+def test_sources_are_additive_and_partition_the_index(db_session, indexed_fixture):
+    _seed_source_buckets(db_session)
+    hits, total = idx.search(db_session, "srcmark", sources=frozenset({"chat", "agents"}))
+    markers = {_strip_marks(h.snippet).split()[1] for h in hits}
+    assert total == 2 and markers == {"srcchat", "srcagent"}
+    _, all_total = idx.search(db_session, "srcmark", sources=frozenset({"chat", "agents", "system"}))
+    _, none_total = idx.search(db_session, "srcmark", sources=None)
+    assert all_total == none_total == 4  # the three buckets partition the index exactly
+
+
+def test_sources_system_catches_harness_and_null_authorship(db_session, indexed_fixture):
+    _seed_source_buckets(db_session)
+    hits, total = idx.search(db_session, "srcmark", sources=frozenset({"system"}))
+    markers = {_strip_marks(h.snippet).split()[1] for h in hits}
+    assert total == 2 and markers == {"srcsystem", "srcnull"}  # NULL = honest floor, not chat
+
+
+def test_sources_empty_set_matches_nothing(db_session, indexed_fixture):
+    _seed_source_buckets(db_session)
+    hits, total = idx.search(db_session, "srcmark", sources=frozenset())
+    assert hits == [] and total == 0
+
+
+def test_sources_unknown_token_raises(db_session, indexed_fixture):
+    with pytest.raises(ValueError):
+        idx.search(db_session, "srcmark", sources=frozenset({"chat", "tools"}))
+
+
+def test_sources_thread_through_session_listing_and_best_snippets(db_session, indexed_fixture):
+    _seed_source_buckets(db_session)
+    # session_uuids_matching: chat scope still finds the session (its chat block matches)...
+    assert idx.session_uuids_matching(
+        db_session, "srcmark", None, sources=frozenset({"chat"})
+    ) == [SESSION_UUID_1]
+    # ...and best_snippets under chat scope must pick the CHAT block as the winner even
+    # though agent/system blocks in the same session also match.
+    best = idx.best_snippets(
+        db_session, [SESSION_UUID_1], "srcmark", sources=frozenset({"chat"})
+    )
+    assert "srcchat" in _strip_marks(best[SESSION_UUID_1].snippet)
+    assert best[SESSION_UUID_1].agent_hex_id is None

@@ -27,6 +27,33 @@ from introspect.search import get_search_index
 _MARK_RE = re.compile(r"</?mark>")
 _WS_RE = re.compile(r"\s+")
 
+#: The default sources for TUI search: the human<->Claude dialogue only (spec 2026-08-15).
+CHAT_SOURCES = frozenset({"chat"})
+_FLAG_TO_SOURCES = {
+    "--agents": frozenset({"agents"}),
+    "--system": frozenset({"system"}),
+    "--all": frozenset({"agents", "system"}),
+}
+
+
+def parse_source_flags(raw: str) -> tuple[str, frozenset[str]]:
+    """Split widen-flags out of a search line: ``("cormorant --agents", ...)`` ->
+    ``("cormorant", {"chat", "agents"})``.
+
+    Flags are additive over the chat default (spec 2026-08-15: "other sources addable as
+    flags"). An unrecognized ``--token`` stays in the query text — treated as literal search
+    input, never silently swallowed.
+    """
+    sources = CHAT_SOURCES
+    kept: list[str] = []
+    for word in raw.split():
+        extra = _FLAG_TO_SOURCES.get(word)
+        if extra is not None:
+            sources = sources | extra
+        else:
+            kept.append(word)
+    return " ".join(kept), sources
+
 
 def display_title(
     user_title: str | None,
@@ -66,14 +93,22 @@ class SearchResultRow:
     agent_hex_id: str | None
 
 
-def search_sessions(db: Session, query: str, *, limit: int = 50) -> list[SearchResultRow]:
+def search_sessions(
+    db: Session,
+    query: str,
+    *,
+    limit: int = 50,
+    sources: frozenset[str] = CHAT_SOURCES,
+) -> list[SearchResultRow]:
     """Rank-ordered, archived-excluded, one-row-per-session results for ``query``.
 
     ``limit`` bounds the underlying HIT page (as the web route does); sessions are grouped from
     those hits, so a session's row carries its best-ranked hit within that page. An empty or
-    no-match query returns ``[]`` without further DB work.
+    no-match query returns ``[]`` without further DB work. ``sources`` defaults to the chat
+    bucket — the human<->Claude dialogue — per the 2026-08-15 ruling; callers widen via
+    :func:`parse_source_flags`.
     """
-    hits, _total = get_search_index().search(db, query, limit=limit)
+    hits, _total = get_search_index().search(db, query, limit=limit, sources=sources)
     if not hits:
         return []
 

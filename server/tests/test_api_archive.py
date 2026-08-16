@@ -25,6 +25,7 @@ from introspect.api import create_app
 from introspect.export import export_transcript
 from introspect.ingest.capture import capture_file, utcnow
 from introspect.ingest.discovery import discover
+from introspect.ingest.interpret import classify_pending
 from introspect.ingest.reparse import reparse_all
 from introspect.ingest.run import run_import
 from introspect.models import ArchivedSession, RawRecord, Transcript
@@ -36,6 +37,9 @@ from tests.fixtures.records import make_user_line
 def _capture(db: Session, root: Path) -> None:
     for f in discover(root):
         capture_file(db, f)
+    # Production-shaped (import/reparse both classify): search's chat-default sources
+    # filter on authorship, so an unclassified fixture tests a state production never has.
+    classify_pending(db)
     db.commit()
 
 

@@ -17,7 +17,11 @@ non-default archive or transcript tree.
 ## Searching
 
 Type any text **with no leading `/`** and the TUI searches your archived conversations as a
-full-text query. In the results list:
+full-text query. By default the search covers **the chat only** — what you and Claude said to
+each other in main conversations. Widen it with flags anywhere in the search text: `--agents`
+(subagent transcripts: minion work, dispatch briefings), `--system` (harness records: task
+notifications, skill payloads), or `--all` (everything). The result line names the active
+sources whenever the search is widened. In the results list:
 
 - **Up / Down** move the highlight through the results.
 - **Enter or Right** both open the highlighted result **at its best-matching message**, in your
@@ -50,8 +54,7 @@ and caveats. The commands, in the order `/help` lists them:
 | `/web [start [public] \| stop \| status]` | Manage the in-process web server. Bare (or `status`), reports its state. `start` binds `127.0.0.1:8765`; `start public` binds `0.0.0.0` instead — see the warning below. If the port is already held by another process, start refuses cleanly. `stop` stops the server the TUI started (exiting the TUI stops it too). The server URL in the log is interactive: click it to copy, ⌘-click to open it (in terminals that support hyperlinks, e.g. iTerm2). |
 | `/cron [install [minutes] \| remove]` | Schedule or unschedule periodic imports via your user crontab. See [Keeping it running (cron)](cron.md) for the full story. |
 | `/update [yes]` | Bare, checks `origin` and prints the pending changelist without changing anything. `/update yes` applies it — runs `update.sh`, restarts the web server if one was running, and prints a `/restart` hint if server code changed. See [Updating](update.md) for the full story. |
-| `/changelog [all]` | Show the newest release entry — what the version you're running changed — plus a count of older entries. `all` prints the entire release history, newest first. |
-| `/restart` | Relaunch the TUI as a fresh process, so code an `/update yes` just applied actually loads (a same-process reload would keep the old code in memory). |
+| `/changelog [all]` | Show the newest release entry — what the version you're running changed — plus a count of older entries. `all` prints the entire release history, newest first. || `/restart` | Relaunch the TUI as a fresh process, so code an `/update yes` just applied actually loads (a same-process reload would keep the old code in memory). |
 | `/quit` | Exit the app (stopping any web server it started). Ctrl-C does the same. |
 
 ## A warning about public bind

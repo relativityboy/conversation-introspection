@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from introspect.api import create_app
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
+from introspect.ingest.interpret import classify_pending
 from introspect.search import get_search_index
 from tests.conftest import AGENT_HEX_ID, SESSION_UUID_1
 from tests.fixtures.records import make_assistant_line, make_session_file, make_user_line
@@ -27,6 +28,10 @@ from tests.fixtures.records import make_assistant_line, make_session_file, make_
 def _capture_and_index(db: Session, root: Path) -> None:
     for f in discover(root):
         capture_file(db, f)
+    # Production-shaped: import/reparse both classify after interpretation, and the sources
+    # axis (spec 2026-08-15) filters on authorship, so unclassified fixtures would test a
+    # state the real archive is never in.
+    classify_pending(db)
     db.commit()
     get_search_index().rebuild(db)
     db.commit()
@@ -37,7 +42,11 @@ def _write_session(root: Path, project_slug: str, session_uuid: str, texts: list
     proj = root / project_slug
     proj.mkdir(parents=True, exist_ok=True)
     lines = [
-        (make_user_line if i % 2 == 0 else make_assistant_line)(text=t, sessionId=session_uuid)
+        # User lines stamp promptSource="typed" (era-faithful; classifies human_typed) so
+        # both roles' texts sit in the default chat sources bucket.
+        make_user_line(text=t, sessionId=session_uuid, promptSource="typed")
+        if i % 2 == 0
+        else make_assistant_line(text=t, sessionId=session_uuid)
         for i, t in enumerate(texts)
     ]
     (proj / f"{session_uuid}.jsonl").write_bytes(make_session_file(lines))
@@ -265,8 +274,9 @@ def test_hit_agent_hex_id_distinguishes_subagent_from_main_transcript(client: Te
     Without this the reader deep-links every hit to the main-conversation path, which then
     fetches the main transcript with a foreign record uuid and 404s (the cross-layer bug).
     """
-    # "cormorant" is unique to the fixture's subagent transcript user line.
-    sub = client.get("/api/v1/search", params={"q": "cormorant"}).json()
+    # "cormorant" is unique to the fixture's subagent transcript user line -- outside the
+    # chat-default sources, so this test widens explicitly (defaults have their own tests).
+    sub = client.get("/api/v1/search", params={"q": "cormorant", "sources": "all"}).json()
     assert sub["total"] == 1
     sub_group = sub["groups"][0]
     assert sub_group["session"]["session_uuid"] == SESSION_UUID_1  # subagent belongs to session 1
@@ -276,3 +286,35 @@ def test_hit_agent_hex_id_distinguishes_subagent_from_main_transcript(client: Te
     # "horizon" is unique to session 1's MAIN transcript -> the hit routes the main path.
     main_hit = client.get("/api/v1/search", params={"q": "horizon"}).json()["groups"][0]["hits"][0]
     assert main_hit["agent_hex_id"] is None
+
+
+# --- Sources axis (spec 2026-08-15): chat by default, widen explicitly ---------------------
+
+
+def test_search_defaults_to_chat_sources(client: TestClient) -> None:
+    """"cormorant" lives only in a subagent transcript -> invisible without widening."""
+    body = client.get("/api/v1/search", params={"q": "cormorant"}).json()
+    assert body["groups"] == [] and body["total"] == 0
+    # ...while main-transcript dialogue ("horizon", human_typed) is found by default.
+    body = client.get("/api/v1/search", params={"q": "horizon"}).json()
+    assert body["total"] >= 1
+
+
+def test_search_sources_all_widens_to_subagents(client: TestClient) -> None:
+    body = client.get("/api/v1/search", params={"q": "cormorant", "sources": "all"}).json()
+    assert body["total"] >= 1
+    hit = body["groups"][0]["hits"][0]
+    assert hit["agent_hex_id"] == AGENT_HEX_ID
+
+
+def test_search_sources_additive_tokens(client: TestClient) -> None:
+    body = client.get(
+        "/api/v1/search", params={"q": "cormorant", "sources": "chat,agents"}
+    ).json()
+    assert body["total"] >= 1
+
+
+def test_search_sources_unknown_token_is_422(client: TestClient) -> None:
+    res = client.get("/api/v1/search", params={"q": "horizon", "sources": "chat,bogus"})
+    assert res.status_code == 422
+    assert "bogus" in res.json()["detail"]

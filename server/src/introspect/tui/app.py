@@ -34,7 +34,7 @@ from introspect import changelog, config
 from introspect.cron import CrontabIO
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.tui.commands import Command, CommandContext, build_registry, parse_command
-from introspect.tui.search import SearchResultRow, search_sessions
+from introspect.tui.search import SearchResultRow, parse_source_flags, search_sessions
 from introspect.tui.webserver import (
     WebServerManager,
     right_arrow_url,
@@ -282,19 +282,25 @@ class IntrospectApp(App):
     # --- Search --------------------------------------------------------------------------
 
     def _run_search(self, query: str) -> None:
+        clean, sources = parse_source_flags(query)
         with self._session_factory() as db:
-            self._results = search_sessions(db, query)
+            self._results = search_sessions(db, clean, sources=sources)
         results_list = self.query_one("#results", ResultsList)
         results_list.clear_options()
+        # Honesty about the active filter (spec 2026-08-15 §4): default searches only the
+        # human<->Claude chat; say so when widened, and hint the widen flags on a miss.
+        widened = sources != frozenset({"chat"})
+        label = f' [sources: {"+".join(sorted(sources))}]' if widened else ""
         if not self._results:
-            self._append_log(f'no results for "{query}"')
+            hint = "" if widened else " (chat only -- widen with --agents / --system / --all)"
+            self._append_log(f'no results for "{clean}"{label}{hint}')
             return
         results_list.add_options(
             [Option(self._format_row(row), id=row.session_uuid) for row in self._results]
         )
         results_list.highlighted = 0
         results_list.focus()
-        self._append_log(f'{len(self._results)} result(s) for "{query}" -- '
+        self._append_log(f'{len(self._results)} result(s) for "{clean}"{label} -- '
                          "Enter or Right opens the best-hit message")
 
     def _format_row(self, row: SearchResultRow) -> Text:

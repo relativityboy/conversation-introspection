@@ -128,6 +128,16 @@ describe('query-string building', () => {
     expect(url.searchParams.has('projects')).toBe(false)
   })
 
+  it('always widens to sources=all (fetchSearch) — the room is the human-eyes surface', async () => {
+    // The server defaults to sources=chat (spec 2026-08-15); the room must explicitly ask
+    // for everything or full-archive search silently shrinks to the dialogue only.
+    await fetchSearch('foo', 'global')
+
+    const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    const url = new URL(calledUrl, 'http://localhost')
+    expect(url.searchParams.get('sources')).toBe('all')
+  })
+
   it('serializes view verbatim when provided (fetchMessages)', async () => {
     await fetchMessages(42, { view: 'chat-harness' })
 

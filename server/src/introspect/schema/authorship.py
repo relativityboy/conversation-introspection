@@ -22,6 +22,15 @@ CHAT_KINDS = frozenset({
     "human_typed", "human_queued", "human_inferred", "claude",
     "attachment_queued_human", "interrupt_marker", "dispatch", "coordinator",
 })
+# The strict human<->Claude dialogue set (spec 2026-08-15) -- deliberately NARROWER than
+# CHAT_KINDS above: dispatch briefings and coordinator relays render in the room's chat view,
+# but they are Claude talking to minions/harness, not to the human. Search's default "chat"
+# sources bucket is this set on MAIN transcripts (interrupts stay: they are the human's voice,
+# per the 2026-08-08 ruling).
+DIALOGUE_KINDS = frozenset({
+    "human_typed", "human_queued", "human_inferred",
+    "attachment_queued_human", "interrupt_marker", "claude",
+})
 
 
 @dataclass(frozen=True)

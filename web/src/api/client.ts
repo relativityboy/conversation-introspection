@@ -200,6 +200,10 @@ export function fetchSearch(
     scope,
     session: sessionUuid,
     projects: projectsParam(projects),
+    // The server defaults to sources=chat (the human<->Claude dialogue only — the trim the
+    // "mainly for Claude" read path wants). The room is the human-eyes surface: it asks for
+    // everything explicitly, preserving full-archive search behavior.
+    sources: 'all',
     limit,
     offset,
   })

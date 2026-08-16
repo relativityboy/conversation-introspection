@@ -9,6 +9,7 @@ from introspect.models import ArchivedSession, UserTitle
 from introspect.tui.search import (
     clean_snippet,
     display_title,
+    parse_source_flags,
     search_sessions,
 )
 from tests.conftest import AGENT_HEX_ID, SESSION_UUID_1
@@ -64,11 +65,20 @@ def test_search_no_match_returns_empty(indexed_fixture: Session) -> None:
 def test_search_surfaces_subagent_content_under_parent_session(
     indexed_fixture: Session,
 ) -> None:
-    # "cormorant" lives only in a subagent transcript whose parent is session 1.
-    rows = search_sessions(indexed_fixture, "cormorant")
+    # "cormorant" lives only in a subagent transcript whose parent is session 1 -- outside
+    # the default chat sources (spec 2026-08-15), so finding it requires widening.
+    rows = search_sessions(
+        indexed_fixture, "cormorant", sources=frozenset({"chat", "agents"})
+    )
     assert len(rows) == 1
     assert rows[0].session_uuid == SESSION_UUID_1
     assert rows[0].record_uuid is not None
+
+
+def test_search_defaults_to_chat_sources(indexed_fixture: Session) -> None:
+    # Default = the human<->Claude dialogue only: subagent content is invisible until the
+    # search widens with a flag (the ratified chat-by-default trim, spec 2026-08-15).
+    assert search_sessions(indexed_fixture, "cormorant") == []
 
 
 def test_search_main_hit_has_no_agent_hex(indexed_fixture: Session) -> None:
@@ -81,5 +91,39 @@ def test_search_subagent_hit_carries_agent_hex(indexed_fixture: Session) -> None
     # "cormorant"'s best hit is in the subagent transcript -> its hex must ride along so the
     # Right-arrow link becomes /s/{uuid}/a/{hex}/m/{record} (never the main-transcript /m/ that
     # would 404 -- the cross-layer bug the Phase 3 walk caught in the web sidebar).
-    rows = search_sessions(indexed_fixture, "cormorant")
+    rows = search_sessions(
+        indexed_fixture, "cormorant", sources=frozenset({"chat", "agents"})
+    )
     assert rows[0].agent_hex_id == AGENT_HEX_ID
+
+
+# --- Source flags in the search text (spec 2026-08-15) ------------------------------------
+
+
+def test_parse_source_flags_default_is_chat() -> None:
+    assert parse_source_flags("horizon band") == ("horizon band", frozenset({"chat"}))
+
+
+def test_parse_source_flags_widen_additively() -> None:
+    assert parse_source_flags("horizon --agents") == (
+        "horizon", frozenset({"chat", "agents"})
+    )
+    assert parse_source_flags("--system horizon") == (
+        "horizon", frozenset({"chat", "system"})
+    )
+    assert parse_source_flags("horizon --agents --system") == (
+        "horizon", frozenset({"chat", "agents", "system"})
+    )
+
+
+def test_parse_source_flags_all() -> None:
+    assert parse_source_flags("cormorant --all") == (
+        "cormorant", frozenset({"chat", "agents", "system"})
+    )
+
+
+def test_parse_source_flags_unknown_flag_stays_literal() -> None:
+    # An unrecognized --token is treated as search text, never silently swallowed.
+    assert parse_source_flags("horizon --bogus") == (
+        "horizon --bogus", frozenset({"chat"})
+    )

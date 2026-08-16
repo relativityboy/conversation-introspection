@@ -60,10 +60,36 @@ from introspect.api.routes.sessions import (
 )
 from introspect.models import ArchivedSession, ChatSession, Project, Transcript
 from introspect.search import SearchHit, get_search_index
+from introspect.search.fts5 import SOURCES_ALL
 
 router = APIRouter(prefix="/api/v1")
 
 _GROUP_CAP = 5
+
+#: Default sources: the human<->Claude dialogue only (spec 2026-08-15 — the "mainly for
+#: Claude" read APIs trim to the chat; the room's client widens explicitly with sources=all).
+_DEFAULT_SOURCES = frozenset({"chat"})
+
+
+def _parse_sources_param(raw: str | None) -> frozenset[str] | JSONResponse:
+    """Comma-separated tokens from {chat, agents, system, all} -> the index's sources set.
+
+    ``None`` -> the chat default. ``all`` expands to every bucket. An unknown token is a 422
+    problem, never silently ignored (spec §4: no silent filter surprises).
+    """
+    if raw is None:
+        return _DEFAULT_SOURCES
+    selected: set[str] = set()
+    for token in (t.strip().lower() for t in raw.split(",") if t.strip()):
+        if token == "all":
+            selected |= SOURCES_ALL
+        elif token in SOURCES_ALL:
+            selected.add(token)
+        else:
+            return _problem(
+                f"unknown source '{token}' -- valid: chat, agents, system, all"
+            )
+    return frozenset(selected) if selected else _DEFAULT_SOURCES
 
 
 # --- Response envelopes (route-local; HitOut/SessionSummary live in api.models) ----------
@@ -204,6 +230,7 @@ def search(
     scope: Literal["global", "session"] = "global",
     session: str | None = None,
     projects: str | None = None,
+    sources: str | None = None,
     limit: int = _DEFAULT_LIMIT,
     offset: int = 0,
 ) -> GlobalSearchResult | SessionSearchResult | JSONResponse:
@@ -211,6 +238,9 @@ def search(
         return _problem("q must not be empty")
     if scope == "session" and not session:
         return _problem("session is required when scope=session")
+    source_set = _parse_sources_param(sources)
+    if isinstance(source_set, JSONResponse):
+        return source_set
 
     limit = min(max(limit, 1), _MAX_LIMIT)
     offset = max(offset, 0)
@@ -221,7 +251,9 @@ def search(
         # `projects=` is accepted and explicitly IGNORED here (spec critique #7): threading it
         # into a session-scope search would risk filtering out the very session being read, so
         # this scope never passes project_slugs to the index -- unlike global scope below.
-        hits, total = index.search(db, q, session_uuid=session, limit=limit, offset=offset)
+        hits, total = index.search(
+            db, q, session_uuid=session, sources=source_set, limit=limit, offset=offset
+        )
         hits = _drop_archived_hits(db, hits)
         agent_hex = _agent_hex_by_transcript(db, hits)
         return SessionSearchResult(
@@ -229,7 +261,9 @@ def search(
         )
 
     project_slugs = _parse_projects_param(projects)
-    hits, total = index.search(db, q, project_slugs=project_slugs, limit=limit, offset=offset)
+    hits, total = index.search(
+        db, q, project_slugs=project_slugs, sources=source_set, limit=limit, offset=offset
+    )
     hits = _drop_archived_hits(db, hits)
     agent_hex = _agent_hex_by_transcript(db, hits)
     return GlobalSearchResult(groups=_group_hits(db, hits, agent_hex), total=total)

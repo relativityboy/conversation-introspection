@@ -34,10 +34,50 @@ from typing import NamedTuple, Protocol
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
+from introspect.schema.authorship import DIALOGUE_KINDS
+
 # The text-only index predicate. Frozen copy of migration 0002's ``_BACKFILL_SQL`` WHERE
 # clause; kept in lockstep by test_index_predicate_matches_migration_backfill. Only
 # non-empty text blocks are searchable — tool_use / thinking / tool_result / NULL are not.
 _TEXT_PREDICATE = "block_kind='text' AND text_content IS NOT NULL AND text_content<>''"
+
+# The sources axis (spec 2026-08-15): additive buckets that partition the index exactly.
+# "chat" = the human<->Claude dialogue on main transcripts; "agents" = everything in subagent
+# transcripts; "system" = harness-authored main-transcript records (NULL authorship -- a
+# not-yet-classified mid-import row -- buckets as system: the honest floor, not known to be
+# dialogue). Tool payloads are not indexed at all, so there is deliberately no "tools" bucket.
+SOURCES_ALL = frozenset({"chat", "agents", "system"})
+# Static identifier list from the frozen taxonomy -- never user input, safe to inline.
+_DIALOGUE_IN = "(" + ", ".join(f"'{kind}'" for kind in sorted(DIALOGUE_KINDS)) + ")"
+_SOURCE_CLAUSES = {
+    "chat": f"(t.kind = 'main' AND m.authorship_kind IN {_DIALOGUE_IN})",
+    "agents": "(t.kind = 'subagent')",
+    "system": (
+        "(t.kind = 'main' AND (m.authorship_kind IS NULL"
+        f" OR m.authorship_kind NOT IN {_DIALOGUE_IN}))"
+    ),
+}
+
+
+def _sources_filter(sources: frozenset[str] | None) -> str:
+    """The SQL fragment for a sources selection; ``""`` when unfiltered.
+
+    ``None`` (and the full set) mean unfiltered -- the mechanism default; policy defaults
+    (chat-first) live at the surfaces. An EMPTY set matches nothing, mirroring the
+    ``project_slugs`` None-vs-``[]`` split. Unknown tokens raise: surfaces validate user
+    input, so an unknown token here is a programming error, never silently ignored.
+    """
+    if sources is None:
+        return ""
+    unknown = sources - SOURCES_ALL
+    if unknown:
+        raise ValueError(f"unknown search sources: {sorted(unknown)}")
+    if not sources:
+        return " AND 1 = 0"
+    if sources == SOURCES_ALL:
+        return ""
+    return " AND (" + " OR ".join(_SOURCE_CLAUSES[s] for s in sorted(sources)) + ")"
+
 
 # One \w+ run == one FTS5 token. \w (unicode by default for str) excludes every FTS5 operator
 # character (" ( ) * : ^ - + and whitespace), so a term built from these runs can never carry
@@ -95,14 +135,25 @@ class SearchIndex(Protocol):
         *,
         session_uuid: str | None = None,
         project_slugs: list[str] | None = None,
+        sources: frozenset[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[SearchHit], int]: ...
     def session_uuids_matching(
-        self, db: Session, q: str, project_slugs: list[str] | None
+        self,
+        db: Session,
+        q: str,
+        project_slugs: list[str] | None,
+        *,
+        sources: frozenset[str] | None = None,
     ) -> list[str]: ...
     def best_snippets(
-        self, db: Session, session_uuids: list[str], q: str
+        self,
+        db: Session,
+        session_uuids: list[str],
+        q: str,
+        *,
+        sources: frozenset[str] | None = None,
     ) -> dict[str, BestSnippet]: ...
     def rebuild(self, db: Session) -> int: ...
 
@@ -169,7 +220,7 @@ _SEARCH_FROM = (
     " JOIN messages m ON m.id = cb.message_id"
     " JOIN transcripts t ON t.id = m.transcript_id"
     "{project_join}"
-    " WHERE content_fts MATCH :match{session_filter}{project_filter}"
+    " WHERE content_fts MATCH :match{session_filter}{project_filter}{sources_filter}"
 )
 
 _SELECT_SQL = (
@@ -213,7 +264,7 @@ _BEST_SNIPPETS_SQL = (
     " JOIN content_blocks cb ON cb.id = content_fts.rowid"
     " JOIN messages m ON m.id = cb.message_id"
     " JOIN transcripts t ON t.id = m.transcript_id"
-    " WHERE content_fts MATCH :match AND t.session_id IN :session_uuids"
+    " WHERE content_fts MATCH :match AND t.session_id IN :session_uuids{sources_filter}"
     " )"
     ") WHERE rn = 1"
 )
@@ -303,6 +354,7 @@ class Fts5SearchIndex:
         *,
         session_uuid: str | None = None,
         project_slugs: list[str] | None = None,
+        sources: frozenset[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[SearchHit], int]:
@@ -313,8 +365,10 @@ class Fts5SearchIndex:
         second element is the total number of matches for the same filter (not just this
         page). ``session_uuid`` scopes to one session; ``project_slugs`` scopes to a set of
         projects (``None`` = every project, ``[]`` = no project => no results — both the page
-        and the total are filtered identically). No input can raise: the sanitizer guarantees
-        a syntactically valid MATCH.
+        and the total are filtered identically); ``sources`` scopes to the spec-2026-08-15
+        buckets (``None``/full set = unfiltered, empty set = nothing). No USER input can
+        raise (the sanitizer guarantees a valid MATCH); an unknown sources token is a
+        programming error and does raise ``ValueError`` — surfaces validate before calling.
         """
         match = sanitize_query(query)
         if not match:
@@ -326,6 +380,7 @@ class Fts5SearchIndex:
             "session_filter": session_filter,
             "project_join": project_join,
             "project_filter": project_filter,
+            "sources_filter": _sources_filter(sources),
         }
         params: dict[str, object] = {"match": match, "limit": limit, "offset": offset}
         count_params: dict[str, object] = {"match": match}
@@ -362,14 +417,19 @@ class Fts5SearchIndex:
         return hits, int(total)
 
     def session_uuids_matching(
-        self, db: Session, q: str, project_slugs: list[str] | None
+        self,
+        db: Session,
+        q: str,
+        project_slugs: list[str] | None,
+        *,
+        sources: frozenset[str] | None = None,
     ) -> list[str]:
         """Distinct session uuids whose text content matches ``q``, optionally project-scoped.
 
         The one corpus-wide FTS pass behind sidebar/list content search. ``q`` is sanitized;
         an empty sanitized query returns ``[]`` without touching the DB. ``project_slugs``
         follows the :func:`_project_clauses` contract (``None`` = unfiltered, ``[]`` = matches
-        nothing). No input can raise.
+        nothing); ``sources`` follows :func:`_sources_filter`. No user input can raise.
         """
         match = sanitize_query(q)
         if not match:
@@ -377,7 +437,10 @@ class Fts5SearchIndex:
         project_join, project_filter = _project_clauses(project_slugs)
         stmt = text(
             _SESSION_UUIDS_SQL.format(
-                session_filter="", project_join=project_join, project_filter=project_filter
+                session_filter="",
+                project_join=project_join,
+                project_filter=project_filter,
+                sources_filter=_sources_filter(sources),
             )
         )
         params: dict[str, object] = {"match": match}
@@ -392,7 +455,12 @@ class Fts5SearchIndex:
         return [row[0] for row in db.execute(stmt, params).all()]
 
     def best_snippets(
-        self, db: Session, session_uuids: list[str], q: str
+        self,
+        db: Session,
+        session_uuids: list[str],
+        q: str,
+        *,
+        sources: frozenset[str] | None = None,
     ) -> dict[str, BestSnippet]:
         """Each listed session's single bm25-best :class:`BestSnippet`, batched.
 
@@ -413,7 +481,9 @@ class Fts5SearchIndex:
         # as session_uuids_matching (see its NOTE). This is deliberately ONE query; do NOT
         # refactor into a per-session loop (relativityboy ruling 2026-07-19: round-trip count stays
         # at one so a Postgres backend can serve it identically).
-        stmt = text(_BEST_SNIPPETS_SQL).bindparams(bindparam("session_uuids", expanding=True))
+        stmt = text(
+            _BEST_SNIPPETS_SQL.format(sources_filter=_sources_filter(sources))
+        ).bindparams(bindparam("session_uuids", expanding=True))
         rows = db.execute(stmt, {"match": match, "session_uuids": session_uuids}).mappings().all()
         # agent_hex_id is meaningful only for subagent transcripts — a main hit resolves to None
         # even though its transcript's agent_hex_id column is likewise null (mirrors the search

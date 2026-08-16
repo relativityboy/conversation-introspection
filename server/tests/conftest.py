@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
+from introspect.ingest.interpret import classify_pending
 from introspect.search import get_search_index
 from tests.fixtures.records import (
     make_assistant_line,
@@ -75,8 +76,16 @@ BACKUP_EPOCH = 1720000000
 # subagent transcript's parent_tool_use_id a REAL join, not just two constants that
 # happen to match (Task P3-0). Adding a block to an existing line is free for
 # TOTAL_FIXTURE_LINES too.
+# NOTE(claude): main-transcript USER lines stamp promptSource="typed" (era-faithful: real
+# records at DEFAULT_VERSION 2.1.202 >= 2.1.168 always carry it) so they classify as
+# human_typed -- the chat sources bucket (spec 2026-08-15). The subagent user line stays
+# unstamped: its sidechain classification (dispatch) is the point of the cormorant tests.
 _SESSION_1_LINES = [
-    make_user_line(text="the horizon band maps hours to color", sessionId=SESSION_UUID_1),
+    make_user_line(
+        text="the horizon band maps hours to color",
+        sessionId=SESSION_UUID_1,
+        promptSource="typed",
+    ),
     make_assistant_line(
         text="still water runs deep beneath the surface",
         with_tool_use=True,
@@ -87,11 +96,11 @@ _SESSION_1_LINES = [
     make_snapshot_line(session_id=SESSION_UUID_1),
 ]
 _SESSION_2_LINES = [
-    make_user_line(sessionId=SESSION_UUID_2),
+    make_user_line(sessionId=SESSION_UUID_2, promptSource="typed"),
     make_assistant_line(sessionId=SESSION_UUID_2),
 ]
 _SESSION_3_LINES = [
-    make_user_line(sessionId=SESSION_UUID_3),
+    make_user_line(sessionId=SESSION_UUID_3, promptSource="typed"),
     make_assistant_line(sessionId=SESSION_UUID_3),
 ]
 # NOTE(claude): the subagent's user line carries the distinctive single-occurrence token
@@ -183,6 +192,10 @@ def indexed_fixture(db_session: Session, fixture_tree: Path) -> Session:
     """
     for f in discover(fixture_tree):
         capture_file(db_session, f)
+    # Production import/reparse both run classify_pending after interpretation; the fixture
+    # must be production-shaped or authorship-driven behavior (search sources) tests a state
+    # the real archive is never in.
+    classify_pending(db_session)
     db_session.commit()
     get_search_index().rebuild(db_session)
     db_session.commit()

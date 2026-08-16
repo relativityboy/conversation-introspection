@@ -155,7 +155,8 @@ def test_app_right_opens_subagent_message_url(
     async def scenario() -> None:
         app = IntrospectApp(db_path=dbp, web=FakeWeb())
         async with app.run_test() as pilot:
-            app.query_one("#cmd", Input).value = "cormorant"
+            # subagent content: needs the --agents widen flag under the chat-default sources
+            app.query_one("#cmd", Input).value = "cormorant --agents"
             await pilot.press("enter")
             await pilot.pause()
             await pilot.press("right")
