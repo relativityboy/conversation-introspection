@@ -37,6 +37,7 @@ VERBS = {
     "cron",
     "update",
     "changelog",
+    "skill",
     "restart",
     "quit",
 }
@@ -98,6 +99,7 @@ def _ctx(
     web: FakeWeb | None = None,
     exit_fn=None,
     crontab: CrontabIO | None = None,
+    skills_home: Path | None = None,
 ) -> tuple[CommandContext, list[str]]:
     emitted: list[str] = []
     ctx = CommandContext(
@@ -109,6 +111,8 @@ def _ctx(
         exit=exit_fn or Mock(),
         registry=build_registry(),
         crontab=crontab or _fake_crontab(),  # hermetic by default: empty in-memory crontab
+        # hermetic by default: /skill must never touch the real ~/.claude/skills in tests
+        skills_home=skills_home or db_path.parent / "skills-home",
     )
     return ctx, emitted
 
@@ -639,3 +643,50 @@ def test_quit_invokes_exit(tmp_path: Path) -> None:
     ctx, _ = _ctx(tmp_path / "a.db", exit_fn=exit_fn)
     _run(ctx, "/quit")
     exit_fn.assert_called_once()
+
+
+# --- /skill: distribute repo skills into ~/.claude/skills (2026-08-16) ---------------------
+
+
+def _skill_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    d = repo / "skills" / "recalling-past-sessions"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("guide: cd __INTROSPECT_SERVER_DIR__\n", encoding="utf-8")
+    return repo
+
+
+def test_skill_bare_reports_status(tmp_path: Path, monkeypatch) -> None:
+    repo = _skill_repo(tmp_path)
+    monkeypatch.setattr(upd, "find_repo_root", lambda: repo)
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/skill")
+    assert any("recalling-past-sessions: missing" in line for line in emitted)
+
+
+def test_skill_install_then_status_current(tmp_path: Path, monkeypatch) -> None:
+    repo = _skill_repo(tmp_path)
+    monkeypatch.setattr(upd, "find_repo_root", lambda: repo)
+    home = tmp_path / "home-skills"
+    ctx, emitted = _ctx(tmp_path / "a.db", skills_home=home)
+    _run(ctx, "/skill install")
+    assert any("recalling-past-sessions: installed" in line for line in emitted)
+    body = (home / "recalling-past-sessions" / "SKILL.md").read_text(encoding="utf-8")
+    assert f"cd {repo / 'server'}" in body  # rendered for THIS checkout
+    emitted.clear()
+    _run(ctx, "/skill")
+    assert any("recalling-past-sessions: current" in line for line in emitted)
+
+
+def test_skill_requires_repo_checkout(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(upd, "find_repo_root", lambda: None)
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/skill")
+    assert any("requires a repo checkout" in line for line in emitted)
+
+
+def test_skill_unknown_subcommand_prints_usage(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(upd, "find_repo_root", lambda: _skill_repo(tmp_path))
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/skill bogus")
+    assert any("usage: /skill" in line for line in emitted)

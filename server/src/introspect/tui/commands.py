@@ -19,7 +19,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from introspect import changelog, cron
+from introspect import changelog, cron, skills
 from introspect import update as upd
 from introspect.cron import CrontabIO
 from introspect.export import (
@@ -60,6 +60,11 @@ class CommandContext:
     # The user-crontab edge for /cron. A field (like `web`) so tests inject a fake and no test
     # ever shells out to the real crontab; the app supplies one real instance.
     crontab: CrontabIO = field(default_factory=CrontabIO)
+    # Where /skill installs repo skills. A field for the same hermetic reason: tests inject a
+    # tmp dir and never touch the real ~/.claude/skills.
+    skills_home: Path = field(
+        default_factory=lambda: Path.home() / ".claude" / "skills"
+    )
 
 
 @dataclass
@@ -411,6 +416,33 @@ def _cmd_changelog(ctx: CommandContext, args: list[str]) -> None:
         ctx.emit(f"({len(entries) - 1} older entries -- '/changelog all' for the full history)")
 
 
+def _cmd_skill(ctx: CommandContext, args: list[str]) -> None:
+    sub = args[0].lower() if args else "status"
+    if sub not in ("status", "install") or len(args) > 1:
+        ctx.emit("usage: /skill [install | status]")
+        return
+    root = upd.find_repo_root()
+    if root is None:
+        ctx.emit("skill: requires a repo checkout (no .git found)")
+        return
+    if sub == "status":
+        status = skills.skills_status(root, ctx.skills_home)
+        if not status:
+            ctx.emit("skill: no skills shipped in this checkout")
+            return
+        for name, state in status.items():
+            ctx.emit(f"skill: {name}: {state}")
+        if any(state != skills.STATUS_CURRENT for state in status.values()):
+            ctx.emit("'/skill install' to install/update into " + str(ctx.skills_home))
+        return
+    outcomes = skills.install_skills(root, ctx.skills_home)
+    if not outcomes:
+        ctx.emit("skill: no skills shipped in this checkout")
+        return
+    for name, outcome in outcomes.items():
+        ctx.emit(f"skill: {name}: {outcome} -> {ctx.skills_home / name / 'SKILL.md'}")
+
+
 def _cmd_restart(ctx: CommandContext, args: list[str]) -> None:
     # No same-process reload: exits with the "restart" marker so `_cmd_tui` (cli.py) can
     # `os.execvp` a fresh process AFTER app.run() returns -- see that module for why.
@@ -597,6 +629,25 @@ def build_registry() -> CommandRegistry:
             ),
             examples=["/changelog", "/changelog all"],
             handler=_cmd_changelog,
+        )
+    )
+    registry.register(
+        Command(
+            name="skill",
+            summary="install/update this repo's Claude skills into ~/.claude/skills",
+            usage="/skill [install | status]",
+            long_help=(
+                "The repo ships agent skills (skills/<name>/SKILL.md) that teach any Claude\n"
+                "session -- in ANY project -- how to use the archive (e.g. recalling-past-\n"
+                "sessions). With no argument, reports each skill's install state (missing,\n"
+                "stale, or current). 'install' renders each template for THIS checkout's\n"
+                "location and writes it into ~/.claude/skills/; idempotent, and safe to re-run\n"
+                "after /update to pick up skill changes.\n"
+                "Caveat: writes OUTSIDE the archive (your ~/.claude directory) -- that is its\n"
+                "whole purpose; nothing else in this tool touches your Claude config."
+            ),
+            examples=["/skill", "/skill install"],
+            handler=_cmd_skill,
         )
     )
     registry.register(

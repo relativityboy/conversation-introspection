@@ -4,6 +4,9 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.6.0 — 2026-08-16
+- New `/skill` TUI command distributes the repo's Claude skills to your machine: `recalling-past-sessions` teaches any Claude session, in any project, to search this archive (chat-scoped, project-scoped, with verified citations). Bare `/skill` reports install state; `/skill install` writes/updates `~/.claude/skills/`, rendered for your checkout's location.
+
 ## 1.5.0 — 2026-08-15
 - Search now defaults to the chat — what you and Claude actually said to each other — instead of everything: subagent transcripts and harness records are excluded until you ask for them. In the TUI, widen with `--agents`, `--system`, or `--all` in the search text; on the API, with `sources=agents,system` or `sources=all`. The web reading room still searches everything, unchanged.
 
