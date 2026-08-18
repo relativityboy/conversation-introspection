@@ -4,6 +4,9 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.6.1 — 2026-08-16
+- The `recalling-past-sessions` skill now documents the messages endpoint's `around=` centered-window fetch and `view=chat` filter (it wrongly claimed offset pages were the only windowing), and explains that archived sessions 404 by design on every path — run `/skill install` to pick it up.
+
 ## 1.6.0 — 2026-08-16
 - New `/skill` TUI command distributes the repo's Claude skills to your machine: `recalling-past-sessions` teaches any Claude session, in any project, to search this archive (chat-scoped, project-scoped, with verified citations). Bare `/skill` reports install state; `/skill install` writes/updates `~/.claude/skills/`, rendered for your checkout's location.
 

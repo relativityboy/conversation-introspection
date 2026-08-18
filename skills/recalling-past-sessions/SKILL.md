@@ -55,8 +55,11 @@ for within-one-session; `limit`/`offset` page over hits.
 - One exact record: `GET /api/v1/records/{record_uuid}/raw` (the archived bytes).
 - Session overview: `GET /api/v1/sessions/{session_uuid}` — key fields: `project_slug`,
   `started_at`, `last_activity_at`, `ai_title`, transcripts with ids/kinds.
-- Reading a span: `GET /api/v1/transcripts/{transcript_id}/messages?limit=25&offset=N`
-  — keep limits small; pages are the only windowing today.
+- Context window around a search hit:
+  `GET /api/v1/transcripts/{transcript_id}/messages?around=<record_uuid>&limit=15`
+  — the page CENTERS on that record. Prefer this over offset paging when you came from a
+  hit. Add `view=chat` to filter to dialogue turns server-side; plain `offset`/`limit`
+  page normally otherwise. Keep limits small.
 
 ## Decision rule: direct query vs subagent reader
 
@@ -74,3 +77,8 @@ Same instinct as Explore-vs-Read in a codebase:
 
 Report `total` vs what you actually read; if you only sampled, say so. If chat-default
 found nothing, say you searched chat-only and either widen or report the scope.
+
+Archived (soft-deleted) sessions are invisible on EVERY path — absent from search,
+404 on detail/messages/raw, indistinguishable from nonexistent by design. If a session
+you expected is missing, say it may have been archived; never treat that 404 as
+corruption, and never try to enumerate archived sessions (nothing lists them).
