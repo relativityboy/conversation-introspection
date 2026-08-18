@@ -23,7 +23,7 @@ from introspect.tui.commands import (
     parse_command,
 )
 from introspect.tui.webserver import PUBLIC_BIND_WARNING, StartResult
-from tests.conftest import SESSION_UUID_1
+from tests.conftest import PROJECT_SLUG_1, SESSION_UUID_1
 from tests.test_cron import FakeRunner, make_exec
 
 VERBS = {
@@ -38,6 +38,8 @@ VERBS = {
     "update",
     "changelog",
     "skill",
+    "exclude",
+    "delete",
     "restart",
     "quit",
 }
@@ -690,3 +692,161 @@ def test_skill_unknown_subcommand_prints_usage(tmp_path: Path, monkeypatch) -> N
     ctx, emitted = _ctx(tmp_path / "a.db")
     _run(ctx, "/skill bogus")
     assert any("usage: /skill" in line for line in emitted)
+
+
+# --- /exclude: project-level capture prevention (spec 2026-08-17 §2) -----------------------
+
+
+def test_exclude_bare_lists_none_then_entries(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/exclude")
+    assert any("no projects are excluded" in line for line in emitted)
+    emitted.clear()
+    _run(ctx, "/exclude add /tmp/@work/secret_proj client contract forbids retention")
+    _run(ctx, "/exclude")
+    blob = "\n".join(emitted)
+    assert "-tmp--work-secret-proj" in blob
+    assert "client contract forbids retention" in blob
+
+
+def test_exclude_add_by_path_encodes_and_echoes_slug(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/exclude add /tmp/@work/secret_proj")
+    blob = "\n".join(emitted)
+    assert "excluded: -tmp--work-secret-proj" in blob
+    assert "never be captured" in blob
+
+
+def test_exclude_add_by_raw_slug(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/exclude add -tmp-already-a-slug")
+    assert any("excluded: -tmp-already-a-slug" in line for line in emitted)
+
+
+def test_exclude_add_warns_when_project_already_captured(
+    tmp_path: Path, fixture_tree: Path
+) -> None:
+    dbp = tmp_path / "a.db"
+    run_import(dbp, fixture_tree)
+    ctx, emitted = _ctx(dbp)
+    _run(ctx, f"/exclude add {PROJECT_SLUG_1}")
+    blob = "\n".join(emitted)
+    assert "already captured" in blob  # prevention-only honesty: existing data stays
+    assert "deletion" in blob  # points at the repair tool
+
+
+def test_exclude_add_duplicate_reports_cleanly(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/exclude add -tmp-x")
+    emitted.clear()
+    _run(ctx, "/exclude add -tmp-x")
+    assert any("already excluded" in line for line in emitted)
+
+
+def test_exclude_remove(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/exclude add -tmp-x")
+    emitted.clear()
+    _run(ctx, "/exclude remove -tmp-x")
+    assert any("no longer excluded" in line for line in emitted)
+    emitted.clear()
+    _run(ctx, "/exclude remove -tmp-x")
+    assert any("was not excluded" in line for line in emitted)
+    emitted.clear()
+    _run(ctx, "/exclude")
+    assert any("no projects are excluded" in line for line in emitted)
+
+
+def test_exclude_unknown_subcommand_prints_usage(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, "/exclude bogus")
+    assert any("usage: /exclude" in line for line in emitted)
+    emitted.clear()
+    _run(ctx, "/exclude add")
+    assert any("usage: /exclude" in line for line in emitted)
+
+
+# --- /delete: reasoned, ceremonied deletion (spec 2026-08-17 §3) ---------------------------
+
+
+def _imported_ctx(tmp_path: Path, fixture_tree: Path):
+    dbp = tmp_path / "a.db"
+    run_import(dbp, fixture_tree)
+    return _ctx(dbp)
+
+
+def test_delete_bare_previews_and_deletes_nothing(
+    tmp_path: Path, fixture_tree: Path
+) -> None:
+    ctx, emitted = _imported_ctx(tmp_path, fixture_tree)
+    _run(ctx, f"/delete {SESSION_UUID_1}")
+    blob = "\n".join(emitted)
+    assert "IRREVERSIBLE" in blob
+    assert f"/delete {SESSION_UUID_1} yes" in blob  # instructs the confirm form
+    with ctx.session_factory() as db:
+        from introspect.models import ChatSession
+        assert db.query(ChatSession).filter_by(session_uuid=SESSION_UUID_1).count() == 1
+
+
+def test_delete_confirm_deletes_ledgers_and_asks_the_two_asks(
+    tmp_path: Path, fixture_tree: Path
+) -> None:
+    ctx, emitted = _imported_ctx(tmp_path, fixture_tree)
+    _run(ctx, f"/delete {SESSION_UUID_1} yes client contract forbids retention")
+    blob = "\n".join(emitted)
+    with ctx.session_factory() as db:
+        from introspect.models import ChatSession, DeletionLedger
+        assert db.query(ChatSession).filter_by(session_uuid=SESSION_UUID_1).count() == 0
+        row = db.query(DeletionLedger).one()
+        assert row.reason == "client contract forbids retention"
+    # the ceremony's follow-up asks (fixture sources exist on disk; forbid must be offered)
+    assert f"/delete {SESSION_UUID_1} forbid yes" in blob
+    assert "re-captured" in blob or "re-import" in blob
+
+
+def test_delete_forbid_adds_session_exclusion(
+    tmp_path: Path, fixture_tree: Path
+) -> None:
+    ctx, emitted = _imported_ctx(tmp_path, fixture_tree)
+    _run(ctx, f"/delete {SESSION_UUID_1} yes")
+    emitted.clear()
+    _run(ctx, f"/delete {SESSION_UUID_1} forbid yes")
+    assert any("re-import forbidden" in line for line in emitted)
+    with ctx.session_factory() as db:
+        from introspect.models import ExcludedSession
+        assert db.query(ExcludedSession).filter_by(session_uuid=SESSION_UUID_1).count() == 1
+
+
+def test_delete_unknown_target_reports(tmp_path: Path, fixture_tree: Path) -> None:
+    ctx, emitted = _imported_ctx(tmp_path, fixture_tree)
+    _run(ctx, "/delete 99999999-9999-4999-8999-999999999999 yes")
+    assert any("not found" in line for line in emitted)
+
+
+def test_delete_project_by_slug(tmp_path: Path, fixture_tree: Path) -> None:
+    ctx, emitted = _imported_ctx(tmp_path, fixture_tree)
+    _run(ctx, f"/delete {PROJECT_SLUG_1} yes whole client offboarded")
+    with ctx.session_factory() as db:
+        from introspect.models import DeletionLedger, Project
+        assert db.query(Project).filter_by(dir_slug=PROJECT_SLUG_1).count() == 0
+        assert db.query(DeletionLedger).one().kind == "project"
+    # project resurrection guard points at the project wall
+    assert any("/exclude add" in line for line in emitted)
+
+
+def test_delete_usage(tmp_path: Path, fixture_tree: Path) -> None:
+    ctx, emitted = _imported_ctx(tmp_path, fixture_tree)
+    _run(ctx, "/delete")
+    assert any("usage: /delete" in line for line in emitted)
+
+
+def test_exclude_add_uuid_walls_a_session(tmp_path: Path) -> None:
+    ctx, emitted = _ctx(tmp_path / "a.db")
+    _run(ctx, f"/exclude add {SESSION_UUID_1} was deleted deliberately")
+    assert any("session" in line and SESSION_UUID_1 in line for line in emitted)
+    emitted.clear()
+    _run(ctx, "/exclude")
+    assert any(SESSION_UUID_1 in line for line in emitted)
+    emitted.clear()
+    _run(ctx, f"/exclude remove {SESSION_UUID_1}")
+    assert any("no longer" in line for line in emitted)

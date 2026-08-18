@@ -484,3 +484,65 @@ def test_tui_normal_exit_does_not_exec(tmp_path, monkeypatch) -> None:
     dbp = str(tmp_path / "a.db")
     assert cli.main(["tui", "--db", dbp]) == 0
     assert execs == []
+
+
+# --- exclude verb (spec 2026-08-17 §2): scriptable prevention ------------------------------
+
+
+def test_cli_exclude_add_list_remove_roundtrip(tmp_path: Path, capsys) -> None:
+    dbp = str(tmp_path / "a.db")
+    assert main(["exclude", "add", "/tmp/@work/secret_proj", "--db", dbp,
+                 "--reason", "client contract"]) == 0
+    out = capsys.readouterr().out
+    assert "excluded: -tmp--work-secret-proj" in out
+
+    assert main(["exclude", "list", "--db", dbp]) == 0
+    out = capsys.readouterr().out
+    assert "-tmp--work-secret-proj" in out and "client contract" in out
+
+    # duplicate add is idempotent success (scripts must be able to re-assert the wall).
+    # Raw slugs start with '-', so they ride after the POSIX '--' separator.
+    assert main(["exclude", "add", "--db", dbp, "--", "-tmp--work-secret-proj"]) == 0
+    assert "already excluded" in capsys.readouterr().out
+
+    assert main(["exclude", "remove", "--db", dbp, "--", "-tmp--work-secret-proj"]) == 0
+    assert "no longer excluded" in capsys.readouterr().out
+    # removing what isn't there is exit 1 (mirrors unarchive's unknown-target contract)
+    assert main(["exclude", "remove", "--db", dbp, "--", "-tmp--work-secret-proj"]) == 1
+
+
+def test_cli_delete_ceremony_roundtrip(tmp_path: Path, fixture_tree: Path, capsys) -> None:
+    from introspect.ingest.run import run_import
+    from introspect.db import get_engine, session_factory, upgrade_to_head
+    from introspect.models import ChatSession, DeletionLedger, ExcludedSession
+    from tests.conftest import SESSION_UUID_1
+
+    dbp = tmp_path / "a.db"
+    run_import(dbp, fixture_tree)
+    db = str(dbp)
+
+    # bare = preview, deletes nothing
+    assert main(["delete", SESSION_UUID_1, "--db", db]) == 0
+    assert "IRREVERSIBLE" in capsys.readouterr().out
+    engine = get_engine(dbp)
+    upgrade_to_head(engine)
+    factory = session_factory(engine)
+    with factory() as s:
+        assert s.query(ChatSession).filter_by(session_uuid=SESSION_UUID_1).count() == 1
+
+    # --yes deletes and ledgers
+    assert main(["delete", SESSION_UUID_1, "--db", db, "--yes",
+                 "--reason", "contract ended"]) == 0
+    out = capsys.readouterr().out
+    assert "deleted:" in out
+    with factory() as s:
+        assert s.query(ChatSession).filter_by(session_uuid=SESSION_UUID_1).count() == 0
+        assert s.query(DeletionLedger).one().reason == "contract ended"
+
+    # --forbid --yes raises the session wall
+    assert main(["delete", SESSION_UUID_1, "--db", db, "--forbid", "--yes"]) == 0
+    with factory() as s:
+        assert s.query(ExcludedSession).filter_by(session_uuid=SESSION_UUID_1).count() == 1
+
+    # unknown target with --yes is exit 1
+    assert main(["delete", "99999999-9999-4999-8999-999999999999", "--db", db, "--yes"]) == 1

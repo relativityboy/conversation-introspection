@@ -15,7 +15,7 @@ model everything else builds on.
 | Page | What it covers |
 |---|---|
 | [Install](install.md) | The `./install.sh` one-command setup, what each step does, what re-running gets you (repair, and picking up changes you pulled), and the manual path if you'd rather run the steps yourself. |
-| [The TUI](tui.md) | The interactive terminal UI: searching the archive, and every slash command (`/import`, `/reparse`, `/export`, `/status`, `/unarchive`, `/web`, `/cron`, `/update`, `/changelog`, `/skill`, `/restart`, `/help`, `/quit`) — including the public-bind warning. |
+| [The TUI](tui.md) | The interactive terminal UI: searching the archive, and every slash command (`/import`, `/reparse`, `/export`, `/status`, `/unarchive`, `/web`, `/cron`, `/update`, `/changelog`, `/skill`, `/exclude`, `/delete`, `/restart`, `/help`, `/quit`) — including the public-bind warning. |
 | [The reading room](reading-room.md) | The web UI: the search box, the project filter, editable titles, conversation-only mode, the raw-record inspector, archiving, and what every "not found" state means. |
 | [Keeping it running (cron)](cron.md) | The 15-minute belt that wins the race against deletion: `introspect cron install/status/remove`, the marker line, and migrating off a hand-edited crontab entry. |
 | [Export](export.md) | The byte-faithful export guarantee, how to prove it on your own data, and which copy of a transcript export hands back. |

@@ -55,7 +55,14 @@ from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.ingest import interpret
 from introspect.ingest.capture import capture_file, detect_gone, utcnow
 from introspect.ingest.discovery import DiscoveredFile, discover
-from introspect.models import ImportRun, ParseAnomaly, RawRecord, SourceFile
+from introspect.models import (
+    ExcludedProject,
+    ExcludedSession,
+    ImportRun,
+    ParseAnomaly,
+    RawRecord,
+    SourceFile,
+)
 from introspect.schema import SCHEMA_VERSION, parse_line
 from introspect.schema_versions import ensure_current_schema_version_recorded
 
@@ -206,7 +213,18 @@ def _run_locked(db, root: Path, trigger: str, run_id: int | None = None) -> Impo
     records_added = 0
     records_skipped_duplicate = 0
     try:
-        discovered = list(discover(root))
+        # Exclusion before discovery (spec 2026-08-17 §2/§3): a walled-off project's
+        # directory is never entered, and a walled-off session's files are skipped by
+        # name — content is never read on either wall. Prevention, not filtering.
+        excluded = frozenset(
+            slug for (slug,) in db.query(ExcludedProject.dir_slug).all()
+        )
+        excluded_sessions = frozenset(
+            uuid for (uuid,) in db.query(ExcludedSession.session_uuid).all()
+        )
+        discovered = list(
+            discover(root, excluded=excluded, excluded_sessions=excluded_sessions)
+        )
         files_seen = len(discovered)
         for f in discovered:
             try:

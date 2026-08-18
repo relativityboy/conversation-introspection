@@ -4,6 +4,11 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.7.0 — 2026-08-17
+- New project exclusion for sensitive work: `/exclude` (TUI) and `introspect exclude` (CLI) wall a project off from capture — imports skip its directory before reading anything beneath it, with an optional reason kept on the entry. Exclude before the sensitive work starts. Owner-only: no API can exclude, list, or reveal exclusions.
+- New `/delete` (TUI) and `introspect delete` (CLI): irreversible, ceremonied deletion of a session or whole project — preview first, explicit `yes` to act, and every deletion writes a ledger row with your optional reason (the archive remembers *that* it forgot, never what).
+- Deletion's two follow-up asks are separate and never automatic: `backups yes` scrubs backup DB copies (otherwise untouched), and `forbid yes` adds a deleted session to a re-import wall so still-on-disk source files can't silently resurrect it. `/exclude add <uuid>` and `remove` manage that wall openly.
+
 ## 1.6.1 — 2026-08-16
 - The `recalling-past-sessions` skill now documents the messages endpoint's `around=` centered-window fetch and `view=chat` filter (it wrongly claimed offset pages were the only windowing), and explains that archived sessions 404 by design on every path — run `/skill install` to pick it up.
 

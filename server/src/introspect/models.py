@@ -239,6 +239,52 @@ class ArchivedSession(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
+class ExcludedProject(Base):
+    # NOTE(claude): dir_slug is the PK and deliberately NOT an FK to projects -- prevention
+    # means excluding projects that have never been captured, so no project row may exist.
+    # Existence-based, user-data-layer (import/reparse never touch it): a row present means
+    # discovery skips the slug's directory before reading ANYTHING beneath it (spec
+    # 2026-08-17 §2 zero-read rule). Owner-only surfaces manage it (TUI /exclude, CLI);
+    # never the API. `reason` is the owner's optional note-to-self.
+    __tablename__ = "excluded_projects"
+
+    dir_slug: Mapped[str] = mapped_column(primary_key=True)
+    reason: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class ExcludedSession(Base):
+    # NOTE(claude): the session-level wall (spec 2026-08-17 §3 resurrection guard) --
+    # symmetric with ExcludedProject one level down. Deliberately NOT an FK to sessions:
+    # its primary use is forbidding re-import AFTER deletion, when no session row exists.
+    # Populated only by explicit owner consent (the /delete ceremony's forbid ask, or
+    # /exclude add <uuid>); discovery skips the session's files by FILENAME, zero reads.
+    __tablename__ = "excluded_sessions"
+
+    session_uuid: Mapped[str] = mapped_column(primary_key=True)
+    reason: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class DeletionLedger(Base):
+    # NOTE(claude): the tombstone layer (spec 2026-08-17 §3): the archive remembers THAT
+    # it forgot, never WHAT. One row per deliberate deletion; `label` is the display title
+    # captured before the rows died (the one humane breadcrumb), `reason` is the owner's
+    # optional note (relativityboy 2026-08-17). Nothing ever deletes ledger rows -- not
+    # import, not reparse, not deletion itself. Records only; never blocks capture (the
+    # excluded_sessions wall above does that, separately and by consent).
+    __tablename__ = "deletion_ledger"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str]  # 'session' | 'project'
+    target: Mapped[str]  # session uuid or project dir_slug
+    label: Mapped[str | None]
+    reason: Mapped[str | None]
+    sessions_deleted: Mapped[int]
+    records_deleted: Mapped[int]
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
 class SchemaVersion(Base):
     # NOTE(claude): provenance history of the interpretation schema GENERATION (the
     # `introspect-schema/N` stamp), NOT user data. One row per version this codebase has run

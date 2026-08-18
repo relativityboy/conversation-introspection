@@ -31,7 +31,7 @@ from pathlib import Path
 
 import uvicorn
 
-from introspect import config, cron, update
+from introspect import config, cron, deletion, exclusion, update
 from introspect.api import create_app
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.export import SessionNotFoundError, TranscriptNotFoundError, export_session_to
@@ -91,6 +91,53 @@ def _build_parser() -> argparse.ArgumentParser:
     p_unarchive.add_argument("session_uuid")
     p_unarchive.add_argument("--db", help="path to the archive DB")
     p_unarchive.set_defaults(handler=_cmd_unarchive)
+
+    p_exclude = subparsers.add_parser(
+        "exclude", help="wall a project off from capture (prevention for sensitive work)"
+    )
+    exclude_sub = p_exclude.add_subparsers(required=True)
+    e_add = exclude_sub.add_parser("add", help="exclude a project by path or slug")
+    # NOTE(claude): slugs all begin with '-' (they encode absolute paths), which argparse
+    # reads as an option flag. Paths work bare; a raw slug needs the POSIX '--' separator
+    # (`introspect exclude add -- -Users-x-proj`). Both help strings say so.
+    e_add.add_argument(
+        "target",
+        help="filesystem path (encoded to a slug), or a raw slug after '--' "
+        "(slugs start with '-'): exclude add -- -Users-x-proj",
+    )
+    e_add.add_argument("--reason", default=None, help="optional reason kept with the entry")
+    e_add.add_argument("--db", help="path to the archive DB")
+    e_add.set_defaults(handler=_cmd_exclude_add)
+    e_remove = exclude_sub.add_parser("remove", help="take a project off the wall")
+    e_remove.add_argument(
+        "target",
+        help="slug (after '--', since slugs start with '-') or path to stop excluding",
+    )
+    e_remove.add_argument("--db", help="path to the archive DB")
+    e_remove.set_defaults(handler=_cmd_exclude_remove)
+    e_list = exclude_sub.add_parser("list", help="show the excluded projects")
+    e_list.add_argument("--db", help="path to the archive DB")
+    e_list.set_defaults(handler=_cmd_exclude_list)
+
+    p_delete = subparsers.add_parser(
+        "delete", help="permanently delete a session or project (ceremonied, ledgered)"
+    )
+    p_delete.add_argument(
+        "target",
+        help="session uuid, or project path/slug (raw slugs after '--', they start with '-')",
+    )
+    p_delete.add_argument("--yes", action="store_true", help="actually delete (bare = preview)")
+    p_delete.add_argument("--reason", default=None, help="goes in the deletion ledger")
+    p_delete.add_argument(
+        "--backups", action="store_true",
+        help="scrub backup DB copies instead (separate consent; requires --yes)",
+    )
+    p_delete.add_argument(
+        "--forbid", action="store_true",
+        help="forbid re-import of a deleted session instead (requires --yes)",
+    )
+    p_delete.add_argument("--db", help="path to the archive DB")
+    p_delete.set_defaults(handler=_cmd_delete)
 
     p_status = subparsers.add_parser("status", help="archive counts + last import run")
     p_status.add_argument("--db", help="path to the archive DB")
@@ -272,6 +319,162 @@ def _cmd_unarchive(args: argparse.Namespace) -> int:
         db.delete(row)
         db.commit()
     print(f"unarchived {args.session_uuid}")
+    return 0
+
+
+def _cmd_exclude_add(args: argparse.Namespace) -> int:
+    """Exclusion is prevention (spec 2026-08-17 §2) — raise the wall BEFORE the sensitive
+    work starts; cron imports run every few minutes. Duplicate add is idempotent success so
+    scripts can re-assert the wall."""
+    dbp = _resolve_db_path_or_none(args.db)
+    if dbp is None:
+        return 2
+    engine = _open_db_or_none(dbp)
+    if engine is None:
+        return 2
+    with session_factory(engine)() as db:
+        outcome = exclusion.add_exclusion(db, args.target, args.reason)
+    if outcome.already_excluded:
+        print(f"exclude: {outcome.slug} is already excluded")
+        return 0
+    print(f"excluded: {outcome.slug} -- this project will never be captured")
+    if outcome.prior_sessions:
+        print(
+            f"note: {outcome.prior_sessions} session(s) already captured remain in the "
+            f"archive -- exclusion prevents future capture only"
+        )
+    return 0
+
+
+def _cmd_exclude_remove(args: argparse.Namespace) -> int:
+    dbp = _resolve_db_path_or_none(args.db)
+    if dbp is None:
+        return 2
+    engine = _open_db_or_none(dbp)
+    if engine is None:
+        return 2
+    with session_factory(engine)() as db:
+        slug, removed = exclusion.remove_exclusion(db, args.target)
+    if not removed:
+        print(f"exclude: {slug} was not excluded", file=sys.stderr)
+        return 1
+    print(f"exclude: {slug} is no longer excluded")
+    return 0
+
+
+def _cmd_exclude_list(args: argparse.Namespace) -> int:
+    dbp = _resolve_db_path_or_none(args.db)
+    if dbp is None:
+        return 2
+    engine = _open_db_or_none(dbp)
+    if engine is None:
+        return 2
+    with session_factory(engine)() as db:
+        projects, sessions = exclusion.list_exclusions(db)
+        if not projects and not sessions:
+            print("exclude: no projects are excluded")
+            return 0
+        for row in projects:
+            suffix = f" -- {row.reason}" if row.reason else ""
+            print(f"{row.dir_slug}{suffix}")
+        for srow in sessions:
+            suffix = f" -- {srow.reason}" if srow.reason else ""
+            print(f"session {srow.session_uuid}{suffix}")
+    return 0
+
+
+def _cmd_delete(args: argparse.Namespace) -> int:
+    """The CLI face of reasoned deletion (spec 2026-08-17 §3). Bare = preview only;
+    ``--yes`` is the irreversible act; ``--backups``/``--forbid`` are the two SEPARATE
+    additionally-consented asks, each its own invocation, never automatic."""
+    dbp = _resolve_db_path_or_none(args.db)
+    if dbp is None:
+        return 2
+    engine = _open_db_or_none(dbp)
+    if engine is None:
+        return 2
+    target = args.target
+    kind = "session" if exclusion.is_session_uuid(target) else "project"
+    resolved = target if kind == "session" else exclusion.resolve_slug(target)
+
+    if args.backups:
+        if not args.yes:
+            print("delete: --backups needs --yes (it is a destructive act)", file=sys.stderr)
+            return 1
+        results = deletion.scrub_backups(dbp, kind, resolved, args.reason)
+        if not results:
+            print("delete: no backup DB copies found under backups/")
+            return 0
+        for path, was_present in results:
+            print(f"backup {path.name}: {'scrubbed' if was_present else 'target not present'}")
+        return 0
+
+    if args.forbid:
+        if not args.yes:
+            print("delete: --forbid needs --yes", file=sys.stderr)
+            return 1
+        if kind != "session":
+            print("delete: --forbid takes a session uuid (projects: exclude add)", file=sys.stderr)
+            return 1
+        with session_factory(engine)() as db:
+            added = deletion.forbid_reimport(db, target, reason=args.reason)
+        print(
+            f"{target} -- re-import forbidden" if added
+            else f"{target} re-import was already forbidden"
+        )
+        return 0
+
+    if not args.yes:
+        with session_factory(engine)() as db:
+            pv = (
+                deletion.preview_session(db, target)
+                if kind == "session"
+                else deletion.preview_project(db, resolved)
+            )
+        if pv is None:
+            print(f"delete: {kind} {target} not found", file=sys.stderr)
+            return 1
+        print(deletion.DELETION_WARNING)
+        print(
+            f"would delete: {pv.kind} {pv.target} -- {pv.sessions} session(s), "
+            f"{pv.records} record(s). Re-run with --yes [--reason '...'] to proceed."
+        )
+        if pv.source_paths_on_disk:
+            print(
+                f"note: {len(pv.source_paths_on_disk)} source file(s) still on disk -- "
+                f"re-import will resurrect this unless forbidden (--forbid --yes after)"
+            )
+        return 0
+
+    with session_factory(engine)() as db:
+        outcome = (
+            deletion.delete_session(db, target, args.reason)
+            if kind == "session"
+            else deletion.delete_project(db, resolved, args.reason)
+        )
+    if outcome is None:
+        print(f"delete: {kind} {target} not found -- nothing deleted", file=sys.stderr)
+        return 1
+    print(
+        f"deleted: {outcome.kind} {outcome.target} -- {outcome.sessions_deleted} "
+        f"session(s), {outcome.records_deleted} record(s); ledger updated"
+    )
+    deletion.finalize_scrub(engine)
+    print("scrub complete (WAL checkpointed, space reclaimed)")
+    if outcome.source_paths_on_disk:
+        print(
+            f"NOT touched: {len(outcome.source_paths_on_disk)} live source file(s) -- "
+            f"forbid re-import: introspect delete {target} --forbid --yes"
+            if kind == "session"
+            else f"NOT touched: {len(outcome.source_paths_on_disk)} live source file(s) -- "
+            f"exclude the project: introspect exclude add -- {resolved}"
+        )
+    n_backups = len(deletion.list_backup_dbs(dbp))
+    if n_backups:
+        print(
+            f"NOT touched: {n_backups} backup DB cop(ies) -- scrub separately: "
+            f"introspect delete {target} --backups --yes"
+        )
     return 0
 
 

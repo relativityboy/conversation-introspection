@@ -39,6 +39,26 @@ disk. Teaching the schema those fields and running `reparse` rebuilt the affecte
 archive and collapsed the anomaly count back to a tiny floor. Capture had already won; only
 interpretation needed to catch up.
 
+## The exception you control: excluded projects
+
+Capture-everything has one deliberate exception, and only you can create it: a project you
+have **excluded** (`/exclude` in the TUI, `introspect exclude` on the CLI) is walled off
+*before* capture — imports skip its directory without reading anything beneath it, not even
+filenames. This exists for work that must not be retained (sensitive or classified
+projects). Because the cron belt below imports every 15 minutes, raise the wall **before**
+the sensitive work starts, not after. Exclusion is prevention only: anything captured
+earlier stays in the archive until deliberately deleted. No automated process — and no
+API — can exclude a project; it is an owner-only act, with an optional reason kept
+alongside the entry.
+
+When prevention comes too late — sensitive data already captured — **deletion** is the
+repair tool (`/delete`): irreversible, ceremonied (preview first, explicit confirm, your
+reason recorded), and honest about its reach (it reports what it did *not* touch: live
+source files, backup copies — each scrubbable only by its own separate yes). Every
+deletion leaves a ledger row, so the archive remembers *that* it forgot without
+remembering what. Like exclusion, deletion is owner-only: no automated process and no
+API can ever remove anything.
+
 ## The deletion belt: cron
 
 A single manual import only protects what existed at that moment. The transcripts still on disk

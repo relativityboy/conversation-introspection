@@ -19,8 +19,9 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from introspect import changelog, cron, skills
+from introspect import changelog, cron, deletion, exclusion, skills
 from introspect import update as upd
+from introspect.db import get_engine
 from introspect.cron import CrontabIO
 from introspect.export import (
     SessionNotFoundError,
@@ -443,6 +444,170 @@ def _cmd_skill(ctx: CommandContext, args: list[str]) -> None:
         ctx.emit(f"skill: {name}: {outcome} -> {ctx.skills_home / name / 'SKILL.md'}")
 
 
+def _cmd_exclude(ctx: CommandContext, args: list[str]) -> None:
+    sub = args[0].lower() if args else "list"
+    if sub == "list" and len(args) <= 1:
+        _exclude_list(ctx)
+    elif sub == "add" and len(args) >= 2:
+        _exclude_add(ctx, args[1], " ".join(args[2:]) or None)
+    elif sub == "remove" and len(args) == 2:
+        _exclude_remove(ctx, args[1])
+    else:
+        ctx.emit("usage: /exclude [add <path-or-slug> [reason...] | remove <slug> | list]")
+
+
+def _exclude_list(ctx: CommandContext) -> None:
+    with ctx.session_factory() as db:
+        projects, sessions = exclusion.list_exclusions(db)
+        if not projects and not sessions:
+            ctx.emit("exclude: no projects are excluded")
+            return
+        for row in projects:
+            suffix = f" -- {row.reason}" if row.reason else ""
+            ctx.emit(f"exclude: {row.dir_slug}{suffix}")
+        for srow in sessions:
+            suffix = f" -- {srow.reason}" if srow.reason else ""
+            ctx.emit(f"exclude: session {srow.session_uuid}{suffix}")
+
+
+def _exclude_add(ctx: CommandContext, target: str, reason: str | None) -> None:
+    with ctx.session_factory() as db:
+        outcome = exclusion.add_exclusion(db, target, reason)
+    if outcome.already_excluded:
+        ctx.emit(f"exclude: {outcome.slug} is already excluded")
+        return
+    if outcome.kind == "session":
+        ctx.emit(f"excluded session: {outcome.slug} -- re-import forbidden")
+        return
+    ctx.emit(f"excluded: {outcome.slug}")
+    ctx.emit("this project will never be captured (imports skip its directory entirely)")
+    if outcome.prior_sessions:
+        # Prevention-only honesty (spec 2026-08-17 §2): exclusion walls off the future;
+        # anything already captured stays until the deletion tool (phase B) repairs it.
+        ctx.emit(
+            f"note: {outcome.prior_sessions} session(s) from this project were already "
+            f"captured and remain in the archive -- exclusion prevents future capture "
+            f"only; deletion is the repair tool for what already landed"
+        )
+
+
+def _exclude_remove(ctx: CommandContext, target: str) -> None:
+    with ctx.session_factory() as db:
+        slug, removed = exclusion.remove_exclusion(db, target)
+    if not removed:
+        ctx.emit(f"exclude: {slug} was not excluded")
+        return
+    ctx.emit(f"exclude: {slug} is no longer excluded (future imports will capture it)")
+
+
+def _cmd_delete(ctx: CommandContext, args: list[str]) -> None:
+    if not args:
+        ctx.emit(
+            "usage: /delete <uuid-or-slug>            (preview -- deletes nothing)"
+        )
+        ctx.emit("       /delete <target> yes [reason...]  (the irreversible act)")
+        ctx.emit("       /delete <target> backups yes      (also scrub backup copies)")
+        ctx.emit("       /delete <uuid> forbid yes          (forbid re-import)")
+        return
+    target = args[0]
+    kind = "session" if exclusion.is_session_uuid(target) else "project"
+    rest = args[1:]
+    if not rest:
+        _delete_preview(ctx, kind, target)
+    elif rest[0].lower() == "yes":
+        _delete_confirm(ctx, kind, target, " ".join(rest[1:]) or None)
+    elif rest[:2] == ["forbid", "yes"] and kind == "session":
+        with ctx.session_factory() as db:
+            added = deletion.forbid_reimport(db, target, reason="deleted; owner forbade re-import")
+        ctx.emit(
+            f"delete: {target} -- re-import forbidden"
+            if added
+            else f"delete: {target} re-import was already forbidden"
+        )
+        ctx.emit("('/exclude remove <uuid>' re-allows it later if you change your mind)")
+    elif rest[:2] == ["backups", "yes"]:
+        _delete_backups(ctx, kind, target)
+    else:
+        ctx.emit("usage: /delete <target> [yes [reason...] | backups yes | forbid yes]")
+
+
+def _delete_preview(ctx: CommandContext, kind: str, target: str) -> None:
+    with ctx.session_factory() as db:
+        pv = (
+            deletion.preview_session(db, target)
+            if kind == "session"
+            else deletion.preview_project(db, exclusion.resolve_slug(target))
+        )
+    if pv is None:
+        ctx.emit(f"delete: {kind} {target} not found -- nothing to delete")
+        return
+    ctx.emit(deletion.DELETION_WARNING)
+    label = f" ({pv.label})" if pv.label and pv.label != pv.target else ""
+    ctx.emit(
+        f"would delete: {pv.kind} {pv.target}{label} -- "
+        f"{pv.sessions} session(s), {pv.records} archived record(s)"
+    )
+    if pv.source_paths_on_disk:
+        ctx.emit(
+            f"note: {len(pv.source_paths_on_disk)} source file(s) still exist on disk -- "
+            f"without forbidding re-import, the next import will re-capture this"
+        )
+    n_backups = len(deletion.list_backup_dbs(ctx.db_path))
+    if n_backups:
+        ctx.emit(f"note: {n_backups} backup DB cop(ies) also hold this data (separate ask)")
+    ctx.emit(f"to proceed: /delete {target} yes [reason...]   (reason goes in the ledger)")
+
+
+def _delete_confirm(ctx: CommandContext, kind: str, target: str, reason: str | None) -> None:
+    with ctx.session_factory() as db:
+        outcome = (
+            deletion.delete_session(db, target, reason)
+            if kind == "session"
+            else deletion.delete_project(db, exclusion.resolve_slug(target), reason)
+        )
+    if outcome is None:
+        ctx.emit(f"delete: {kind} {target} not found -- nothing deleted")
+        return
+    ctx.emit(
+        f"deleted: {outcome.kind} {outcome.target} -- {outcome.sessions_deleted} "
+        f"session(s), {outcome.records_deleted} record(s); ledger updated"
+        + (f" (reason: {reason})" if reason else " (no reason given)")
+    )
+    ctx.emit("reclaiming space (VACUUM) -- this can take a while on a large archive...")
+    deletion.finalize_scrub(get_engine(ctx.db_path))
+    ctx.emit("scrub complete (WAL checkpointed, space reclaimed)")
+
+    # The two additional asks (never automatic):
+    if outcome.source_paths_on_disk:
+        ctx.emit(
+            f"NOT touched: {len(outcome.source_paths_on_disk)} live source file(s) on disk "
+            f"-- the next import WILL re-capture this unless forbidden:"
+        )
+        for p in outcome.source_paths_on_disk:
+            ctx.emit(f"  {p}")
+        if kind == "session":
+            ctx.emit(f"forbid re-import: /delete {target} forbid yes")
+        else:
+            ctx.emit(f"forbid re-import: /exclude add {target}")
+    n_backups = len(deletion.list_backup_dbs(ctx.db_path))
+    if n_backups:
+        ctx.emit(
+            f"NOT touched: {n_backups} backup DB cop(ies) under backups/ still hold this "
+            f"data -- scrub them too: /delete {target} backups yes"
+        )
+
+
+def _delete_backups(ctx: CommandContext, kind: str, target: str) -> None:
+    resolved = target if kind == "session" else exclusion.resolve_slug(target)
+    results = deletion.scrub_backups(ctx.db_path, kind, resolved, reason=None)
+    if not results:
+        ctx.emit("delete: no backup DB copies found under backups/")
+        return
+    for path, was_present in results:
+        state = "scrubbed" if was_present else "did not contain the target"
+        ctx.emit(f"backup {path.name}: {state}")
+
+
 def _cmd_restart(ctx: CommandContext, args: list[str]) -> None:
     # No same-process reload: exits with the "restart" marker so `_cmd_tui` (cli.py) can
     # `os.execvp` a fresh process AFTER app.run() returns -- see that module for why.
@@ -648,6 +813,59 @@ def build_registry() -> CommandRegistry:
             ),
             examples=["/skill", "/skill install"],
             handler=_cmd_skill,
+        )
+    )
+    registry.register(
+        Command(
+            name="exclude",
+            summary="wall a project off from capture (prevention for sensitive work)",
+            usage="/exclude [add <path-or-slug> [reason...] | remove <slug> | list]",
+            long_help=(
+                "Prevention for sensitive/classified work (spec 2026-08-17): an excluded\n"
+                "project's directory is skipped by every import BEFORE anything under it is\n"
+                "read -- not even filenames. Exclude BEFORE the sensitive work starts (cron\n"
+                "imports run every few minutes). 'add' takes a filesystem path (encoded to\n"
+                "the CLI's slug automatically) or a raw slug, plus an optional reason kept\n"
+                "with the entry. Bare /exclude (or 'list') shows the wall; 'remove' takes a\n"
+                "project off it.\n"
+                "CAVEAT: exclusion prevents FUTURE capture only -- sessions already in the\n"
+                "archive stay until deleted. Owner-only: no API path can exclude or reveal\n"
+                "exclusions."
+            ),
+            examples=[
+                "/exclude",
+                "/exclude add ~/work/classified-thing client contract forbids retention",
+                "/exclude add -Users-x-work-classified-thing",
+                "/exclude remove -Users-x-work-classified-thing",
+            ],
+            handler=_cmd_exclude,
+        )
+    )
+    registry.register(
+        Command(
+            name="delete",
+            summary="permanently delete a session or project (ceremonied, ledgered)",
+            usage="/delete <uuid-or-slug> [yes [reason...] | backups yes | forbid yes]",
+            long_help=(
+                "IRREVERSIBLE. Bare /delete <target> previews (counts, locations, the\n"
+                "warning) and deletes NOTHING; only the explicit 'yes' form deletes. Every\n"
+                "deletion writes a ledger row -- target, time, your optional reason -- so\n"
+                "the archive remembers THAT it forgot, never what. After deleting, two\n"
+                "SEPARATE asks are offered, never automatic: 'backups yes' scrubs backup DB\n"
+                "copies (they are untouched otherwise), and 'forbid yes' adds a session to\n"
+                "the re-import wall (source files still on disk would otherwise be\n"
+                "re-captured by the next import). Owner-only: no API path can delete.\n"
+                "For sensitive projects, prefer /exclude BEFORE the work ever starts --\n"
+                "prevention is insurance, deletion is repair."
+            ),
+            examples=[
+                "/delete 11111111-1111-1111-1111-111111111111",
+                "/delete 11111111-1111-1111-1111-111111111111 yes client work, contract ended",
+                "/delete 11111111-1111-1111-1111-111111111111 forbid yes",
+                "/delete -Users-x-work-classified backups yes",
+            ],
+            handler=_cmd_delete,
+            background=True,
         )
     )
     registry.register(

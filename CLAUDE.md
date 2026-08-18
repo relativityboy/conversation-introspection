@@ -34,6 +34,12 @@ entry exists, is honest, and lands with the work.
   interpretation failures become recorded anomalies, never dropped or altered lines.
 - **Local-only by default.** Serving binds `127.0.0.1`; any public-bind path keeps
   its mandatory no-auth warning.
+- **Owner-only forgetting.** (Ratified 2026-08-17.) Exclusion and deletion are
+  ceremonied human acts via TUI/CLI only — no automated process, agent, or API path
+  ever removes, excludes, or reveals exclusions; deletion always previews before the
+  explicit confirm, backup-scrub and forbid-re-import are separate consented asks, and
+  every deletion leaves a `deletion_ledger` row: the archive remembers *that* it
+  forgot, never what.
 - **Zero legacy.** Delete, don't deprecate. No compat aliases or shims anywhere —
   breaking changes are narrated in the changelog instead of cushioned in code.
   (Owner-ratified policy, 2026-08-09.) Rationale, so this isn't relitigated blind:

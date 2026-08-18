@@ -82,3 +82,10 @@ Archived (soft-deleted) sessions are invisible on EVERY path — absent from sea
 404 on detail/messages/raw, indistinguishable from nonexistent by design. If a session
 you expected is missing, say it may have been archived; never treat that 404 as
 corruption, and never try to enumerate archived sessions (nothing lists them).
+
+Some conversations are **deliberately deleted** (sensitive work): the archive keeps a
+deletion ledger recording THAT something was forgotten — never what. A missing session
+may be archived, deleted, or never captured (excluded projects); report the ambiguity
+honestly. Deletion and exclusion are owner-only acts — no agent, you included, can
+remove or wall off memory; if you believe something should be forgotten, say so to the
+user.

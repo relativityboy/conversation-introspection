@@ -92,10 +92,17 @@ def _discover_subagents(session_dir: Path, slug: str) -> Iterator[DiscoveredFile
         )
 
 
-def _discover_project(project_dir: Path) -> Iterator[DiscoveredFile]:
+def _discover_project(
+    project_dir: Path, excluded_sessions: frozenset[str] | set[str] = frozenset()
+) -> Iterator[DiscoveredFile]:
     slug = project_dir.name
     for entry in project_dir.iterdir():
         if entry.is_dir():
+            # An excluded session's uuid IS the subagent container dir's name — skipping
+            # here means its subagent files and meta.json are never read (spec 2026-08-17
+            # §3 zero-read rule, session level).
+            if entry.name in excluded_sessions:
+                continue
             yield from _discover_subagents(entry, slug)
             continue
         if not entry.is_file():
@@ -103,7 +110,7 @@ def _discover_project(project_dir: Path) -> Iterator[DiscoveredFile]:
         name = entry.name
         if name.endswith(".jsonl"):
             stem = name[: -len(".jsonl")]
-            if _is_uuid(stem):
+            if _is_uuid(stem) and stem not in excluded_sessions:
                 yield DiscoveredFile(
                     path=entry,
                     project_slug=slug,
@@ -114,7 +121,11 @@ def _discover_project(project_dir: Path) -> Iterator[DiscoveredFile]:
                 )
             continue
         match = _BACKUP_RE.match(name)
-        if match and _is_uuid(match.group("uuid")):
+        if (
+            match
+            and _is_uuid(match.group("uuid"))
+            and match.group("uuid") not in excluded_sessions
+        ):
             yield DiscoveredFile(
                 path=entry,
                 project_slug=slug,
@@ -125,16 +136,28 @@ def _discover_project(project_dir: Path) -> Iterator[DiscoveredFile]:
             )
 
 
-def discover(root: Path) -> Iterator[DiscoveredFile]:
+def discover(
+    root: Path,
+    excluded: frozenset[str] | set[str] = frozenset(),
+    excluded_sessions: frozenset[str] | set[str] = frozenset(),
+) -> Iterator[DiscoveredFile]:
     """Walk one level of project directories under ``root`` and yield known file kinds.
 
     Output is sorted by path for deterministic ordering. Never raises: entries that don't
     match a known shape are skipped silently.
+
+    ``excluded`` slugs are skipped at the DIRECTORY level, before reading anything beneath
+    them — not filenames, not agent-meta.json (spec 2026-08-17 §2 zero-read rule: an
+    excluded project's content must never be read, even incidentally). ``excluded_sessions``
+    uuids are skipped by FILENAME (main/backup files) and by container-dir name (subagents)
+    — the session-level wall of the same rule (§3 resurrection guard).
     """
     found: list[DiscoveredFile] = []
     for project_dir in root.iterdir():
         if not project_dir.is_dir():
             continue
-        found.extend(_discover_project(project_dir))
+        if project_dir.name in excluded:
+            continue
+        found.extend(_discover_project(project_dir, excluded_sessions))
     found.sort(key=lambda f: f.path)
     yield from found
