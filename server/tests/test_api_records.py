@@ -143,3 +143,64 @@ def test_raw_archived_session_record_is_404(
     resp = client.get(f"/api/v1/records/{uuid}/raw")
     assert resp.status_code == 404
     assert set(resp.json()) == {"status", "title", "detail"}
+
+
+# --- GET /records/{uuid}: reverse lookup (2026-08-23) -----------------------------------
+# A bare record_uuid (a journal citation, a search hit noted long ago) resolves to the
+# conversation that holds it -- session, project, transcript -- without knowing any of
+# them first. Same read-exclusion as /raw: archived-session records 404 indistinguishably.
+
+
+def test_record_meta_names_its_session(db_session: Session, client: TestClient) -> None:
+    uuid = _a_record_uuid(db_session, SESSION_UUID_1)
+    resp = client.get(f"/api/v1/records/{uuid}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["session_uuid"] == SESSION_UUID_1
+    assert body["project_slug"] == "-Users-x-proj"
+    assert body["transcript_kind"] == "main"
+    assert isinstance(body["transcript_id"], int)
+    assert body["type"] in {"user", "assistant"}
+    assert set(body) == {
+        "record_uuid",
+        "session_uuid",
+        "project_slug",
+        "transcript_id",
+        "transcript_kind",
+        "type",
+        "timestamp",
+    }
+
+
+def test_record_meta_subagent_record_names_parent_session(
+    db_session: Session, client: TestClient
+) -> None:
+    uuid = db_session.execute(
+        select(Message.record_uuid)
+        .join(Transcript, Message.transcript_id == Transcript.id)
+        .where(Transcript.session_id == SESSION_UUID_1, Transcript.kind == "subagent")
+        .order_by(Message.id)
+    ).scalars().first()
+    assert uuid is not None
+    body = client.get(f"/api/v1/records/{uuid}").json()
+    assert body["session_uuid"] == SESSION_UUID_1
+    assert body["transcript_kind"] == "subagent"
+
+
+def test_record_meta_unknown_uuid_is_404_problem(client: TestClient) -> None:
+    resp = client.get("/api/v1/records/does-not-exist")
+    assert resp.status_code == 404
+    body = resp.json()
+    assert set(body) == {"status", "title", "detail"}
+
+
+def test_record_meta_archived_session_record_is_404(
+    db_session: Session, client: TestClient
+) -> None:
+    uuid = _a_record_uuid(db_session, SESSION_UUID_1)
+    assert client.get(f"/api/v1/records/{uuid}").status_code == 200
+    db_session.add(ArchivedSession(session_uuid=SESSION_UUID_1, created_at=utcnow()))
+    db_session.commit()
+    resp = client.get(f"/api/v1/records/{uuid}")
+    assert resp.status_code == 404
+    assert set(resp.json()) == {"status", "title", "detail"}

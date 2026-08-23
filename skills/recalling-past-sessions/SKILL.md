@@ -23,9 +23,10 @@ facts, decisions, exact wording.
 curl -s --max-time 1 http://127.0.0.1:8765/api/v1/status   # {"version":...,"sessions":...}
 ```
 
-**Check the `version` in that response: `sources=` and its chat-default need >= 1.5.0.**
-An older server silently IGNORES the sources param (searches everything) — never claim
-"chat-only" scope against one. If the version is older, say so and either treat scope
+**Check the `version` in that response: this skill needs >= 1.9.0.** Older servers
+silently IGNORE query params they don't know (`sources=` scoping needs 1.5.0, the
+`from=`/`until=` anchors and the record reverse lookup need 1.9.0) — never claim a scope
+or an anchored window against one. If the version is older, say so and either treat those
 claims as unavailable or start your own current-code server on a spare port:
 `cd __INTROSPECT_SERVER_DIR__ && uv run introspect serve --port 8766 &`
 
@@ -55,11 +56,17 @@ for within-one-session; `limit`/`offset` page over hits.
 - One exact record: `GET /api/v1/records/{record_uuid}/raw` (the archived bytes).
 - Session overview: `GET /api/v1/sessions/{session_uuid}` — key fields: `project_slug`,
   `started_at`, `last_activity_at`, `ai_title`, transcripts with ids/kinds.
-- Context window around a search hit:
+- Where does a bare record id live? `GET /api/v1/records/{record_uuid}` names its
+  session, project, and transcript — dereference an old citation (journal entries cite
+  record_uuids) without knowing the session first, then fetch a window below.
+- Record-anchored window:
   `GET /api/v1/transcripts/{transcript_id}/messages?around=<record_uuid>&limit=15`
-  — the page CENTERS on that record. Prefer this over offset paging when you came from a
-  hit. Add `view=chat` to filter to dialogue turns server-side; plain `offset`/`limit`
-  page normally otherwise. Keep limits small.
+  — the page CENTERS on that record. `from=<record_uuid>` starts AT it and runs forward
+  (read onward from a cited moment; page forward for "to the end"); `until=<record_uuid>`
+  ends AT it and never shows a row past it. The three anchors are mutually exclusive.
+  Prefer an anchor over offset paging when you hold a record id. Add `view=chat` to filter
+  to dialogue turns server-side; plain `offset`/`limit` page normally otherwise. Keep
+  limits small.
 
 ## Decision rule: direct query vs subagent reader
 

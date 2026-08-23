@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import ColumnElement, and_, exists, func, or_, select, true
 from sqlalchemy.orm import Session
@@ -457,6 +457,8 @@ def list_messages(
     offset: int = 0,
     limit: int = _DEFAULT_LIMIT,
     around: str | None = None,
+    from_: str | None = Query(default=None, alias="from"),
+    until: str | None = None,
     view: Literal["chat", "chat-harness", "all"] = "all",
 ) -> MessageList:
     transcript = db.get(Transcript, transcript_id)
@@ -485,16 +487,36 @@ def list_messages(
         )
     )
 
-    if around is not None:
+    # Three anchor modes share one resolution; they differ only in where the window sits
+    # relative to the anchor: `around` centers, `from` starts AT it, `until` ends AT it.
+    anchors = {
+        name: value
+        for name, value in (("around", around), ("from", from_), ("until", until))
+        if value is not None
+    }
+    if len(anchors) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "around, from and until are mutually exclusive; got "
+                + ", ".join(sorted(anchors))
+            ),
+        )
+
+    effective_limit = limit
+    if anchors:
+        ((anchor_name, anchor_uuid),) = anchors.items()
         target_id = db.scalar(
             select(Message.id).where(
                 Message.transcript_id == transcript_id,
-                Message.record_uuid == around,
+                Message.record_uuid == anchor_uuid,
                 type_filter,
             )
         )
         if target_id is None:
-            raise LookupError(f"record {around} not found in transcript {transcript_id}")
+            raise LookupError(
+                f"record {anchor_uuid} not found in transcript {transcript_id}"
+            )
         ordinal = db.scalar(
             select(func.count(Message.id)).where(
                 Message.transcript_id == transcript_id,
@@ -502,7 +524,15 @@ def list_messages(
                 type_filter,
             )
         )
-        effective_offset = max(0, ordinal - limit // 2)
+        if anchor_name == "around":
+            effective_offset = max(0, ordinal - limit // 2)
+        elif anchor_name == "from":
+            effective_offset = ordinal
+        else:  # until: clamp AND truncate -- a row past the anchor is a broken promise,
+            # so the early-anchor clamp shrinks the page instead of sliding it (unlike
+            # around, whose centered clamp deliberately keeps a full window).
+            effective_offset = max(0, ordinal - limit + 1)
+            effective_limit = ordinal - effective_offset + 1
     else:
         effective_offset = max(offset, 0)
 
@@ -511,7 +541,7 @@ def list_messages(
         .where(Message.transcript_id == transcript_id, type_filter)
         .order_by(Message.id)
         .offset(effective_offset)
-        .limit(limit)
+        .limit(effective_limit)
     ).scalars().all()
 
     items = [_message_out(db, m) for m in messages]

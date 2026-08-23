@@ -589,6 +589,129 @@ def test_around_centers_mid_target_and_clamps_early_target(
     assert ordered[0] in [m["record_uuid"] for m in early["items"]]
 
 
+def _long_tree(db_session: Session, tmp_path: Path) -> tuple[int, list[str]]:
+    """A 12-message single-transcript session + its ordered record uuids (anchor tests)."""
+    root = tmp_path / "anchor_tree"
+    session_uuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    proj = root / "-Users-x-anchor"
+    proj.mkdir(parents=True)
+    lines = [
+        (make_user_line if i % 2 == 0 else make_assistant_line)(
+            text=f"anchored message {i}", sessionId=session_uuid
+        )
+        for i in range(12)
+    ]
+    (proj / f"{session_uuid}.jsonl").write_bytes(make_session_file(lines))
+    _capture(db_session, root)
+    tid = _main_transcript_id(db_session, session_uuid)
+    ordered = [
+        u
+        for (u,) in db_session.query(Message.record_uuid)
+        .filter(Message.transcript_id == tid)
+        .order_by(Message.id)
+        .all()
+    ]
+    assert len(ordered) == 12
+    return tid, ordered
+
+
+def test_from_starts_at_anchor(db_session: Session, tmp_path: Path) -> None:
+    # "entry X + N": the page begins AT the anchor and runs forward -- no index needed.
+    tid, ordered = _long_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    mid = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"from": ordered[6], "limit": 4}
+    ).json()
+    assert mid["offset"] == 6
+    assert [m["record_uuid"] for m in mid["items"]] == ordered[6:10]
+
+    # Near the end the page truncates naturally; "entry X +" is this plus paging.
+    tail = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"from": ordered[10], "limit": 4}
+    ).json()
+    assert [m["record_uuid"] for m in tail["items"]] == ordered[10:]
+
+
+def test_until_ends_at_anchor_and_never_passes_it(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, ordered = _long_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    mid = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"until": ordered[6], "limit": 4}
+    ).json()
+    assert mid["offset"] == 3
+    assert [m["record_uuid"] for m in mid["items"]] == ordered[3:7]
+
+    # Early anchor: the window clamps to the start AND truncates AT the anchor -- rows after
+    # it are exactly what "until" promises not to show (unlike around's centered clamp).
+    early = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"until": ordered[1], "limit": 4}
+    ).json()
+    assert early["offset"] == 0
+    assert [m["record_uuid"] for m in early["items"]] == ordered[0:2]
+
+
+def test_from_and_until_unknown_anchor_are_404_problems(
+    db_session: Session, client: TestClient
+) -> None:
+    tid = _main_transcript_id(db_session, SESSION_UUID_1)
+    for param in ("from", "until"):
+        resp = client.get(
+            f"/api/v1/transcripts/{tid}/messages", params={param: "no-such-record-uuid"}
+        )
+        assert resp.status_code == 404
+        body = resp.json()
+        assert set(body) == {"status", "title", "detail"}
+
+
+def test_anchor_params_are_mutually_exclusive_422(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, ordered = _long_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    for combo in (
+        {"around": ordered[3], "from": ordered[3]},
+        {"from": ordered[3], "until": ordered[5]},
+        {"around": ordered[3], "until": ordered[5]},
+    ):
+        resp = client.get(f"/api/v1/transcripts/{tid}/messages", params=combo)
+        assert resp.status_code == 422
+        body = resp.json()
+        assert set(body) == {"status", "title", "detail"}
+
+
+def test_view_chat_harness_from_counts_within_filtered_set(
+    db_session: Session, tmp_path: Path
+) -> None:
+    # Same machinery as around's view tests: the anchor resolves and counts against the
+    # FILTERED set, and a filtered-out anchor 404s under the filter but works under all.
+    tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
+    filtered_uuids = [u for u, t in zip(record_uuids, types) if t != "system"]
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    target = record_uuids[6]
+    assert types[6] == "attachment"
+    assert filtered_uuids.index(target) == 4
+
+    page = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"view": "chat-harness", "from": target, "limit": 3},
+    ).json()
+    assert page["offset"] == 4
+    assert [m["record_uuid"] for m in page["items"]] == filtered_uuids[4:7]
+
+    system_target = record_uuids[0]
+    assert types[0] == "system"
+    resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"view": "chat-harness", "from": system_target},
+    )
+    assert resp.status_code == 404
+
+
 def test_unknown_transcript_is_404_problem(client: TestClient) -> None:
     resp = client.get("/api/v1/transcripts/999999/messages")
     assert resp.status_code == 404

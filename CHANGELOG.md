@@ -4,6 +4,11 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.9.0 — 2026-08-23
+- Conversations slice by record now, not just by index: `messages` accepts `from=<record_uuid>` (the window starts at that record and runs forward — "this entry + 5") and `until=<record_uuid>` (ends at that record, never past it), alongside the existing centered `around=`; the three anchors are mutually exclusive.
+- New reverse lookup: `GET /api/v1/records/{uuid}` names the session, project, and transcript a bare record id lives in — a citation from an old note dereferences to its conversation without knowing the session first.
+- The recall skill teaches both and its version gate now requires 1.9.0 (older servers silently ignore query params they don't know, so the skill refuses to claim scoping or anchoring against one) — re-run `/skill install` to update.
+
 ## 1.8.0 — 2026-08-23
 - New `session-name` skill: say `/session-name <name>` (or `session-name <name>`) in any Claude Code session and that Claude names the session in the archive — the title you see in the TUI and the reading room — importing the session first if the 15-minute belt hasn't captured it yet. Run `/skill install` in the TUI to pick the skill up.
 - The skill never starts anything on its own: if the archive server isn't running, or is running a version older than this one, Claude tells you and stops.
