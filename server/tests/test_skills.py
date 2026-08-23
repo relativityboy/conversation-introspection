@@ -61,3 +61,34 @@ def test_no_skills_dir_reports_empty(tmp_path: Path) -> None:
     root.mkdir()
     assert skills_status(root, tmp_path / "h") == {}
     assert install_skills(root, tmp_path / "h") == {}
+
+
+def test_second_skill_installs_beside_an_already_current_one(tmp_path: Path) -> None:
+    """The exact 2026-08-23 situation: recall skill already installed, session-name new.
+
+    One install pass must leave the current skill untouched (``current``, not rewritten) and
+    add the new one; a second pass is a no-op for both. Characterization of behavior the
+    per-skill-dir iteration already had -- pinned here so it stays true.
+    """
+    root = _repo(tmp_path)
+    home = tmp_path / "skills-home"
+    assert install_skills(root, home) == {"recalling-past-sessions": "installed"}
+
+    new_dir = root / "skills" / "session-name"
+    new_dir.mkdir()
+    (new_dir / "SKILL.md").write_text(TEMPLATE.replace("name: t", "name: n"), encoding="utf-8")
+    assert skills_status(root, home) == {
+        "recalling-past-sessions": "current",
+        "session-name": "missing",
+    }
+    assert install_skills(root, home) == {
+        "recalling-past-sessions": "current",
+        "session-name": "installed",
+    }
+    assert "__INTROSPECT_SERVER_DIR__" not in (home / "session-name" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert install_skills(root, home) == {
+        "recalling-past-sessions": "current",
+        "session-name": "current",
+    }

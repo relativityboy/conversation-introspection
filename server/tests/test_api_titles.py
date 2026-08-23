@@ -13,6 +13,8 @@ THIRD ``_summary`` caller (critique F1, blocker) -- not just sessions.py's two.
 
 from __future__ import annotations
 
+import fcntl
+import threading
 from pathlib import Path
 
 import pytest
@@ -186,3 +188,139 @@ def test_search_group_header_carries_user_title(
     body = resp.json()
     assert body["groups"][0]["session"]["session_uuid"] == SESSION_UUID_1
     assert body["groups"][0]["session"]["user_title"] == "Renamed"
+
+
+# --- PUT ?import_if_missing=true: capture-then-title (2026-08-23, /session-name) --------
+#
+# The running agent names ITS OWN session, which the hourly import usually has not captured
+# yet. The flag makes the endpoint run the import in-request and retry the lookup, so the
+# skill is one call instead of a PUT/POST/poll/PUT dance. Every app here is built over an
+# EMPTY DB with ``source_root=fixture_tree`` (never the real ~/.claude/projects) -- the
+# "not yet captured" state is the point of the test, not a fixture accident.
+
+
+def _uncaptured_client(tmp_path: Path, fixture_tree: Path) -> TestClient:
+    return TestClient(create_app(db_path=tmp_path / "archive.db", source_root=fixture_tree))
+
+
+def _runs_total(client: TestClient) -> int:
+    return client.get("/api/v1/import/runs").json()["total"]
+
+
+def test_import_if_missing_imports_then_titles(tmp_path: Path, fixture_tree: Path) -> None:
+    client = _uncaptured_client(tmp_path, fixture_tree)
+    assert client.get(f"/api/v1/sessions/{SESSION_UUID_1}").status_code == 404
+
+    resp = client.put(
+        f"/api/v1/sessions/{SESSION_UUID_1}/title",
+        params={"import_if_missing": "true"},
+        json={"title": "the day we named sessions"},
+    )
+    assert resp.status_code == 204
+
+    detail = client.get(f"/api/v1/sessions/{SESSION_UUID_1}").json()
+    assert detail["user_title"] == "the day we named sessions"
+    runs = client.get("/api/v1/import/runs").json()
+    assert runs["total"] == 1
+    assert runs["items"][0]["trigger"] == "api"
+    assert runs["items"][0]["status"] == "ok"
+
+
+def test_import_if_missing_still_absent_after_import_is_404_naming_the_run(
+    tmp_path: Path, fixture_tree: Path
+) -> None:
+    client = _uncaptured_client(tmp_path, fixture_tree)
+    resp = client.put(
+        "/api/v1/sessions/99999999-9999-9999-9999-999999999999/title",
+        params={"import_if_missing": "true"},
+        json={"title": "x"},
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert set(body) == {"status", "title", "detail"}
+    assert "after import run 1" in body["detail"]
+    assert "excluded" in body["detail"]  # names the likely reasons, not just "not found"
+    assert _runs_total(client) == 1
+
+
+def test_flag_absent_unknown_session_never_imports(tmp_path: Path, fixture_tree: Path) -> None:
+    client = _uncaptured_client(tmp_path, fixture_tree)
+    resp = client.put(f"/api/v1/sessions/{SESSION_UUID_1}/title", json={"title": "x"})
+    assert resp.status_code == 404
+    assert _runs_total(client) == 0
+
+
+def test_import_if_missing_rejects_over_long_title_before_importing(
+    tmp_path: Path, fixture_tree: Path
+) -> None:
+    client = _uncaptured_client(tmp_path, fixture_tree)
+    resp = client.put(
+        f"/api/v1/sessions/{SESSION_UUID_1}/title",
+        params={"import_if_missing": "true"},
+        json={"title": "x" * 201},
+    )
+    assert resp.status_code == 422
+    assert _runs_total(client) == 0
+
+
+def test_import_if_missing_empty_title_is_a_delete_and_never_imports(
+    tmp_path: Path, fixture_tree: Path
+) -> None:
+    # An empty title means "unset"; there is nothing to capture on behalf of a delete.
+    client = _uncaptured_client(tmp_path, fixture_tree)
+    resp = client.put(
+        f"/api/v1/sessions/{SESSION_UUID_1}/title",
+        params={"import_if_missing": "true"},
+        json={"title": "   "},
+    )
+    assert resp.status_code == 404
+    assert _runs_total(client) == 0
+
+
+def test_import_if_missing_waits_for_a_running_import(
+    tmp_path: Path, fixture_tree: Path
+) -> None:
+    # Cron's import holds the advisory lock when the agent calls: the endpoint waits for it
+    # to finish, then runs its own import and titles -- no 409 leaks to the skill.
+    client = _uncaptured_client(tmp_path, fixture_tree)
+    lock = tmp_path / "import.lock"
+    fh = lock.open("w")
+    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    threading.Timer(0.4, lambda: (fcntl.flock(fh, fcntl.LOCK_UN), fh.close())).start()
+    try:
+        resp = client.put(
+            f"/api/v1/sessions/{SESSION_UUID_1}/title",
+            params={"import_if_missing": "true"},
+            json={"title": "named while cron ran"},
+        )
+    finally:
+        if not fh.closed:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
+    assert resp.status_code == 204
+    assert client.get(f"/api/v1/sessions/{SESSION_UUID_1}").json()["user_title"] == (
+        "named while cron ran"
+    )
+    assert _runs_total(client) == 1
+
+
+def test_import_if_missing_lock_never_freed_is_409_problem(
+    tmp_path: Path, fixture_tree: Path, monkeypatch
+) -> None:
+    from introspect.api.routes import titles
+
+    monkeypatch.setattr(titles, "_IMPORT_WAIT_SECONDS", 0.3)
+    client = _uncaptured_client(tmp_path, fixture_tree)
+    lock = tmp_path / "import.lock"
+    with lock.open("w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        resp = client.put(
+            f"/api/v1/sessions/{SESSION_UUID_1}/title",
+            params={"import_if_missing": "true"},
+            json={"title": "x"},
+        )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert set(body) == {"status", "title", "detail"}
+    assert body["title"] == "import already running"  # same shape POST /import uses
+    assert _runs_total(client) == 0

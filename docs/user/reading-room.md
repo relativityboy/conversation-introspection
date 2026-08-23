@@ -96,6 +96,14 @@ Space open the editor too). The box prefills with the current title.
 A small dot next to a renamed title marks that it's been changed; hover it to see the original
 archive title.
 
+### Naming a session from inside it
+
+With the `session-name` skill installed (`/skill install` in the TUI), type
+`/session-name <name>` in any Claude Code session and that Claude sets the same title from
+inside the conversation — no need to find it in the room first. If the belt hasn't captured the
+session yet, the server imports it first. Claude never starts the server for this: if it isn't
+running, or predates this feature, Claude tells you and stops.
+
 ## Session header
 
 The reader's header holds the conversation title, a message count, and an **`actions ▾`** dropdown menu. The three-way **view** control sits beside the menu, outside it — see "View modes" below.

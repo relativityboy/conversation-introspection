@@ -4,6 +4,11 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.8.0 — 2026-08-23
+- New `session-name` skill: say `/session-name <name>` (or `session-name <name>`) in any Claude Code session and that Claude names the session in the archive — the title you see in the TUI and the reading room — importing the session first if the 15-minute belt hasn't captured it yet. Run `/skill install` in the TUI to pick the skill up.
+- The skill never starts anything on its own: if the archive server isn't running, or is running a version older than this one, Claude tells you and stops.
+- API: `PUT /api/v1/sessions/{uuid}/title` accepts `?import_if_missing=true` — an unknown session triggers one import (waiting out a running one, up to 30s) before the title is set; a 404 after that names the import run and the likely reasons (excluded project, transcript not yet on disk).
+
 ## 1.7.0 — 2026-08-17
 - New project exclusion for sensitive work: `/exclude` (TUI) and `introspect exclude` (CLI) wall a project off from capture — imports skip its directory before reading anything beneath it, with an optional reason kept on the entry. Exclude before the sensitive work starts. Owner-only: no API can exclude, list, or reveal exclusions.
 - New `/delete` (TUI) and `introspect delete` (CLI): irreversible, ceremonied deletion of a session or whole project — preview first, explicit `yes` to act, and every deletion writes a ledger row with your optional reason (the archive remembers *that* it forgot, never what).

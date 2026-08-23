@@ -680,6 +680,26 @@ def test_skill_install_then_status_current(tmp_path: Path, monkeypatch) -> None:
     assert any("recalling-past-sessions: current" in line for line in emitted)
 
 
+def test_skill_install_adds_second_skill_beside_current_first(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Recall skill already installed by an earlier /skill install; a new skill dir appears
+    # after /update. One more /skill install: first stays current, second gets installed.
+    repo = _skill_repo(tmp_path)
+    monkeypatch.setattr(upd, "find_repo_root", lambda: repo)
+    home = tmp_path / "home-skills"
+    ctx, emitted = _ctx(tmp_path / "a.db", skills_home=home)
+    _run(ctx, "/skill install")
+    d = repo / "skills" / "session-name"
+    d.mkdir()
+    (d / "SKILL.md").write_text("name: cd __INTROSPECT_SERVER_DIR__\n", encoding="utf-8")
+    emitted.clear()
+    _run(ctx, "/skill install")
+    assert any("recalling-past-sessions: current" in line for line in emitted)
+    assert any("session-name: installed" in line for line in emitted)
+    assert (home / "session-name" / "SKILL.md").is_file()
+
+
 def test_skill_requires_repo_checkout(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(upd, "find_repo_root", lambda: None)
     ctx, emitted = _ctx(tmp_path / "a.db")
