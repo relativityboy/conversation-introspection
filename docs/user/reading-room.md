@@ -101,8 +101,11 @@ archive title.
 With the `session-name` skill installed (`/skill install` in the TUI), type
 `/session-name <name>` in any Claude Code session and that Claude sets the same title from
 inside the conversation — no need to find it in the room first. If the belt hasn't captured the
-session yet, the server imports it first. Claude never starts the server for this: if it isn't
-running, or predates this feature, Claude tells you and stops.
+session yet, the server imports it first. The skill runs `introspect session-name` in the shell
+before the model even sees your message, so it takes about half a second; the model just relays
+the result. Nothing starts the server for this: if it isn't running, or predates this feature,
+the line you get back says so. The same command works from any terminal:
+`cd server && uv run introspect session-name --session <uuid> "<name>"`.
 
 ## Session header
 

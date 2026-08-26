@@ -31,7 +31,7 @@ from pathlib import Path
 
 import uvicorn
 
-from introspect import config, cron, deletion, exclusion, update
+from introspect import config, cron, deletion, exclusion, session_name, update
 from introspect.api import create_app
 from introspect.db import get_engine, session_factory, upgrade_to_head
 from introspect.export import SessionNotFoundError, TranscriptNotFoundError, export_session_to
@@ -138,6 +138,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_delete.add_argument("--db", help="path to the archive DB")
     p_delete.set_defaults(handler=_cmd_delete)
+
+    p_name = subparsers.add_parser(
+        "session-name",
+        help="name the current Claude session in the archive (imports it first if needed)",
+    )
+    p_name.add_argument("name", nargs="?", help="the title; or pass --stdin")
+    p_name.add_argument(
+        "--stdin", action="store_true", help="read the title from stdin (any characters)"
+    )
+    p_name.add_argument(
+        "--session", help="session uuid (default: $CLAUDE_CODE_SESSION_ID)"
+    )
+    p_name.add_argument(
+        "--url", default=session_name.DEFAULT_URL, help="archive server base URL"
+    )
+    p_name.set_defaults(handler=_cmd_session_name)
 
     p_status = subparsers.add_parser("status", help="archive counts + last import run")
     p_status.add_argument("--db", help="path to the archive DB")
@@ -476,6 +492,23 @@ def _cmd_delete(args: argparse.Namespace) -> int:
             f"introspect delete {target} --backups --yes"
         )
     return 0
+
+
+def _cmd_session_name(args: argparse.Namespace) -> int:
+    name = sys.stdin.read() if args.stdin else (args.name or "")
+    session_uuid = args.session or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    repo_root = update.find_repo_root()
+    outcome = session_name.name_session(
+        name,
+        session_uuid,
+        base_url=args.url,
+        transport=session_name.urllib_transport,
+        server_dir=repo_root / "server" if repo_root is not None else None,
+    )
+    # Always stdout: the /session-name skill's ``!`` block captures stdout only, and a
+    # failure the user never sees reads as "nothing happened".
+    print(outcome.message)
+    return 0 if outcome.ok else 1
 
 
 def _cmd_status(args: argparse.Namespace) -> int:

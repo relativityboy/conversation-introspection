@@ -4,6 +4,10 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.10.0 — 2026-08-25
+- `/session-name <name>` is now fast: the skill runs a shell command *before* the model turn and the model only relays its one-line result — about half a second of work instead of a model narrating curl calls for tens of seconds and thousands of tokens. Re-run `/skill install` to pick it up; the slash command and its behavior are unchanged.
+- New CLI command behind it: `introspect session-name [<name> | --stdin] [--session <uuid>] [--url <base>]` names a session in the archive (defaulting to the Claude Code session it runs inside, via `CLAUDE_CODE_SESSION_ID`), importing it first if needed, and prints one line saying what happened — including "server not running" with the start command, and "server too old, restart it" for anything before 1.8.0.
+
 ## 1.9.0 — 2026-08-23
 - Conversations slice by record now, not just by index: `messages` accepts `from=<record_uuid>` (the window starts at that record and runs forward — "this entry + 5") and `until=<record_uuid>` (ends at that record, never past it), alongside the existing centered `around=`; the three anchors are mutually exclusive.
 - New reverse lookup: `GET /api/v1/records/{uuid}` names the session, project, and transcript a bare record id lives in — a citation from an old note dereferences to its conversation without knowing the session first.
