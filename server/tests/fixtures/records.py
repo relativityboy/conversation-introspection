@@ -33,6 +33,12 @@ def _short() -> str:
     return _uuidmod.uuid4().hex[:12]
 
 
+# Sentinel distinguishing "api_message_id not passed" (default: synthesize a random id, so
+# ids are present in most fixtures like real transcripts) from "api_message_id=None"
+# (explicitly omit message.id from the payload, e.g. to test the no-id case).
+_UNSET = object()
+
+
 def _encode(record: dict) -> bytes:
     """Serialize a record dict as one compact ``.jsonl`` line (bytes, newline-terminated)."""
     return (json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
@@ -87,6 +93,7 @@ def make_assistant_line(
     tool_use_id: str | None = None,
     model: str = "claude-opus-4-synthetic",
     usage: dict | None = None,
+    api_message_id: str | None | object = _UNSET,
     extra: dict | None = None,
     message_extra: dict | None = None,
     tool_use_caller: dict | None = None,
@@ -106,6 +113,10 @@ def make_assistant_line(
     novel content block such as the ``fallback`` model-fallback marker). ``tool_use_id``
     pins the ``tool_use`` block's ``id`` (default: random) — used by callers that need a
     dispatching block's id to match a known subagent's ``parent_tool_use_id``.
+    ``api_message_id`` pins the message-level ``message.id`` (the API message id real
+    transcripts carry); default is a random ``msg_...`` id (present, like real transcripts,
+    unless overridden with a specific value e.g. to share one id across two lines); pass
+    ``None`` explicitly to omit ``message.id`` from the payload entirely.
     """
     content: list[dict] = []
     if with_thinking:
@@ -133,6 +144,9 @@ def make_assistant_line(
         }
     record = _envelope("assistant", **overrides)
     record["message"] = {"role": "assistant", "model": model, "content": content, "usage": usage}
+    resolved_message_id = ("msg_" + _short()) if api_message_id is _UNSET else api_message_id
+    if resolved_message_id is not None:
+        record["message"]["id"] = resolved_message_id
     if message_extra:
         record["message"].update(message_extra)
     if extra:

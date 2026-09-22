@@ -14,6 +14,7 @@ mirroring ``list_messages``' archived probe).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from introspect.ingest.capture import capture_file, utcnow
 from introspect.ingest.discovery import discover
 from introspect.models import ArchivedSession, Message, RawRecord, SourceFile, Transcript
 from tests.conftest import SESSION_UUID_1, SESSION_UUID_2
+from tests.fixtures.records import make_assistant_line, make_session_file, make_user_line
 
 
 def _capture(db: Session, root: Path) -> None:
@@ -204,3 +206,167 @@ def test_record_meta_archived_session_record_is_404(
     resp = client.get(f"/api/v1/records/{uuid}")
     assert resp.status_code == 404
     assert set(resp.json()) == {"status", "title", "detail"}
+
+
+# --- GET /records/by-message-id/{api_message_id}: reverse lookup (Task T2) -------------
+# One API message (``message.id``) can span multiple JSONL lines, hence multiple Message
+# rows -- this groups them. Same read-exclusion as /records/{uuid}: an archived session's
+# records are folded out of the list, and no live records (unknown id, or every match
+# archived) 404s exactly like the bare-uuid lookup above.
+
+
+def test_by_message_id_returns_all_records_for_shared_id(
+    db_session: Session, client: TestClient, tmp_path: Path
+) -> None:
+    root = tmp_path / "shared-id-src"
+    proj = root / "-Users-x-shared"
+    proj.mkdir(parents=True)
+    session_uuid = "44444444-4444-4444-4444-444444444444"
+    api_message_id = "msg_shared_route_0001"
+    lines = [
+        make_user_line(sessionId=session_uuid, promptSource="typed"),
+        make_assistant_line(
+            text="first half", api_message_id=api_message_id, sessionId=session_uuid
+        ),
+        make_assistant_line(
+            text="second half", api_message_id=api_message_id, sessionId=session_uuid
+        ),
+    ]
+    (proj / f"{session_uuid}.jsonl").write_bytes(make_session_file(lines))
+    _capture(db_session, root)
+
+    resp = client.get(f"/api/v1/records/by-message-id/{api_message_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["api_message_id"] == api_message_id
+    assert len(body["records"]) == 2
+
+    # Ascending Message.id (ingest order) after dedupe.
+    expected_uuids = (
+        db_session.execute(
+            select(Message.record_uuid)
+            .where(Message.api_message_id == api_message_id)
+            .order_by(Message.id)
+        )
+        .scalars()
+        .all()
+    )
+    assert [r["record_uuid"] for r in body["records"]] == list(expected_uuids)
+
+    for record in body["records"]:
+        assert record["session_uuid"] == session_uuid
+        assert record["project_slug"] == "-Users-x-shared"
+        assert record["transcript_kind"] == "main"
+        assert record["type"] == "assistant"
+        assert set(record) == {
+            "record_uuid",
+            "session_uuid",
+            "project_slug",
+            "transcript_id",
+            "transcript_kind",
+            "type",
+            "timestamp",
+        }
+
+
+def test_by_message_id_unknown_id_is_404_problem(client: TestClient) -> None:
+    resp = client.get("/api/v1/records/by-message-id/msg_does_not_exist")
+    assert resp.status_code == 404
+    body = resp.json()
+    assert set(body) == {"status", "title", "detail"}
+
+
+def test_by_message_id_archived_session_is_404(
+    db_session: Session, client: TestClient, tmp_path: Path
+) -> None:
+    root = tmp_path / "archived-id-src"
+    proj = root / "-Users-x-archived-msg"
+    proj.mkdir(parents=True)
+    session_uuid = "55555555-5555-5555-5555-555555555555"
+    api_message_id = "msg_archived_route_0001"
+    lines = [
+        make_user_line(sessionId=session_uuid, promptSource="typed"),
+        make_assistant_line(api_message_id=api_message_id, sessionId=session_uuid),
+    ]
+    (proj / f"{session_uuid}.jsonl").write_bytes(make_session_file(lines))
+    _capture(db_session, root)
+
+    assert client.get(f"/api/v1/records/by-message-id/{api_message_id}").status_code == 200
+
+    db_session.add(ArchivedSession(session_uuid=session_uuid, created_at=utcnow()))
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/records/by-message-id/{api_message_id}")
+    assert resp.status_code == 404
+    assert set(resp.json()) == {"status", "title", "detail"}
+
+
+def test_by_message_id_dedupes_by_highest_message_id_per_record_uuid(
+    db_session: Session, client: TestClient
+) -> None:
+    """Two Message rows sharing one record_uuid AND api_message_id -- what a divergence
+    re-ingest would produce for an unchanged line, before ``remove_interpretation_for_
+    source_file`` cleans up the superseded generation's rows (see routes/records.py's
+    cross-generation comment on ``get_record_meta``) -- must collapse to the NEWEST
+    (highest ``Message.id``) row. Built directly at the ORM layer: the real capture
+    pipeline always deletes the superseded generation's Message rows before the new
+    generation is (re-)ingested, so this exact state can't be produced end-to-end through
+    capture today (see the T2 write-up) -- this pins the query's tie-break regardless of
+    how the state arises.
+
+    The older (lower id) row is deliberately given the LATER timestamp and the newer
+    (higher id) row the EARLIER one, so a query that dedupes by timestamp instead of by
+    Message.id would return the wrong row and fail this test.
+    """
+    tid = db_session.execute(
+        select(Transcript.id).where(
+            Transcript.session_id == SESSION_UUID_2, Transcript.kind == "main"
+        )
+    ).scalars().first()
+    sfid = db_session.execute(
+        select(SourceFile.id).where(SourceFile.transcript_id == tid)
+    ).scalars().first()
+    assert tid is not None and sfid is not None
+
+    shared_uuid = "dedupe-test-0001"
+    shared_api_id = "msg_dedupe_route_0001"
+
+    def _add(line_number: int, timestamp: datetime) -> None:
+        raw = RawRecord(
+            source_file_id=sfid,
+            transcript_id=tid,
+            line_number=line_number,
+            byte_offset=0,
+            raw_line=b'{"synthetic":true}',
+            line_sha256="0" * 64,
+            record_type="assistant",
+            record_uuid=shared_uuid,
+            detected_cli_version=None,
+            parsed_with_schema_version=None,
+            parse_status="ok",
+            ingested_at=utcnow(),
+        )
+        db_session.add(raw)
+        db_session.flush()
+        db_session.add(
+            Message(
+                raw_record_id=raw.id,
+                transcript_id=tid,
+                record_uuid=shared_uuid,
+                parent_uuid=None,
+                timestamp=timestamp,
+                type="assistant",
+                api_message_id=shared_api_id,
+            )
+        )
+        db_session.commit()
+
+    _add(9001, datetime(2026, 1, 2, tzinfo=timezone.utc))  # older generation, LATER timestamp
+    _add(9002, datetime(2026, 1, 1, tzinfo=timezone.utc))  # newer generation, EARLIER timestamp
+
+    resp = client.get(f"/api/v1/records/by-message-id/{shared_api_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["records"]) == 1
+    assert body["records"][0]["record_uuid"] == shared_uuid
+    assert body["records"][0]["timestamp"].startswith("2026-01-01")

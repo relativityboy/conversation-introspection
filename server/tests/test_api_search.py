@@ -17,9 +17,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from introspect.api import create_app
-from introspect.ingest.capture import capture_file
+from introspect.ingest.capture import capture_file, utcnow
 from introspect.ingest.discovery import discover
 from introspect.ingest.interpret import classify_pending
+from introspect.models import ArchivedSession
 from introspect.search import get_search_index
 from tests.conftest import AGENT_HEX_ID, SESSION_UUID_1
 from tests.fixtures.records import make_assistant_line, make_session_file, make_user_line
@@ -318,3 +319,164 @@ def test_search_sources_unknown_token_is_422(client: TestClient) -> None:
     res = client.get("/api/v1/search", params={"q": "horizon", "sources": "chat,bogus"})
     assert res.status_code == 422
     assert "bogus" in res.json()["detail"]
+
+
+# --- Id-shaped `q` (Task T3): exact-match lookup on Message.api_message_id, bypassing FTS ---
+# An id-shaped query matches ``^msg_[A-Za-z0-9]+$`` -- a bare "msg_..." id, never a phrase.
+
+ID_LOOKUP_SESSION = "a1a1a1a1-1111-4111-8111-111111111111"
+PINNED_MESSAGE_ID = "msg_pinnedFixtureZZ01"
+
+SHARED_ID_SESSION = "a2a2a2a2-1111-4111-8111-111111111111"
+SHARED_MESSAGE_ID = "msg_sharedFixtureZZ02"
+
+ARCHIVED_ID_SESSION = "a3a3a3a3-1111-4111-8111-111111111111"
+ARCHIVED_MESSAGE_ID = "msg_archivedFixtureZZ03"
+
+FALLTHROUGH_SESSION = "a4a4a4a4-1111-4111-8111-111111111111"
+
+
+def test_id_shaped_query_session_scope_returns_pinned_hit(
+    tmp_path: Path, db_session: Session
+) -> None:
+    root = tmp_path / "search_tree"
+    proj = root / "-Users-x-idlookup"
+    proj.mkdir(parents=True)
+    lines = [
+        make_user_line(text="setup prompt", sessionId=ID_LOOKUP_SESSION, promptSource="typed"),
+        make_assistant_line(
+            text="the pinned reply body",
+            sessionId=ID_LOOKUP_SESSION,
+            api_message_id=PINNED_MESSAGE_ID,
+        ),
+    ]
+    (proj / f"{ID_LOOKUP_SESSION}.jsonl").write_bytes(make_session_file(lines))
+    _capture_and_index(db_session, root)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    body = client.get(
+        "/api/v1/search",
+        params={"q": PINNED_MESSAGE_ID, "scope": "session", "session": ID_LOOKUP_SESSION},
+    ).json()
+    assert "items" in body and "groups" not in body  # flat shape intact
+    assert body["total"] == 1
+    hit = body["items"][0]
+    assert hit["snippet"] == "the pinned reply body"
+    assert hit["block_kind"] == "text"
+    assert hit["agent_hex_id"] is None
+
+
+def test_id_shaped_query_global_scope_groups_shared_id_across_two_records(
+    tmp_path: Path, db_session: Session
+) -> None:
+    root = tmp_path / "search_tree"
+    proj = root / "-Users-x-shared-id"
+    proj.mkdir(parents=True)
+    lines = [
+        make_user_line(text="prompt", sessionId=SHARED_ID_SESSION, promptSource="typed"),
+        # One API message split across two JSONL lines sharing message.id (real transcript
+        # shape -- see Message.api_message_id's docstring).
+        make_assistant_line(
+            text="first half of the reply",
+            sessionId=SHARED_ID_SESSION,
+            api_message_id=SHARED_MESSAGE_ID,
+        ),
+        make_assistant_line(
+            text="second half of the reply",
+            sessionId=SHARED_ID_SESSION,
+            api_message_id=SHARED_MESSAGE_ID,
+        ),
+    ]
+    (proj / f"{SHARED_ID_SESSION}.jsonl").write_bytes(make_session_file(lines))
+    _capture_and_index(db_session, root)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    body = client.get("/api/v1/search", params={"q": SHARED_MESSAGE_ID}).json()
+    assert body["total"] == 2
+    assert len(body["groups"]) == 1
+    group = body["groups"][0]
+    assert group["session"]["session_uuid"] == SHARED_ID_SESSION
+    assert group["has_more"] is False
+    assert len(group["hits"]) == 2
+    snippets = {h["snippet"] for h in group["hits"]}
+    assert snippets == {"first half of the reply", "second half of the reply"}
+
+
+def test_id_shaped_query_excludes_archived_session(tmp_path: Path, db_session: Session) -> None:
+    root = tmp_path / "search_tree"
+    proj = root / "-Users-x-archived-id"
+    proj.mkdir(parents=True)
+    lines = [
+        make_user_line(text="prompt", sessionId=ARCHIVED_ID_SESSION, promptSource="typed"),
+        make_assistant_line(
+            text="a reply that should be hidden",
+            sessionId=ARCHIVED_ID_SESSION,
+            api_message_id=ARCHIVED_MESSAGE_ID,
+        ),
+    ]
+    (proj / f"{ARCHIVED_ID_SESSION}.jsonl").write_bytes(make_session_file(lines))
+    _capture_and_index(db_session, root)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    # Sanity: the hit is findable before the session is archived.
+    before = client.get("/api/v1/search", params={"q": ARCHIVED_MESSAGE_ID}).json()
+    assert before["groups"] != []
+    assert before["groups"][0]["session"]["session_uuid"] == ARCHIVED_ID_SESSION
+
+    db_session.add(ArchivedSession(session_uuid=ARCHIVED_ID_SESSION, created_at=utcnow()))
+    db_session.commit()
+
+    after = client.get("/api/v1/search", params={"q": ARCHIVED_MESSAGE_ID}).json()
+    assert after["groups"] == []
+
+
+def test_id_shaped_query_with_no_match_returns_empty_result(client: TestClient) -> None:
+    global_body = client.get("/api/v1/search", params={"q": "msg_doesnotexistanywhere"}).json()
+    assert global_body == {"groups": [], "total": 0}
+
+    session_body = client.get(
+        "/api/v1/search",
+        params={"q": "msg_doesnotexistanywhere", "scope": "session", "session": SESSION_UUID_1},
+    ).json()
+    assert session_body == {"items": [], "total": 0}
+
+
+def test_id_shaped_bypass_does_not_affect_normal_text_search(client: TestClient) -> None:
+    """Regression: a normal text query still returns FTS results, unchanged."""
+    body = client.get("/api/v1/search", params={"q": "horizon"}).json()
+    assert body["total"] == 1
+    assert body["groups"][0]["session"]["session_uuid"] == SESSION_UUID_1
+    assert "<mark>" in body["groups"][0]["hits"][0]["snippet"]
+
+
+def test_query_starting_with_msg_underscore_but_not_id_shaped_falls_through_to_fts(
+    tmp_path: Path, db_session: Session
+) -> None:
+    root = tmp_path / "search_tree"
+    proj = root / "-Users-x-fallthrough"
+    proj.mkdir(parents=True)
+    lines = [
+        make_user_line(text="prompt", sessionId=FALLTHROUGH_SESSION, promptSource="typed"),
+        make_assistant_line(
+            text="msg hello combined phrase for fallthrough coverage",
+            sessionId=FALLTHROUGH_SESSION,
+        ),
+    ]
+    (proj / f"{FALLTHROUGH_SESSION}.jsonl").write_bytes(make_session_file(lines))
+    _capture_and_index(db_session, root)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    # "msg_" alone fails the id-shaped regex (needs >=1 char after the prefix). If it were
+    # mistakenly treated as an id lookup it would search for the literal, never-real
+    # api_message_id "msg_" and find nothing -- a real hit here proves it went through FTS
+    # instead (content_fts's 'porter unicode61' tokenizer treats '_' as a separator, so the
+    # phrase "msg_" tokenizes down to the bare token "msg", verified against a live FTS5
+    # table with the same tokenize= spec as migration 0002).
+    lone = client.get("/api/v1/search", params={"q": "msg_"}).json()
+    assert lone["total"] >= 1
+    assert lone["groups"][0]["session"]["session_uuid"] == FALLTHROUGH_SESSION
+
+    # "msg_ hello" contains a space -> fails the id-shaped regex outright.
+    spaced = client.get("/api/v1/search", params={"q": "msg_ hello"}).json()
+    assert spaced["total"] >= 1
+    assert spaced["groups"][0]["session"]["session_uuid"] == FALLTHROUGH_SESSION

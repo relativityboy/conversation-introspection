@@ -151,6 +151,7 @@ class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
         Index("ix_messages_transcript_id", "transcript_id", "id"),
+        Index("ix_messages_api_message_id", "api_message_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -161,6 +162,11 @@ class Message(Base):
     timestamp: Mapped[datetime | None] = mapped_column(UTCDateTime)
     type: Mapped[str]
     model: Mapped[str | None]
+    # NOTE(claude): the API message id (message.id in the transcript, e.g. "msg_...").
+    # Not per-row unique -- one API message can be split across multiple JSONL lines
+    # (e.g. text + tool_use as separate records sharing one message.id), so this groups
+    # rows rather than identifying one. See migration 0011.
+    api_message_id: Mapped[str | None]
     cwd: Mapped[str | None]
     git_branch: Mapped[str | None]
     request_id: Mapped[str | None]

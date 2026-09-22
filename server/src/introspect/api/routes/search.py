@@ -36,17 +36,26 @@ detail}`` shape :mod:`introspect.api.errors` produces. No other input can fail:
 valid (possibly empty-match) FTS5 query, so nothing here wraps ``search()`` in a try/except --
 doing so would risk masking a real corruption error as an empty result, which the sanitizer's
 never-raise guarantee is specifically meant to make unnecessary.
+
+**Id-shaped ``q`` bypasses FTS entirely (Task T3).** A ``q`` matching
+:data:`_ID_SHAPED_QUERY_RE` (a bare ``msg_...`` api-message-id, never a phrase) skips
+``SearchIndex.search`` and instead does an exact-match lookup on ``Message.api_message_id``
+via :func:`_api_message_id_hits`. The lookup returns the same ``(list[SearchHit], int)``
+shape ``SearchIndex.search`` does, so every downstream step -- archived-drop, subagent-hex
+resolution, ``HitOut`` construction, global-scope grouping -- runs unchanged over hits from
+either path; the two response shapes never had to special-case which path produced them.
 """
 
 from __future__ import annotations
 
+import re
 from http import HTTPStatus
 from typing import Literal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from introspect.api.deps import get_db
@@ -58,7 +67,14 @@ from introspect.api.routes.sessions import (
     _summary,
     _user_title,
 )
-from introspect.models import ArchivedSession, ChatSession, Project, Transcript
+from introspect.models import (
+    ArchivedSession,
+    ChatSession,
+    ContentBlock,
+    Message,
+    Project,
+    Transcript,
+)
 from introspect.search import SearchHit, get_search_index
 from introspect.search.fts5 import SOURCES_ALL
 
@@ -145,6 +161,148 @@ def _drop_archived_hits(db: Session, hits: list[SearchHit]) -> list[SearchHit]:
     if not archived:
         return hits
     return [hit for hit in hits if hit.session_uuid not in archived]
+
+
+# --- Id-shaped `q` bypass (Task T3): exact-match on Message.api_message_id --------------
+
+# Conservative and case-sensitive: only a bare "msg_" + alnum id counts as id-shaped -- a
+# phrase merely containing "msg_" (a space, extra punctuation, or nothing after the prefix)
+# falls through to the normal FTS path instead.
+_ID_SHAPED_QUERY_RE = re.compile(r"^msg_[A-Za-z0-9]+$")
+
+#: Matches the FTS5 ``snippet()`` call's own max-token count (see ``search/fts5.py``'s
+#: ``_SELECT_SQL``), so an id-lookup preview is sized the same as an FTS snippet.
+_ID_LOOKUP_SNIPPET_MAX_WORDS = 12
+
+
+def _truncate_id_lookup_snippet(text: str) -> str:
+    """First ``_ID_LOOKUP_SNIPPET_MAX_WORDS`` words of ``text``, ellipsis-suffixed if cut."""
+    words = text.split()
+    if len(words) <= _ID_LOOKUP_SNIPPET_MAX_WORDS:
+        return text
+    return " ".join(words[:_ID_LOOKUP_SNIPPET_MAX_WORDS]) + " …"
+
+
+def _first_blocks_by_message(
+    db: Session, message_ids: list[int]
+) -> tuple[dict[int, tuple[int, int, str, str]], dict[int, tuple[int, int, str, str | None]]]:
+    """For each message id, its first non-empty TEXT block and (as a fallback) its first
+    block of any kind -- both keyed by ``message_id``, both a ``(block_id, block_index,
+    block_kind, text_content)`` tuple.
+
+    ONE batched query, ordered by ``block_index``, walked once to pick each message's
+    earliest matching block of each kind -- no second round trip. The text-block predicate
+    mirrors ``search/fts5.py``'s ``_TEXT_PREDICATE`` (``block_kind == 'text' and
+    text_content``), kept independent since this route may not modify that module.
+    """
+    if not message_ids:
+        return {}, {}
+    rows = db.execute(
+        select(
+            ContentBlock.message_id,
+            ContentBlock.id,
+            ContentBlock.block_index,
+            ContentBlock.block_kind,
+            ContentBlock.text_content,
+        )
+        .where(ContentBlock.message_id.in_(message_ids))
+        .order_by(ContentBlock.message_id, ContentBlock.block_index)
+    ).all()
+    text_block: dict[int, tuple[int, int, str, str]] = {}
+    fallback_block: dict[int, tuple[int, int, str, str | None]] = {}
+    for message_id, block_id, block_index, block_kind, text_content in rows:
+        fallback_block.setdefault(message_id, (block_id, block_index, block_kind, text_content))
+        if message_id not in text_block and block_kind == "text" and text_content:
+            text_block[message_id] = (block_id, block_index, block_kind, text_content)
+    return text_block, fallback_block
+
+
+def _api_message_id_query(
+    api_message_id: str, *, session_uuid: str | None, project_slugs: list[str] | None
+) -> Select[tuple[Message, str]]:
+    """The base SQLAlchemy ``Select`` for an exact ``Message.api_message_id`` match.
+
+    Shared by the count and page queries in :func:`_api_message_id_hits` so the two can
+    never drift on filters. ``session_uuid`` scopes to one session (session scope);
+    ``project_slugs`` narrows by project (global scope only -- mirrors
+    ``_project_clauses`` in ``search/fts5.py``: ``None`` = unfiltered, ``[]`` = matches
+    nothing).
+    """
+    stmt = (
+        select(Message, Transcript.session_id)
+        .join(Transcript, Message.transcript_id == Transcript.id)
+        .where(Message.api_message_id == api_message_id)
+    )
+    if session_uuid is not None:
+        stmt = stmt.where(Transcript.session_id == session_uuid)
+    if project_slugs is not None:
+        stmt = (
+            stmt.join(ChatSession, ChatSession.session_uuid == Transcript.session_id)
+            .join(Project, Project.id == ChatSession.project_id)
+            .where(Project.dir_slug.in_(project_slugs))
+        )
+    return stmt
+
+
+def _api_message_id_hits(
+    db: Session,
+    api_message_id: str,
+    *,
+    session_uuid: str | None,
+    project_slugs: list[str] | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[SearchHit], int]:
+    """Exact-match lookup on ``Message.api_message_id`` -- the id-shaped-``q`` bypass of FTS.
+
+    Mirrors :meth:`SearchIndex.search`'s ``(hits, total)`` contract exactly (the same
+    :class:`SearchHit` shape; ``total`` is the pre-page, pre-archived-drop match count, just
+    like the FTS path's -- see :func:`_drop_archived_hits`'s accepted-cost note, which applies
+    identically here since the SAME post-filter runs over these hits too) so every downstream
+    step -- ``_drop_archived_hits``, ``_agent_hex_by_transcript``, ``_hit_out``, ``_group_hits``
+    -- runs unchanged regardless of which path produced the hits. Ordered by ascending
+    ``Message.id`` (no bm25 rank exists for an exact-match lookup, so insertion order is the
+    only meaningful, deterministic order).
+
+    ``sources=`` is deliberately NOT applied here (spec, Task T3): an exact identity lookup on
+    one api_message_id is a single message wherever it lives, and filtering it by source kind
+    would just make a valid hit vanish for no good reason.
+    """
+    stmt = _api_message_id_query(
+        api_message_id, session_uuid=session_uuid, project_slugs=project_slugs
+    )
+    total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    rows = db.execute(stmt.order_by(Message.id.asc()).limit(limit).offset(offset)).all()
+
+    text_block, fallback_block = _first_blocks_by_message(db, [message.id for message, _ in rows])
+
+    hits: list[SearchHit] = []
+    for message, session_uuid_val in rows:
+        block = text_block.get(message.id)
+        if block is not None:
+            block_id, block_index, block_kind, text_content = block
+            snippet = _truncate_id_lookup_snippet(text_content)
+        else:
+            fallback = fallback_block.get(message.id)
+            block_id, block_index, block_kind = (
+                fallback[:3] if fallback is not None else (0, 0, "text")
+            )
+            snippet = ""
+        hits.append(
+            SearchHit(
+                session_uuid=session_uuid_val,
+                transcript_id=message.transcript_id,
+                message_id=message.id,
+                record_uuid=message.record_uuid,
+                block_id=block_id,
+                block_index=block_index,
+                block_kind=block_kind,
+                snippet=snippet,
+                rank=0.0,
+                timestamp=message.timestamp,
+            )
+        )
+    return hits, int(total)
 
 
 def _agent_hex_by_transcript(db: Session, hits: list[SearchHit]) -> dict[int, str | None]:
@@ -246,14 +404,20 @@ def search(
     offset = max(offset, 0)
 
     index = get_search_index()
+    id_shaped = _ID_SHAPED_QUERY_RE.match(q) is not None
 
     if scope == "session":
         # `projects=` is accepted and explicitly IGNORED here (spec critique #7): threading it
         # into a session-scope search would risk filtering out the very session being read, so
         # this scope never passes project_slugs to the index -- unlike global scope below.
-        hits, total = index.search(
-            db, q, session_uuid=session, sources=source_set, limit=limit, offset=offset
-        )
+        if id_shaped:
+            hits, total = _api_message_id_hits(
+                db, q, session_uuid=session, project_slugs=None, limit=limit, offset=offset
+            )
+        else:
+            hits, total = index.search(
+                db, q, session_uuid=session, sources=source_set, limit=limit, offset=offset
+            )
         hits = _drop_archived_hits(db, hits)
         agent_hex = _agent_hex_by_transcript(db, hits)
         return SessionSearchResult(
@@ -261,9 +425,14 @@ def search(
         )
 
     project_slugs = _parse_projects_param(projects)
-    hits, total = index.search(
-        db, q, project_slugs=project_slugs, sources=source_set, limit=limit, offset=offset
-    )
+    if id_shaped:
+        hits, total = _api_message_id_hits(
+            db, q, session_uuid=None, project_slugs=project_slugs, limit=limit, offset=offset
+        )
+    else:
+        hits, total = index.search(
+            db, q, project_slugs=project_slugs, sources=source_set, limit=limit, offset=offset
+        )
     hits = _drop_archived_hits(db, hits)
     agent_hex = _agent_hex_by_transcript(db, hits)
     return GlobalSearchResult(groups=_group_hits(db, hits, agent_hex), total=total)

@@ -205,6 +205,12 @@ result. You open a result by **clicking** it: a group header opens the session, 
 deep-links to that specific message. Hits are returned best-match-first. A hit inside a **subagent**
 transcript routes through the `/a/<agent-hex>/` drill-in so you land in the right sub-session.
 
+**Searching by message id.** A query that is exactly an API message id — `msg_` followed by letters
+and digits, nothing else — skips full-text search and looks the id up directly, in both scopes. You
+get the records of that one API message (one API message can span several records, so several hits
+are normal), ordered as captured rather than by match rank. Ids are only stored at capture from
+this version on; run `introspect reparse` once to make older history findable this way.
+
 > The keyboard "Enter or Right opens the best hit" gesture belongs to the **TUI** search, not this
 > web UI — see [The TUI](tui.md#searching).
 

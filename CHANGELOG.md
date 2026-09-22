@@ -4,6 +4,11 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.12.0 — 2026-09-20
+- Search understands API message ids: type a bare `msg_...` id into the global or in-conversation search and you get that exact message's records — direct lookup, no full-text guessing, in the same result shapes as any other search.
+- New API: `GET /api/v1/records/by-message-id/{id}` lists every live record carrying that API message id (one API message can span several records; newest generation of each, archived sessions excluded — all-archived answers 404, same as unknown).
+- The archive now stores each assistant message's own API id (`message.id`, the `msg_...` string) at capture; run `introspect reparse` once to backfill your existing history — until then, id lookups only find records captured after this update.
+
 ## 1.11.1 — 2026-09-14
 - Your own typed messages now render chat-style code fences (opened mid-line, or closed at the end of a line instead of on their own) as real code blocks in the reading room, instead of garbled inline code or paragraphs swallowed by an unclosed block — Claude's own messages and the raw record inspector are unaffected.
 

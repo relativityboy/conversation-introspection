@@ -172,6 +172,7 @@ def _apply_conversational(db: Session, pr: ParseResult, raw: RawRecord) -> None:
         timestamp=timestamp,
         type=pr.record_type,
         model=getattr(message_model, "model", None),
+        api_message_id=getattr(message_model, "id", None),
         cwd=getattr(record, "cwd", None),
         git_branch=getattr(record, "gitBranch", None),
         request_id=getattr(record, "requestId", None),

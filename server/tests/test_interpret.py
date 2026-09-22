@@ -19,8 +19,8 @@ from introspect.models import (
     TokenUsage,
     Transcript,
 )
-from tests.conftest import SESSION_UUID_1
-from tests.fixtures.records import make_user_line
+from tests.conftest import SESSION_UUID_1, SINGLE_SESSION_UUID, _ingest_single_line
+from tests.fixtures.records import make_assistant_line, make_user_line
 from tests.test_capture import _capture_all
 
 # --- Binding contract (verbatim from task-8-brief) --------------------------------------
@@ -133,3 +133,53 @@ def test_divergence_leaves_one_message_per_uuid(db_session, fixture_tree):
     # u-div1 is the REWRITTEN line's uuid: this just confirms the new generation was
     # interpreted. The real no-cross-generation-dupes guard is the len==set check above.
     assert "u-div1" in uuids
+
+
+# --- api_message_id (Task T1) -------------------------------------------------------------
+# The Claude Code transcript's assistant records carry the API message id
+# (message.id, e.g. "msg_..."). One API message can be split across multiple JSONL lines
+# (e.g. a text block line followed by a tool_use block line sharing the same message.id) --
+# this really happens in production transcripts, hence the shared-id test below.
+
+
+def test_assistant_api_message_id_stored(db_session, tmp_path):
+    _ingest_single_line(
+        db_session,
+        tmp_path,
+        make_assistant_line(api_message_id="msg_test_stored0001", sessionId=SINGLE_SESSION_UUID),
+    )
+    msg = db_session.query(Message).filter_by(type="assistant").one()
+    assert msg.api_message_id == "msg_test_stored0001"
+
+
+def test_assistant_without_message_id_is_null(db_session, tmp_path):
+    _ingest_single_line(
+        db_session,
+        tmp_path,
+        make_assistant_line(api_message_id=None, sessionId=SINGLE_SESSION_UUID),
+    )
+    msg = db_session.query(Message).filter_by(type="assistant").one()
+    assert msg.api_message_id is None
+
+
+def test_user_record_api_message_id_is_null(db_session, tmp_path):
+    _ingest_single_line(
+        db_session, tmp_path, make_user_line(text="hello", sessionId=SINGLE_SESSION_UUID)
+    )
+    msg = db_session.query(Message).filter_by(type="user").one()
+    assert msg.api_message_id is None
+
+
+def test_two_assistant_records_share_one_api_message_id(db_session, tmp_path):
+    """One API message split across two JSONL lines: both rows carry the same id."""
+    line1 = make_assistant_line(
+        text="first half", api_message_id="msg_shared_across_lines", sessionId=SINGLE_SESSION_UUID
+    )
+    line2 = make_assistant_line(
+        text="second half", api_message_id="msg_shared_across_lines", sessionId=SINGLE_SESSION_UUID
+    )
+    _ingest_single_line(db_session, tmp_path, line1 + line2)
+    messages = db_session.query(Message).filter_by(type="assistant").order_by(Message.id).all()
+    assert len(messages) == 2
+    assert messages[0].api_message_id == "msg_shared_across_lines"
+    assert messages[1].api_message_id == "msg_shared_across_lines"
