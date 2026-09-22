@@ -4,6 +4,13 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.11.0 — 2026-09-10
+- New **Memories** tab (`/memories`) in the reading room: browse Claude Code's own per-project auto-memory notes, read live off disk — nothing is captured, indexed, or archived by this feature, and nothing in the tab can edit or delete a memory file.
+- Filter memories by text (name, description, body) or by type chip (`user` / `feedback` / `project` / `reference` / others present / `untyped`), plus the same project filter the other tabs share.
+- Click a memory's name to expand it as rendered markdown; a copy chip grabs the file's absolute path so you can paste it into a Claude Code session as a citation.
+- A memory file that can't be fully read or parsed is still listed, marked `unreadable: <reason>`, never hidden.
+- Excluded projects never appear in the Memories tab, indistinguishable from a project with no memories at all — the same owner-only exclusion ceremony that governs capture.
+
 ## 1.10.0 — 2026-08-25
 - `/session-name <name>` is now fast: the skill runs a shell command *before* the model turn and the model only relays its one-line result — about half a second of work instead of a model narrating curl calls for tens of seconds and thousands of tokens. Re-run `/skill install` to pick it up; the slash command and its behavior are unchanged.
 - New CLI command behind it: `introspect session-name [<name> | --stdin] [--session <uuid>] [--url <base>]` names a session in the archive (defaulting to the Claude Code session it runs inside, via `CLAUDE_CODE_SESSION_ID`), importing it first if needed, and prints one line saying what happened — including "server not running" with the start command, and "server too old, restart it" for anything before 1.8.0.

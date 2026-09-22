@@ -9,6 +9,7 @@ __pycache__/
 .ruff_cache/
 .superpowers/
 claude_notes/
+claude_tasks/
 
 # Controller walk screenshots — real conversation content, never committed
 # (docs screenshots are generated from the synthetic fixture archive only)

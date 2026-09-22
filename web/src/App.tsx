@@ -8,6 +8,7 @@ import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TabBar } from './components/TabBar'
 import { TopbarSearch } from './components/TopbarSearch'
+import { MemoriesPage } from './routes/MemoriesPage'
 import { SearchPage } from './routes/SearchPage'
 import { SessionPage } from './routes/SessionPage'
 import { SubagentPage } from './routes/SubagentPage'
@@ -43,6 +44,7 @@ function App() {
             <div className="main-view">
               <Routes>
                 <Route path="/search" element={<SearchPage />} />
+                <Route path="/memories" element={<MemoriesPage />} />
                 <Route path="/s/:uuid" element={<SessionPage />} />
                 <Route path="/s/:uuid/m/:msgUuid" element={<SessionPage />} />
                 <Route path="/s/:uuid/a/:agentHex" element={<SubagentPage />} />

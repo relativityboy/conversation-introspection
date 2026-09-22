@@ -2,9 +2,10 @@ import type { CSSProperties } from 'react'
 import { Link, matchPath, useLocation, useSearchParams } from 'react-router-dom'
 import { readProjects, writeProjects } from '../lib/urlState'
 
-// The two reading-room views, presented as tabs. State is derived ENTIRELY from the route (no
-// local state): `/search*` selects tab 1, any `/s/*` selects tab 2. Tab 2 has no target when no
-// conversation is open, so it renders as a mist-toned, non-interactive label.
+// The three reading-room views, presented as tabs. State is derived ENTIRELY from the route (no
+// local state): `/search*` selects tab 1, any `/s/*` selects tab 2, `/memories*` selects tab 3.
+// Tab 2 has no target when no conversation is open, so it renders as a mist-toned, non-interactive
+// label.
 const TAB_BASE: CSSProperties = {
   fontFamily: 'var(--sans)',
   fontSize: 13,
@@ -32,6 +33,7 @@ export function TabBar() {
   const sessionUuid = sessionMatch?.params.uuid
   const searchActive = matchPath({ path: '/search', end: false }, location.pathname) !== null
   const sessionActive = Boolean(sessionUuid)
+  const memoriesActive = matchPath({ path: '/memories', end: false }, location.pathname) !== null
   // §14.2, binding: "Both search tabs ... inherit the filter context." Neither tab carries `q`
   // (switching tabs is a deliberate reset of the OTHER surface's search box) — only `projects=`.
   const filterSearch = writeProjects(new URLSearchParams(), readProjects(searchParams)).toString()
@@ -70,6 +72,15 @@ export function TabBar() {
           Current conversation
         </span>
       )}
+
+      <Link
+        role="tab"
+        aria-selected={memoriesActive}
+        to={{ pathname: '/memories', search: filterSearch }}
+        style={tabStyle(memoriesActive)}
+      >
+        Memories
+      </Link>
     </div>
   )
 }

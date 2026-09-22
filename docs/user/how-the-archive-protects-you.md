@@ -49,7 +49,8 @@ projects). Because the cron belt below imports every 15 minutes, raise the wall 
 the sensitive work starts, not after. Exclusion is prevention only: anything captured
 earlier stays in the archive until deliberately deleted. No automated process — and no
 API — can exclude a project; it is an owner-only act, with an optional reason kept
-alongside the entry.
+alongside the entry. The [Memories tab](reading-room.md#memories) honors the same wall: an
+excluded project's `memory/` directory is never read and never shown.
 
 When prevention comes too late — sensitive data already captured — **deletion** is the
 repair tool (`/delete`): irreversible, ceremonied (preview first, explicit confirm, your

@@ -11,6 +11,7 @@ import type { ViewMode } from '../lib/viewMode'
 import type {
   GlobalSearchResult,
   ImportRun,
+  MemoryList,
   MessageList,
   Problem,
   ProjectOut,
@@ -281,4 +282,10 @@ export function fetchImportRun(id: number): Promise<ImportRun> {
 
 export function fetchProjects(): Promise<ProjectOut[]> {
   return apiFetch<ProjectOut[]>('/projects')
+}
+
+// --- memories -------------------------------------------------------------------------------
+
+export function fetchMemories(): Promise<MemoryList> {
+  return apiFetch<MemoryList>('/memories')
 }

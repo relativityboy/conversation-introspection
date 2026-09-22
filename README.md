@@ -160,6 +160,9 @@ A few things worth knowing about the reading room — full details in
   step through neighbouring records.
 - `⟲ resume` — reopen any archived conversation in a terminal via `claude --resume`, restoring the
   transcript first if Claude Code deleted it.
+- A **Memories** tab lists Claude Code's own per-project auto-memory files, read live off disk —
+  filter by text or type, expand a note to read it, and copy its file path to paste into a Claude
+  Code session.
 
 ### Prove the trust promise to yourself
 

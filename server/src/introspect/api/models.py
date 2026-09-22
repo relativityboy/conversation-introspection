@@ -121,6 +121,32 @@ class Problem(BaseModel):
     detail: str
 
 
+class MemoryOut(BaseModel):
+    """One auto-memory file (``introspect.memories.MemoryFile``, field-compatible)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    description: str | None
+    type: str | None
+    filename: str
+    path: str
+    size: int
+    mtime: datetime | None
+    body: str | None
+    error: str | None
+
+
+class MemoryProjectOut(BaseModel):
+    """One project's memory files, plus its resolved cwd when a ``Project`` row exists."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    dir_slug: str
+    resolved_cwd: str | None
+    memories: list[MemoryOut]
+
+
 class ResumeResult(BaseModel):
     """POST /sessions/{uuid}/resume outcome (spec §17.2/§17.3). `mode` is the launch outcome
     only; `restored` is orthogonal."""

@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   apiFetch,
+  fetchMemories,
   fetchMessages,
   fetchSearch,
   fetchSessions,
@@ -13,6 +14,7 @@ import {
 } from '../src/api/client'
 import {
   useArchiveSession,
+  useMemories,
   useMessages,
   useProjects,
   useSearch,
@@ -197,6 +199,28 @@ describe('putArchive', () => {
   })
 })
 
+describe('fetchMemories', () => {
+  it('requests /api/v1/memories', async () => {
+    mockFetchJson(200, { projects: [] })
+
+    await fetchMemories()
+
+    const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(calledUrl).toBe('/api/v1/memories')
+  })
+
+  it('surfaces ApiError on a problem response', async () => {
+    mockFetchJson(500, { status: 500, title: 'Internal Server Error', detail: 'boom' })
+
+    await expect(fetchMemories()).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 500,
+      title: 'Internal Server Error',
+      detail: 'boom',
+    })
+  })
+})
+
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return createElement(QueryClientProvider, { client: queryClient }, children)
@@ -242,6 +266,23 @@ describe('useProjects', () => {
     await vi.waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(result.current.data).toEqual(projects)
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/v1/projects', undefined)
+  })
+})
+
+describe('useMemories', () => {
+  it('does not inherit the app-wide 30s staleTime -- data is stale as soon as it lands', async () => {
+    mockFetchJson(200, { projects: [] })
+    // Mirrors makeQueryClient()'s production default (ProjectTree.test.tsx does the same) so a
+    // pass here proves useMemories overrides that default to 0, not merely that a bare
+    // QueryClient defaults to 0 on its own.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    })
+
+    const { result } = renderHook(() => useMemories(), { wrapper: wrapperWithClient(queryClient) })
+    await vi.waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(result.current.isStale).toBe(true)
   })
 })
 

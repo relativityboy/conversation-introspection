@@ -33,6 +33,7 @@ from introspect.api.errors import register_error_handlers
 from introspect.api.routes.admin import router as admin_router
 from introspect.api.routes.archive import router as archive_router
 from introspect.api.routes.favorites import router as favorites_router
+from introspect.api.routes.memories import router as memories_router
 from introspect.api.routes.records import router as records_router
 from introspect.api.routes.resume import router as resume_router
 from introspect.api.routes.search import router as search_router
@@ -91,6 +92,7 @@ def create_app(
     app.include_router(records_router)
     app.include_router(admin_router)
     app.include_router(resume_router)
+    app.include_router(memories_router)
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:

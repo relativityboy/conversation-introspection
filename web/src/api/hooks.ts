@@ -8,6 +8,7 @@ import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/re
 import {
   ApiError,
   deleteFavorite,
+  fetchMemories,
   fetchMessages,
   fetchProjects,
   fetchRawRecord,
@@ -50,6 +51,7 @@ const searchKey = (
 const rawRecordKey = (uuid: string) => ['rawRecord', uuid] as const
 const statusKey = ['status'] as const
 const projectsKey = ['projects'] as const
+const memoriesKey = ['memories'] as const
 
 // --- reads ------------------------------------------------------------------------------
 
@@ -128,6 +130,19 @@ export function useProjects() {
     queryKey: projectsKey,
     queryFn: fetchProjects,
     staleTime: Infinity,
+  })
+}
+
+// Memory files are read live off disk on every request (Task 1), and there is no
+// cache-invalidation event to hook (e.g. a TUI `/exclude` happening out-of-band) -- so unlike
+// every other hook here, staleTime is 0: the "live off disk on every visit" promise in the user
+// docs is kept by never treating a cached response as fresh, not by an invalidation we can't
+// wire up.
+export function useMemories() {
+  return useQuery({
+    queryKey: memoriesKey,
+    queryFn: fetchMemories,
+    staleTime: 0,
   })
 }
 

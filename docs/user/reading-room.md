@@ -20,6 +20,7 @@ The URLs are shareable and encode where you are:
 | URL | What it shows |
 |---|---|
 | `/search` | The global search surface. This is also where a bare `/` or any unknown path lands. |
+| `/memories` | The Memories tab — Claude Code's per-project auto-memory files, read live off disk. |
 | `/s/<uuid>` | A session in the reader. |
 | `/s/<uuid>/m/<record-uuid>` | A session, deep-linked to one message (arrives centred, with a one-time glow). |
 | `/s/<uuid>/a/<agent-hex>` | A subagent (sub-session) transcript. |
@@ -164,6 +165,10 @@ Click the speaker name to open the raw-record inspector (below) — it shows the
 that record: the kind, whether it was decided by an explicit harness field (`verified`) or by the
 shape of the content (`heuristic`), and the specific signal that decided it.
 
+In your own messages (**YOU** / **SYSTEM (YOU)**), a code fence you typed chat-style — opened
+mid-line, or closed at the end of a line instead of on its own — is normalized into a real code
+block for display; the raw record inspector always shows the exact bytes you typed, unchanged.
+
 ## Sharing a moment
 
 Each entry's timestamp (the `HH:MM` in the eyebrow) is a clickable link. **Click it** to copy a deep link to that specific message — the clipboard gets the full shareable URL. A transient `copied` whisper confirms the action.
@@ -202,6 +207,35 @@ transcript routes through the `/a/<agent-hex>/` drill-in so you land in the righ
 
 > The keyboard "Enter or Right opens the best hit" gesture belongs to the **TUI** search, not this
 > web UI — see [The TUI](tui.md#searching).
+
+## Memories
+
+The **Memories** tab (`/memories`) lists Claude Code's own auto-memory files — the short markdown
+notes Claude keeps per project under `~/.claude/projects/<project>/memory/*.md`. The per-project
+`MEMORY.md` index file itself isn't shown; the tab replaces it as the browsing surface.
+
+Everything here is read live off disk on every visit. Nothing is captured, indexed, archived, or
+exported by this feature — the byte-faithful archive is completely untouched, and the tab is
+read-only: nothing in the room edits or deletes a memory file.
+
+- A **text box** filters by name, description, and body.
+- **Type chips** narrow to a memory type (`user` / `feedback` / `project` / `reference` / any other
+  type present in your files / `untyped`).
+- The app-level **project filter** (shared with the other tabs) scopes the list the same way it
+  scopes search and the sidebar.
+
+Each card shows the memory's type, name, and description. Click the **name** to expand the note,
+rendered as markdown. A **copy chip** copies the file's absolute path — its citation handle: paste
+that path into a Claude Code session and Claude reads the file directly.
+
+A file that can't be fully read or parsed is still listed, marked `unreadable: <reason>` — nothing
+is ever hidden for being odd.
+
+Excluded projects (the owner-only exclusion ceremony — see
+[`/exclude`](tui.md#slash-commands) in the TUI) never appear in this tab, indistinguishable from a
+project that simply has no memories. This is the only read path in the app that lists directories
+and reads file content off disk directly rather than the captured archive, and it enforces
+exclusion itself rather than relying on it already being baked into stored rows.
 
 ## Archiving (and why unarchive is CLI-only)
 

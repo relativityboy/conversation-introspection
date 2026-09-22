@@ -170,3 +170,29 @@ export interface StatusOut {
   anomalies: AnomalyBreakdown
   last_run: ImportRun | null
 }
+
+// --- server/src/introspect/api/models.py (memory item models) ---------------------------
+
+export interface MemoryOut {
+  name: string
+  description: string | null
+  type: string | null
+  filename: string
+  path: string
+  size: number
+  mtime: string | null
+  body: string | null
+  error: string | null
+}
+
+export interface MemoryProjectOut {
+  dir_slug: string
+  resolved_cwd: string | null
+  memories: MemoryOut[]
+}
+
+// --- server/src/introspect/api/routes/memories.py (route-local envelope) ---------------
+
+export interface MemoryList {
+  projects: MemoryProjectOut[]
+}

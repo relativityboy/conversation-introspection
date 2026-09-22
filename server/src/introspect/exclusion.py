@@ -1,9 +1,12 @@
 """Project-exclusion core (spec 2026-08-17 §2), shared by the TUI /exclude and the CLI verb.
 
 One logic, two phrasings: both surfaces call these functions so the wall can never behave
-differently depending on how it was raised. Owner-only by construction — nothing here is
-reachable from the API. All functions take an injected ORM session (hermetic tests, same
-rule as CrontabIO/skills)."""
+differently depending on how it was raised. The management verbs -- ``add_exclusion``,
+``remove_exclusion``, ``list_exclusions`` -- remain owner-only and unreachable from the API.
+``excluded_project_slugs`` is the one exception: a read-only query the API MAY use, so that
+read paths which touch disk directly (the memories route, the first of its kind) can keep
+excluded projects invisible without reaching into TUI/CLI-only territory. All functions take
+an injected ORM session (hermetic tests, same rule as CrontabIO/skills)."""
 
 from __future__ import annotations
 
@@ -91,3 +94,12 @@ def list_exclusions(
         db.query(ExcludedProject).order_by(ExcludedProject.dir_slug).all(),
         db.query(ExcludedSession).order_by(ExcludedSession.session_uuid).all(),
     )
+
+
+def excluded_project_slugs(db: Session) -> frozenset[str]:
+    """Every excluded project's ``dir_slug``, for read paths that must skip them.
+
+    The single read-only query the API may call directly (see module docstring). Reveals
+    nothing beyond what the owner already excluded -- no reason, no timestamp, no verbs.
+    """
+    return frozenset(row.dir_slug for row in db.query(ExcludedProject).all())
