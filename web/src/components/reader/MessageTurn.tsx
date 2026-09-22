@@ -172,6 +172,20 @@ export function speakerFor(message: MessageOut): { label: string; accent: string
   return { label: labelFor(kind, message.authorship_detail), accent: accentFor(kind) }
 }
 
+// Task T7: display-only eyebrow override, layered ON TOP of speakerFor at render time — NOT part
+// of the §3.3 kind→label map above (a thinking-only message still classifies through the normal
+// `claude`/`dispatch`/`coordinator` kinds; this doesn't touch authorship data). An assistant
+// message whose blocks are ALL thinking (≥1 block) reads CLAUDE (THINKING) instead of its usual
+// label. A mixed message (thinking alongside text/tool blocks) keeps its ordinary label — only the
+// per-block thinking rendering changes for it.
+function isAllThinkingMessage(message: MessageOut): boolean {
+  return (
+    message.type === 'assistant' &&
+    message.blocks.length > 0 &&
+    message.blocks.every((block) => block.block_kind === 'thinking')
+  )
+}
+
 const EYEBROW_STYLE: CSSProperties = {
   fontFamily: 'var(--mono)',
   fontSize: 10,
@@ -237,7 +251,8 @@ export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnPro
   // rows that navigation skips can never drift.
   if (!isVisibleInView(message, view, dispatchToolUseIds)) return null
 
-  const { label, accent } = speakerFor(message)
+  const { label: baseLabel, accent } = speakerFor(message)
+  const label = isAllThinkingMessage(message) ? 'CLAUDE (THINKING)' : baseLabel
   const voiceClass = voiceClassOf(message)
   const time = localStamp(message.timestamp)
   const blocks = [...message.blocks].sort((a, b) => a.block_index - b.block_index)
@@ -337,7 +352,7 @@ function Block({
       return <MarkdownProse markdown={markdown} />
     }
     case 'thinking':
-      return <ThinkingGlyph />
+      return <ThinkingGlyph block={block} />
     case 'image':
       return <ImageBlock />
     case 'tool_use':

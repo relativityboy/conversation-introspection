@@ -7,11 +7,14 @@ shadow inverted index only and reads document text live from ``content_blocks`` 
 1. **Only non-MATCH-blind reads are trustworthy.** A plain ``SELECT``/``COUNT(*)`` on
    ``content_fts`` is served from ``content_blocks`` and reflects that table's rows, NOT the
    shadow index. Every correctness check goes through a ``MATCH`` query.
-2. **The index predicate is text-only and MUST match migration 0002.** ``content_fts``
-   indexes exactly ``block_kind='text' AND text_content IS NOT NULL AND text_content<>''``
-   (:data:`_TEXT_PREDICATE`). This is an independent copy of migration 0002's frozen
-   ``_BACKFILL_SQL`` predicate; ``test_index_predicate_matches_migration_backfill`` asserts
-   the two stay equivalent.
+2. **The index predicate MUST match migration 0012.** ``content_fts`` indexes exactly
+   ``block_kind IN ('text', 'thinking') AND text_content IS NOT NULL AND text_content<>''``
+   (:data:`_INDEXED_PREDICATE`) -- non-empty text AND non-empty thinking blocks; tool_use /
+   tool_result / empty / NULL are not indexed. This is an independent copy of migration
+   0012's frozen backfill SQL; ``test_index_predicate_matches_migration_backfill`` asserts
+   the two stay equivalent. (Task T6, 2026-09-20: widened from the original text-only
+   predicate migration 0002 created -- 0002 is applied history and stays text-only on
+   purpose, see ``test_migration_0002_predicate_is_historically_text_only``.)
 3. **Deletes are booby-trapped (the external-content trap).** FTS5 stores no copy of the
    text, so removing a row from the index requires re-supplying the ORIGINAL indexed text
    via the ``'delete'`` command. A bare ``DELETE``/``UPDATE`` against ``content_fts`` — or a
@@ -36,10 +39,14 @@ from sqlalchemy.orm import Session
 
 from introspect.schema.authorship import DIALOGUE_KINDS
 
-# The text-only index predicate. Frozen copy of migration 0002's ``_BACKFILL_SQL`` WHERE
-# clause; kept in lockstep by test_index_predicate_matches_migration_backfill. Only
-# non-empty text blocks are searchable — tool_use / thinking / tool_result / NULL are not.
-_TEXT_PREDICATE = "block_kind='text' AND text_content IS NOT NULL AND text_content<>''"
+# The index predicate. Frozen copy of migration 0012's WHERE clause; kept in lockstep by
+# test_index_predicate_matches_migration_backfill. Only non-empty text and non-empty thinking
+# blocks are searchable — tool_use / tool_result / empty / NULL are not. (Task T6,
+# 2026-09-20: widened from text-only to include thinking; see migration 0012's docstring for
+# why this converges every existing archive without a reparse.)
+_INDEXED_PREDICATE = (
+    "block_kind IN ('text', 'thinking') AND text_content IS NOT NULL AND text_content<>''"
+)
 
 # The sources axis (spec 2026-08-15): additive buckets that partition the index exactly.
 # "chat" = the human<->Claude dialogue on main transcripts; "agents" = everything in subagent
@@ -89,8 +96,8 @@ _WORD_RE = re.compile(r"\w+")
 class SearchHit:
     """One full-text match, joined back to its conversational location.
 
-    ``block_kind`` is ``'text'`` for every v1 hit (only text blocks are indexed); the field
-    exists so a later thinking-searchable index (spec §7) can reuse this shape unchanged.
+    ``block_kind`` is ``'text'`` or ``'thinking'`` — exactly what :data:`_INDEXED_PREDICATE`
+    admits (Task T6, 2026-09-20 widened this from text-only per spec §7).
     ``rank`` is the FTS5 bm25 score — ascending, lower is a better match.
     """
 
@@ -295,17 +302,18 @@ class Fts5SearchIndex:
     """
 
     def index_blocks(self, db: Session, block_ids: list[int]) -> int:
-        """Index the given blocks, skipping any that are not non-empty text blocks.
+        """Index the given blocks, skipping any outside the indexed predicate.
 
-        Returns the number of blocks actually added to the index (``block_ids`` outside the
-        text-only predicate are silently skipped).
+        Returns the number of blocks actually added to the index (``block_ids`` that are not
+        non-empty text or non-empty thinking — see :data:`_INDEXED_PREDICATE` — are silently
+        skipped).
         """
         if not block_ids:
             return 0
         stmt = text(
             "INSERT INTO content_fts(rowid, text_content) "
             "SELECT id, text_content FROM content_blocks "
-            f"WHERE id IN :ids AND {_TEXT_PREDICATE}"
+            f"WHERE id IN :ids AND {_INDEXED_PREDICATE}"
         ).bindparams(bindparam("ids", expanding=True))
         return db.execute(stmt, {"ids": block_ids}).rowcount
 
@@ -317,7 +325,7 @@ class Fts5SearchIndex:
         text, so de-indexing requires re-supplying the ORIGINAL indexed text; this method
         re-reads it from the still-present rows using the exact index predicate. Issuing a
         ``'delete'`` for a never-indexed row or with mismatched text corrupts the database
-        file, so ids outside the predicate (tool_use/thinking/empty/NULL/already-gone) are
+        file, so ids outside the predicate (tool_use/tool_result/empty/NULL/already-gone) are
         skipped, never deleted.
         """
         if not block_ids:
@@ -325,7 +333,7 @@ class Fts5SearchIndex:
         rows = db.execute(
             text(
                 "SELECT id, text_content FROM content_blocks "
-                f"WHERE id IN :ids AND {_TEXT_PREDICATE}"
+                f"WHERE id IN :ids AND {_INDEXED_PREDICATE}"
             ).bindparams(bindparam("ids", expanding=True)),
             {"ids": block_ids},
         ).all()
@@ -498,18 +506,18 @@ class Fts5SearchIndex:
         }
 
     def rebuild(self, db: Session) -> int:
-        """Clear and re-index every text block from scratch. Returns the number indexed.
+        """Clear and re-index every eligible block from scratch. Returns the number indexed.
 
-        Uses :meth:`delete_all` (safe) plus the exact text-only predicate — deliberately NOT
-        FTS5's native ``'rebuild'``, which would index every ``content_blocks`` row and
-        diverge from the text-only index this module defines.
+        Uses :meth:`delete_all` (safe) plus the exact :data:`_INDEXED_PREDICATE` — deliberately
+        NOT FTS5's native ``'rebuild'``, which would index every ``content_blocks`` row and
+        diverge from the index this module defines.
         """
         self.delete_all(db)
         result = db.execute(
             text(
                 "INSERT INTO content_fts(rowid, text_content) "
                 "SELECT id, text_content FROM content_blocks "
-                f"WHERE {_TEXT_PREDICATE}"
+                f"WHERE {_INDEXED_PREDICATE}"
             )
         )
         return result.rowcount

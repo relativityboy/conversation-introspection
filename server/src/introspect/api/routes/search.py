@@ -192,8 +192,10 @@ def _first_blocks_by_message(
 
     ONE batched query, ordered by ``block_index``, walked once to pick each message's
     earliest matching block of each kind -- no second round trip. The text-block predicate
-    mirrors ``search/fts5.py``'s ``_TEXT_PREDICATE`` (``block_kind == 'text' and
-    text_content``), kept independent since this route may not modify that module.
+    here (``block_kind == 'text' and text_content``) is a snippet-choice heuristic, not an
+    index-eligibility rule -- it deliberately does NOT track ``search/fts5.py``'s
+    ``_INDEXED_PREDICATE`` (which now admits thinking too): an id-lookup's preview should
+    prefer the message's spoken text over its thinking.
     """
     if not message_ids:
         return {}, {}

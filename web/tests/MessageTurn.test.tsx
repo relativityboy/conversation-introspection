@@ -227,7 +227,9 @@ describe('block ordering and dispatch', () => {
         {
           block_index: 1,
           block_kind: 'thinking',
-          text_content: 'private',
+          // Empty text_content deliberately: this test is about dispatch ROUTING (thinking →
+          // ThinkingGlyph), not the T7 content-vs-glyph distinction, which has its own tests.
+          text_content: null,
           tool_name: null,
           tool_use_id: null,
           is_error: null,
@@ -268,7 +270,9 @@ describe('conversation-only block hiding (view prop)', () => {
           {
             block_index: 3,
             block_kind: 'thinking',
-            text_content: 'private',
+            // Empty text_content deliberately: this test is about view-based block HIDING, not
+            // the T7 content-vs-glyph distinction, which has its own tests.
+            text_content: null,
             tool_name: null,
             tool_use_id: null,
             is_error: null,
@@ -606,3 +610,39 @@ describe('speakerFor DOM wiring', () => {
 // Task T7: thinking blocks that carry real text_content render in place of the dotted circle, and
 // an assistant message whose blocks are ALL thinking gets a dedicated CLAUDE (THINKING) eyebrow —
 // a display-only override layered on top of speakerFor, not part of its §3.3 kind→label map.
+describe('thinking content and eyebrow (T7)', () => {
+  function thinkingBlock(index: number, text: string | null): BlockOut {
+    return {
+      block_index: index,
+      block_kind: 'thinking',
+      text_content: text,
+      tool_name: null,
+      tool_use_id: null,
+      is_error: null,
+    }
+  }
+
+  it('labels an all-thinking assistant message CLAUDE (THINKING)', () => {
+    const msg = message({ type: 'assistant', blocks: [thinkingBlock(0, 'mulling it over')] })
+    const { container } = renderTurn(<MessageTurn message={msg} />)
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^CLAUDE \(THINKING\) · /)
+    expect(container.textContent).toContain('mulling it over')
+  })
+
+  it('keeps the normal CLAUDE eyebrow for a mixed thinking+text assistant message, still rendering the thinking block', () => {
+    const msg = message({
+      type: 'assistant',
+      blocks: [thinkingBlock(0, 'mulling it over'), textBlock(1, 'the answer')],
+    })
+    const { container } = renderTurn(<MessageTurn message={msg} />)
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^CLAUDE · /)
+    expect(container.textContent).toContain('mulling it over')
+    expect(container.textContent).toContain('the answer')
+  })
+
+  it('does not relabel a non-assistant all-thinking message', () => {
+    const msg = message({ type: 'system', blocks: [thinkingBlock(0, 'mulling it over')] })
+    const { container } = renderTurn(<MessageTurn message={msg} />)
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM · /)
+  })
+})

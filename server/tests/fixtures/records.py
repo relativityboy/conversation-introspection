@@ -89,6 +89,7 @@ def make_assistant_line(
     text: str = "synthetic assistant reply",
     *,
     with_thinking: bool = False,
+    thinking_text: str = "",
     with_tool_use: bool = False,
     tool_use_id: str | None = None,
     model: str = "claude-opus-4-synthetic",
@@ -117,11 +118,17 @@ def make_assistant_line(
     transcripts carry); default is a random ``msg_...`` id (present, like real transcripts,
     unless overridden with a specific value e.g. to share one id across two lines); pass
     ``None`` explicitly to omit ``message.id`` from the payload entirely.
+    ``thinking_text`` sets the ``thinking`` block's text (default ``""``, the historical
+    norm); only meaningful when ``with_thinking=True``.
     """
     content: list[dict] = []
     if with_thinking:
-        # thinking text is empty on purpose: the CLI persists the signature, never the text.
-        content.append({"type": "thinking", "thinking": "", "signature": "sig_" + _short()})
+        # thinking text is empty by default -- historically the CLI persisted only the
+        # signature, never the text (see schema/v1.py's ThinkingBlock) -- but real archives
+        # carry a minority of non-empty rows too, hence thinking_text is overridable.
+        content.append(
+            {"type": "thinking", "thinking": thinking_text, "signature": "sig_" + _short()}
+        )
     content.append({"type": "text", "text": text})
     if with_tool_use:
         tool_block = {

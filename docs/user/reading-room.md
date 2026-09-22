@@ -138,7 +138,11 @@ actually stored:
 
 In `chat` and `chat+harness`, a message row still **disappears** entirely if every one of its blocks
 renders nothing there — rows containing only tool calls, thinking-only content, or empty text. `all`
-always shows every row and every block, including the thinking marker (◌).
+always shows every row and every block, including thinking: when the CLI preserved a thinking
+block's actual text (newer CLIs sometimes do), the words themselves render in a quiet
+dragonfly-ruled register — an all-thinking turn is labeled **CLAUDE (THINKING)** — and when it
+didn't, the honest marker (◌) stands in as before. Preserved thinking is also searchable in both
+search scopes.
 
 If a shared deep link targets a row that's been filtered out, the "view from the beginning" recovery
 also offers a "show all message types" option, which switches to `all` — the only view guaranteed to

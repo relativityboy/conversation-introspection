@@ -37,6 +37,18 @@ function toolResult(over: Partial<BlockOut> = {}): BlockOut {
   }
 }
 
+function thinkingBlock(over: Partial<BlockOut> = {}): BlockOut {
+  return {
+    block_index: 0,
+    block_kind: 'thinking',
+    text_content: null,
+    tool_name: null,
+    tool_use_id: null,
+    is_error: null,
+    ...over,
+  }
+}
+
 function message(over: Partial<MessageOut> = {}): MessageOut {
   return {
     record_uuid: 'rec-1',
@@ -124,8 +136,8 @@ describe('ToolBlock', () => {
 describe('ThinkingGlyph', () => {
   const LABEL = 'thinking occurred — content not persisted by the CLI'
 
-  it('exposes the honest aria-label and title', () => {
-    render(<ThinkingGlyph />)
+  it('exposes the honest aria-label and title for an empty-text block', () => {
+    render(<ThinkingGlyph block={thinkingBlock({ text_content: '' })} />)
     const glyph = screen.getByLabelText(LABEL)
     expect(glyph.getAttribute('title')).toBe(LABEL)
   })
@@ -145,6 +157,34 @@ describe('ThinkingGlyph', () => {
     })
     render(<MessageTurn message={msg} />)
     expect(screen.getByLabelText(LABEL)).not.toBeNull()
+  })
+
+  it('renders the thinking text in place of the circle when text_content is non-empty', () => {
+    render(<ThinkingGlyph block={thinkingBlock({ text_content: 'considering the tradeoffs' })} />)
+    expect(screen.getByText('considering the tradeoffs')).not.toBeNull()
+    expect(screen.queryByText('◌')).toBeNull()
+  })
+
+  it('omits THINKING_LABEL and exposes a distinct a11y name for content-bearing thinking', () => {
+    render(<ThinkingGlyph block={thinkingBlock({ text_content: 'considering the tradeoffs' })} />)
+    expect(screen.queryByLabelText(LABEL)).toBeNull()
+    expect(screen.getByLabelText("Claude's thinking")).not.toBeNull()
+  })
+
+  it('preserves line breaks in multiline thinking text', () => {
+    const multiline = 'first line\nsecond line\nthird line'
+    render(<ThinkingGlyph block={thinkingBlock({ text_content: multiline })} />)
+    const el = screen.getByLabelText("Claude's thinking")
+    expect(el.textContent).toBe(multiline)
+    expect((el as HTMLElement).style.whiteSpace).toMatch(/pre/)
+  })
+
+  it('renders thinking text as plain text, never through a markdown pipeline', () => {
+    render(<ThinkingGlyph block={thinkingBlock({ text_content: '**not bold** and `not code`' })} />)
+    const el = screen.getByLabelText("Claude's thinking")
+    expect(el.textContent).toBe('**not bold** and `not code`')
+    expect(el.querySelector('strong')).toBeNull()
+    expect(el.querySelector('code')).toBeNull()
   })
 })
 

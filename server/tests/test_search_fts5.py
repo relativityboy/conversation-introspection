@@ -3,8 +3,11 @@
 The binding contract (SearchHit shape, the SearchIndex protocol, the delete_for_blocks
 external-content trap, and sanitize_query's never-raise property) is verbatim from
 task-2-brief. Beyond the listed tests this file adds the required drift guard
-(``test_index_predicate_matches_migration_backfill``): the search index and migration 0002
-MUST index the same rows, and the two carry independent copies of the text-only predicate.
+(``test_index_predicate_matches_migration_backfill``): the search index and migration 0012
+MUST index the same rows, and the two carry independent copies of the indexed predicate.
+(Task T6, 2026-09-20: the predicate widened from text-only to text+thinking; migration 0002's
+own frozen backfill SQL is applied history and stays text-only on purpose -- see
+``test_migration_0002_predicate_is_historically_text_only``.)
 
 Search correctness is asserted via ``search`` / MATCH — never COUNT(*)/SELECT * — because
 content_fts is an external-content FTS5 table whose non-MATCH reads are served live from
@@ -17,10 +20,12 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+from introspect.ingest.capture import capture_file
+from introspect.ingest.discovery import discover
 from introspect.models import ContentBlock, Message, Transcript
 from introspect.schema.authorship import CHAT_KINDS, DIALOGUE_KINDS
 from introspect.search import BestSnippet, SearchHit, get_search_index, sanitize_query
-from introspect.search.fts5 import _TEXT_PREDICATE
+from introspect.search.fts5 import _INDEXED_PREDICATE
 from tests.conftest import (
     AGENT_HEX_ID,
     PROJECT_SLUG_1,
@@ -29,22 +34,46 @@ from tests.conftest import (
     SESSION_UUID_2,
     SESSION_UUID_3,
 )
+from tests.fixtures.records import make_assistant_line
 
 idx = get_search_index()
 
 OTHER_SESSION = SESSION_UUID_2  # a session where "horizon" / "still water" never appear
 
-_MIGRATION_PATH = (
-    Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0002_search_favorites.py"
-)
+_VERSIONS_DIR = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+_MIGRATION_0002_PATH = _VERSIONS_DIR / "0002_search_favorites.py"
+_MIGRATION_0012_PATH = _VERSIONS_DIR / "0012_fts_thinking.py"
 
 
-def _load_migration_0002():
-    """Load migration 0002 by path (its filename isn't a valid import identifier)."""
-    spec = importlib.util.spec_from_file_location("_migration_0002_for_search", _MIGRATION_PATH)
+def _load_migration(path: Path):
+    """Load a migration module by path (its filename isn't a valid import identifier)."""
+    spec = importlib.util.spec_from_file_location(f"_migration_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+_THINKING_SESSION_UUID = "9e9e9e9e-1111-4000-8000-000000000099"
+_THINKING_EMPTY_SESSION_UUID = "9e9e9e9e-2222-4000-8000-000000000098"
+
+
+def _ingest_single_assistant_line(
+    db, tmp_path: Path, line: bytes, *, session_uuid: str, subdir: str
+) -> None:
+    """Capture one standalone assistant line as a fresh main transcript (no user line needed).
+
+    Mirrors ``conftest._ingest_single_line``'s shape (a private helper of that module, so
+    reimplemented here rather than imported) — a one-line ``<root>/<slug>/<uuid>.jsonl`` file
+    run through the real ``discover``/``capture_file`` pipeline, so interpretation AND
+    real-time indexing (``interpret.py``'s ``_apply_conversational`` -> ``index_blocks``) both
+    run exactly as they do for a production capture.
+    """
+    proj = tmp_path / subdir / "-Users-x-thinking"
+    proj.mkdir(parents=True)
+    (proj / f"{session_uuid}.jsonl").write_bytes(line)
+    for f in discover(tmp_path / subdir):
+        capture_file(db, f)
+    db.commit()
 
 
 def _text_block_id(db, phrase: str) -> int:
@@ -202,18 +231,22 @@ def test_empty_query_returns_no_hits_without_error(db_session, indexed_fixture):
     assert hits == [] and total == 0
 
 
-# --- Drift guard: search predicate == migration 0002 backfill predicate --------------------
+# --- Drift guard: search predicate == migration 0012 backfill predicate --------------------
 
 
 def test_index_predicate_matches_migration_backfill(db_session, indexed_fixture):
-    """Behavioral drift guard: the search index and migration 0002 must index the SAME rows.
+    """Behavioral drift guard: the search index and migration 0012 must index the SAME rows.
 
-    Both carry an independent copy of the text-only predicate
-    (block_kind='text' AND text_content IS NOT NULL AND text_content<>''). This builds the
-    index BOTH ways over one archive (my rebuild vs the migration's frozen ``_BACKFILL_SQL``)
-    and asserts identical MATCH results across a probe set — including a tool_use marker plus
-    an empty and a NULL text block that only the correct predicate excludes. Compared via
-    MATCH, the sole read that reflects the real external-content index state.
+    0012 is the current predicate authority (Task T6, 2026-09-20): it widened the index from
+    text-only to text+non-empty-thinking, superseding 0002's frozen (and now historical)
+    text-only backfill -- see ``test_migration_0002_predicate_is_historically_text_only``.
+    Both fts5.py and 0012 carry an independent copy of the indexed predicate
+    (block_kind IN ('text','thinking') AND text_content IS NOT NULL AND text_content<>'').
+    This builds the index BOTH ways over one archive (my rebuild vs the migration's frozen
+    SQL) and asserts identical MATCH results across a probe set — including a tool_use marker,
+    an empty and a NULL text block, and a non-empty/empty thinking pair that only the correct
+    predicate distinguishes. Compared via MATCH, the sole read that reflects the real
+    external-content index state.
     """
     msg = db_session.query(Message).first()
     db_session.add_all(
@@ -227,16 +260,25 @@ def test_index_predicate_matches_migration_backfill(db_session, indexed_fixture)
             ),
             ContentBlock(message_id=msg.id, block_index=991, block_kind="text", text_content=""),
             ContentBlock(message_id=msg.id, block_index=992, block_kind="text", text_content=None),
+            ContentBlock(
+                message_id=msg.id,
+                block_index=993,
+                block_kind="thinking",
+                text_content="DRIFTGUARD_THINKING",
+            ),
+            ContentBlock(
+                message_id=msg.id, block_index=994, block_kind="thinking", text_content=""
+            ),
         ]
     )
     db_session.flush()
 
-    backfill_sql = _load_migration_0002()._BACKFILL_SQL
+    indexed_sql = _load_migration(_MIGRATION_0012_PATH)._INDEXED_SQL
     # Textual lockstep alongside the behavioral check: the module's predicate constant must
     # appear verbatim inside the migration's frozen backfill SQL (both are single-line,
     # single-spaced, so no whitespace normalization is needed today; normalize if that changes).
-    assert _TEXT_PREDICATE in backfill_sql
-    probes = ["horizon", "still", "synthetic", "DRIFTGUARD_NONTEXT"]
+    assert _INDEXED_PREDICATE in indexed_sql
+    probes = ["horizon", "still", "synthetic", "DRIFTGUARD_NONTEXT", "DRIFTGUARD_THINKING"]
 
     def matched_rowids():
         out = {}
@@ -251,12 +293,127 @@ def test_index_predicate_matches_migration_backfill(db_session, indexed_fixture)
 
     # Way B: the migration's frozen backfill INSERT, from a cleared index.
     idx.delete_all(db_session)
-    db_session.execute(text(backfill_sql))
+    db_session.execute(text(indexed_sql))
     via_migration = matched_rowids()
 
     assert via_rebuild == via_migration
-    assert via_rebuild["DRIFTGUARD_NONTEXT"] == []  # neither predicate indexes non-text
+    assert via_rebuild["DRIFTGUARD_NONTEXT"] == []  # tool_use is still never indexed
     assert via_rebuild["horizon"]  # both index the real text block
+    assert via_rebuild["DRIFTGUARD_THINKING"]  # both index the non-empty thinking block
+
+
+def test_migration_0002_predicate_is_historically_text_only():
+    """0002's frozen ``_BACKFILL_SQL`` is applied history and is never edited (CLAUDE.md:
+    zero-legacy migrations are additive, not rewritten). It intentionally still reads
+    text-only; 0012 is the current predicate authority now that non-empty thinking blocks are
+    indexed too (Task T6, 2026-09-20). This pins that divergence as deliberate, not drift.
+    """
+    backfill_sql = _load_migration(_MIGRATION_0002_PATH)._BACKFILL_SQL
+    assert "block_kind='text'" in backfill_sql
+    assert "thinking" not in backfill_sql
+
+
+# --- Task T6 (2026-09-20): non-empty thinking blocks are searchable ------------------------
+
+
+def test_captured_nonempty_thinking_is_indexed_and_searchable(db_session, tmp_path):
+    """A freshly captured assistant record with non-empty thinking text is searchable end to
+    end (real interpret.py + real-time index_blocks), and the hit's block_kind is 'thinking'.
+    """
+    line = make_assistant_line(
+        text="an unrelated ordinary reply",
+        with_thinking=True,
+        thinking_text="THINKMARK deliberate reasoning about gulls",
+        sessionId=_THINKING_SESSION_UUID,
+    )
+    _ingest_single_assistant_line(
+        db_session, tmp_path, line, session_uuid=_THINKING_SESSION_UUID, subdir="nonempty"
+    )
+
+    hits, total = idx.search(db_session, "THINKMARK")
+    assert total == 1
+    assert hits[0].block_kind == "thinking"
+    assert "THINKMARK" in _strip_marks(hits[0].snippet)
+
+
+def test_captured_empty_thinking_is_not_indexed(db_session, tmp_path):
+    """The historical norm -- an empty-string thinking block -- stays out of the index even
+    though block_kind='thinking' is now otherwise eligible.
+    """
+    line = make_assistant_line(
+        text="another unrelated ordinary reply",
+        with_thinking=True,
+        sessionId=_THINKING_EMPTY_SESSION_UUID,
+    )
+    _ingest_single_assistant_line(
+        db_session, tmp_path, line, session_uuid=_THINKING_EMPTY_SESSION_UUID, subdir="empty"
+    )
+
+    thinking_block = (
+        db_session.query(ContentBlock).filter(ContentBlock.block_kind == "thinking").one()
+    )
+    assert thinking_block.text_content == ""
+    # Never indexed at capture time (the predicate excludes empty thinking) -- confirm
+    # re-attempting index_blocks against it is a true no-op, the same signal
+    # test_only_text_blocks_indexed uses for a never-indexed tool_use block.
+    assert idx.index_blocks(db_session, [thinking_block.id]) == 0
+
+
+def test_rebuild_picks_up_preexisting_nonempty_thinking(db_session, indexed_fixture):
+    """rebuild() converges a pre-existing non-empty thinking row that predates the widened
+    predicate (e.g. a row captured by a pre-T6 server, never indexed at write time) into the
+    index -- the mechanism migration 0012 relies on to backfill a live archive.
+    """
+    msg = db_session.query(Message).first()
+    block = ContentBlock(
+        message_id=msg.id,
+        block_index=970,
+        block_kind="thinking",
+        text_content="REBUILDTHINK marker text",
+    )
+    db_session.add(block)
+    db_session.flush()
+
+    _, total_before = idx.search(db_session, "REBUILDTHINK")
+    assert total_before == 0  # not indexed yet -- inserted directly, bypassing index_blocks
+
+    idx.rebuild(db_session)
+
+    hits, total = idx.search(db_session, "REBUILDTHINK")
+    assert total == 1
+    assert hits[0].block_kind == "thinking"
+
+
+def test_delete_for_blocks_removes_thinking_hits(db_session, indexed_fixture):
+    """Mirrors test_delete_for_blocks_removes_hits but for a thinking block: the
+    external-content delete (re-supplying the original text) works identically under the
+    widened predicate, and de-indexing one thinking row corrupts nothing else.
+    """
+    msg = db_session.query(Message).first()
+    block = ContentBlock(
+        message_id=msg.id,
+        block_index=971,
+        block_kind="thinking",
+        text_content="THINKDELETE marker unique term",
+    )
+    db_session.add(block)
+    db_session.flush()
+    n = idx.index_blocks(db_session, [block.id])
+    assert n == 1
+
+    hits, total = idx.search(db_session, "THINKDELETE")
+    assert total == 1
+    assert hits[0].block_kind == "thinking"
+
+    removed = idx.delete_for_blocks(db_session, [block.id])
+    assert removed == 1
+
+    hits, total = idx.search(db_session, "THINKDELETE")
+    assert total == 0 and hits == []
+
+    # ...but the index is intact: another term still resolves and snippet() still works.
+    still_hits, still_total = idx.search(db_session, "still water")
+    assert still_total >= 1 and "<mark>" in still_hits[0].snippet
 
 
 # --- Phase 4 Task 2: sidebar content search + project filtering (§14.1/§14.2 core) --------

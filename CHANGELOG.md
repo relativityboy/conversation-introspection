@@ -4,6 +4,10 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.13.0 — 2026-09-20
+- Claude's thinking is now shown when the CLI preserved it: a thinking block with real text renders its words — a quiet, dragonfly-ruled register distinct from spoken prose — in place of the dotted circle, and an assistant turn that is entirely thinking is labeled CLAUDE (THINKING); empty thinking keeps the honest ◌ and its "content not persisted" note, which is now only shown when it's true.
+- Search finds thinking now: non-empty thinking text is indexed in both search scopes, and hits carry `block_kind: thinking` like any other hit; updating rebuilds the search index automatically (migration 0012) — older conversations' preserved thinking becomes findable with no reparse and no manual step.
+
 ## 1.12.0 — 2026-09-20
 - Search understands API message ids: type a bare `msg_...` id into the global or in-conversation search and you get that exact message's records — direct lookup, no full-text guessing, in the same result shapes as any other search.
 - New API: `GET /api/v1/records/by-message-id/{id}` lists every live record carrying that API message id (one API message can span several records; newest generation of each, archived sessions excluded — all-archived answers 404, same as unknown).
