@@ -2,6 +2,7 @@ import type { CSSProperties, MouseEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import type { BlockOut, MessageOut } from '../../api/types'
+import { normalizeChatFences } from '../../lib/chatFences'
 import { isVisibleInView, type ViewMode } from '../../lib/viewMode'
 import { ImageBlock } from './ImageBlock'
 import { MarkdownProse } from './MarkdownProse'
@@ -59,6 +60,22 @@ function legacyVoiceOf(message: MessageOut): Voice {
 // or mist (everything else).
 const HUMAN_KINDS = new Set(['human_typed', 'human_queued', 'human_inferred'])
 const CLAUDE_KINDS = new Set(['claude', 'dispatch', 'coordinator'])
+
+// Task 1 (chat-fence-normalizer plan): which kinds get their text blocks run through
+// `normalizeChatFences` before rendering. Deliberately a SEPARATE set from `HUMAN_KINDS` rather
+// than widening it — `HUMAN_KINDS` drives the eyebrow's dawn-accent grouping (§3.3), a labeling
+// concern with its own three-kind contract pinned by tests elsewhere. `attachment_queued_human`
+// belongs HERE (its text is the owner's own typed/queued words, materially delivered by the
+// harness, so it can carry the same chat-style fence typos) but not in `HUMAN_KINDS`: that set's
+// callers (`accentFor`, `voiceClassOf`) already special-case `attachment_queued_human` on its own
+// for the fourth "attachment" voice, and folding it into `HUMAN_KINDS` would change that voice
+// logic's shape for no reason connected to fence normalization.
+const FENCE_NORMALIZED_KINDS = new Set([
+  'human_typed',
+  'human_queued',
+  'human_inferred',
+  'attachment_queued_human',
+])
 
 function accentFor(kind: string): string {
   if (HUMAN_KINDS.has(kind) || kind === 'attachment_queued_human') return 'var(--dawn)'
@@ -275,7 +292,12 @@ export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnPro
           </span>
         </div>
         {blocks.map((block) => (
-          <Block key={block.block_index} block={block} view={view} />
+          <Block
+            key={block.block_index}
+            block={block}
+            view={view}
+            authorshipKind={message.authorship_kind}
+          />
         ))}
       </div>
     </article>
@@ -293,10 +315,27 @@ export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnPro
 // forward-tolerant unknown kinds) always renders regardless of view; only the two tool-shaped
 // block kinds are view-gated. Unknown block kinds render a mono chip rather than throwing — the
 // archive may grow block kinds this reader predates, and a forward-tolerant marker beats a crash.
-function Block({ block, view }: { block: BlockOut; view: ViewMode }) {
+function Block({
+  block,
+  view,
+  authorshipKind,
+}: {
+  block: BlockOut
+  view: ViewMode
+  authorshipKind: string | null
+}) {
   switch (block.block_kind) {
-    case 'text':
-      return block.text_content ? <MarkdownProse markdown={block.text_content} /> : null
+    case 'text': {
+      if (!block.text_content) return null
+      // Display-only reshaping (Task 1): the archive's stored bytes never change — the raw record
+      // inspector still shows exactly what was captured. Only human-authored kinds qualify; a
+      // null kind (pre-backfill row, spec §4 deploy window) is left alone rather than guessed at.
+      const markdown =
+        authorshipKind != null && FENCE_NORMALIZED_KINDS.has(authorshipKind)
+          ? normalizeChatFences(block.text_content)
+          : block.text_content
+      return <MarkdownProse markdown={markdown} />
+    }
     case 'thinking':
       return <ThinkingGlyph />
     case 'image':

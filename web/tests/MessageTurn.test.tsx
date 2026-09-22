@@ -463,6 +463,37 @@ describe('markdown prose', () => {
   })
 })
 
+// Task 1 (chat-fence-normalizer plan): chat-style fences (opened mid-line, or closed at the end of
+// a content line) only get reshaped into real CommonMark fences for human-authored text blocks —
+// never for Claude's own prose, which is already correct CommonMark and must render byte-identical.
+describe('chat-style fence normalization (human-authored text blocks only)', () => {
+  // Shape (a) from the brief: opening ``` mid-line after prose, closed mid-line — CommonMark reads
+  // it as one multi-line INLINE code span.
+  const shapeA = 'Console outputs ```[jetwalls] site\n  more\n  functions.``` I have…'
+
+  it('normalizes shape (a) chat fences in a human_typed block into a real block-level code element', () => {
+    const msg = message({ authorship_kind: 'human_typed', blocks: [textBlock(0, shapeA)] })
+    const { container } = renderTurn(<MessageTurn message={msg} />)
+    const pre = container.querySelector('.markdown-prose pre')
+    expect(pre).not.toBeNull()
+    expect(pre?.textContent).toContain('[jetwalls] site')
+    expect(pre?.textContent).toContain('functions.')
+  })
+
+  it('leaves the same text in a claude block as an inline code span — no normalization, no <pre>', () => {
+    const msg = message({ authorship_kind: 'claude', blocks: [textBlock(0, shapeA)] })
+    const { container } = renderTurn(<MessageTurn message={msg} />)
+    expect(container.querySelector('.markdown-prose pre')).toBeNull()
+    expect(container.querySelector('.markdown-prose code')).not.toBeNull()
+  })
+
+  it('does not normalize when authorship_kind is null', () => {
+    const msg = message({ authorship_kind: null, blocks: [textBlock(0, shapeA)] })
+    const { container } = renderTurn(<MessageTurn message={msg} />)
+    expect(container.querySelector('.markdown-prose pre')).toBeNull()
+  })
+})
+
 // Task 6 (authorship spec §3.3): speakerFor(message) replaces the old voiceOf/SPEAKER/ACCENT
 // trio. Every row of the §3.3 kind→label table gets its own case here, keyed off authorship_kind
 // + authorship_detail alone — speakerFor is tested directly (not through the DOM) so a label typo
@@ -571,3 +602,7 @@ describe('speakerFor DOM wiring', () => {
     expect(container.querySelector('.turn-eyebrow')?.textContent).toBe('CLAUDE (DISPATCH)')
   })
 })
+
+// Task T7: thinking blocks that carry real text_content render in place of the dotted circle, and
+// an assistant message whose blocks are ALL thinking gets a dedicated CLAUDE (THINKING) eyebrow —
+// a display-only override layered on top of speakerFor, not part of its §3.3 kind→label map.

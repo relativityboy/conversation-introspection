@@ -4,6 +4,9 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.11.1 — 2026-09-14
+- Your own typed messages now render chat-style code fences (opened mid-line, or closed at the end of a line instead of on their own) as real code blocks in the reading room, instead of garbled inline code or paragraphs swallowed by an unclosed block — Claude's own messages and the raw record inspector are unaffected.
+
 ## 1.11.0 — 2026-09-10
 - New **Memories** tab (`/memories`) in the reading room: browse Claude Code's own per-project auto-memory notes, read live off disk — nothing is captured, indexed, or archived by this feature, and nothing in the tab can edit or delete a memory file.
 - Filter memories by text (name, description, body) or by type chip (`user` / `feedback` / `project` / `reference` / others present / `untyped`), plus the same project filter the other tabs share.
