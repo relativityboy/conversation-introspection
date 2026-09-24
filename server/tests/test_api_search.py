@@ -480,3 +480,222 @@ def test_query_starting_with_msg_underscore_but_not_id_shaped_falls_through_to_f
     spaced = client.get("/api/v1/search", params={"q": "msg_ hello"}).json()
     assert spaced["total"] >= 1
     assert spaced["groups"][0]["session"]["session_uuid"] == FALLTHROUGH_SESSION
+
+
+# --- select= category filtering (Task T9), scope=session only ----------------------------
+#
+# `content_fts` only indexes non-empty `text`/`thinking` blocks (fts5.py's
+# `_INDEXED_PREDICATE`) -- a hit's `block_kind` is always one of those two, never `tool_use`/
+# `tool_result`. So a rich fixture covering you-chat/claude-chat/claude-thinking/harness-system
+# is enough; `tool-traffic` is proven separately below to be a well-formed, always-empty filter
+# (documented in the write-up, not a bug).
+
+SELECT_SEARCH_SESSION = "56565656-5656-4656-8656-565656565656"
+
+
+def _build_select_search_tree(db: Session, tmp_path: Path) -> str:
+    """One message per category, all sharing the term "gemstone" in the block that should
+    match -- lets a single query prove `select=` narrows the hit set by category rather than
+    by content. Returns the session uuid."""
+    root = tmp_path / "select_search_tree"
+    proj = root / "-Users-x-selectsearch"
+    proj.mkdir(parents=True)
+    lines = [
+        make_user_line(
+            text="the gemstone gleamed here",
+            promptSource="typed",
+            origin={"kind": "human"},
+            uuid="s-you-chat",
+            sessionId=SELECT_SEARCH_SESSION,
+        ),
+        make_assistant_line(
+            text="a gemstone in the reply",
+            uuid="s-claude-chat",
+            sessionId=SELECT_SEARCH_SESSION,
+        ),
+        make_assistant_line(
+            text="unrelated filler content",
+            with_thinking=True,
+            thinking_text="pondering the gemstone quietly",
+            uuid="s-claude-thinking",
+            sessionId=SELECT_SEARCH_SESSION,
+        ),
+        make_user_line(
+            content=[
+                {
+                    "type": "text",
+                    "text": "<system-reminder>gemstone noted in harness furniture</system-reminder>",
+                }
+            ],
+            isMeta=True,
+            uuid="s-harness",
+            sessionId=SELECT_SEARCH_SESSION,
+        ),
+    ]
+    (proj / f"{SELECT_SEARCH_SESSION}.jsonl").write_bytes(make_session_file(lines))
+    _capture_and_index(db, root)
+    return SELECT_SEARCH_SESSION
+
+
+def _hit_uuids(body: dict) -> set[str]:
+    return {i["record_uuid"] for i in body["items"]}
+
+
+def test_search_select_you_chat_narrows_to_human_hit(
+    tmp_path: Path, db_session: Session
+) -> None:
+    session_uuid = _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    unfiltered = client.get(
+        "/api/v1/search",
+        params={"q": "gemstone", "scope": "session", "session": session_uuid, "sources": "all"},
+    ).json()
+    assert unfiltered["total"] == 4  # sanity: all four category rows really do match
+
+    body = client.get(
+        "/api/v1/search",
+        params={
+            "q": "gemstone", "scope": "session", "session": session_uuid, "sources": "all",
+            "select": "you-chat",
+        },
+    ).json()
+    assert _hit_uuids(body) == {"s-you-chat"}
+    assert body["total"] == 4  # T9: total stays the PRE-filter count (accepted-cost precedent
+    # `_drop_archived_hits` already documents for this route)
+
+
+def test_search_select_claude_chat_excludes_claude_thinking_hit(
+    tmp_path: Path, db_session: Session
+) -> None:
+    session_uuid = _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    body = client.get(
+        "/api/v1/search",
+        params={
+            "q": "gemstone", "scope": "session", "session": session_uuid, "sources": "all",
+            "select": "claude-chat",
+        },
+    ).json()
+    assert _hit_uuids(body) == {"s-claude-chat"}
+
+
+def test_search_select_claude_thinking_only_matches_the_thinking_block(
+    tmp_path: Path, db_session: Session
+) -> None:
+    session_uuid = _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    body = client.get(
+        "/api/v1/search",
+        params={
+            "q": "gemstone", "scope": "session", "session": session_uuid, "sources": "all",
+            "select": "claude-thinking",
+        },
+    ).json()
+    assert _hit_uuids(body) == {"s-claude-thinking"}
+    assert body["items"][0]["block_kind"] == "thinking"
+
+
+def test_search_select_harness_system_narrows_to_harness_hit(
+    tmp_path: Path, db_session: Session
+) -> None:
+    session_uuid = _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    body = client.get(
+        "/api/v1/search",
+        params={
+            "q": "gemstone", "scope": "session", "session": session_uuid, "sources": "all",
+            "select": "harness-system",
+        },
+    ).json()
+    assert _hit_uuids(body) == {"s-harness"}
+
+
+def test_search_select_multiple_categories_unions(
+    tmp_path: Path, db_session: Session
+) -> None:
+    session_uuid = _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    body = client.get(
+        "/api/v1/search",
+        params={
+            "q": "gemstone", "scope": "session", "session": session_uuid, "sources": "all",
+            "select": "you-chat,claude-chat",
+        },
+    ).json()
+    assert _hit_uuids(body) == {"s-you-chat", "s-claude-chat"}
+
+
+def test_search_select_tool_traffic_is_always_empty_under_scope_session(
+    tmp_path: Path, db_session: Session
+) -> None:
+    """Documented nuance: `content_fts` never indexes `tool_use`/`tool_result` blocks, so
+    `select=tool-traffic` is a well-formed filter that can never match anything here -- not a
+    bug, just a consequence of the existing index predicate."""
+    session_uuid = _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    body = client.get(
+        "/api/v1/search",
+        params={
+            "q": "gemstone", "scope": "session", "session": session_uuid, "sources": "all",
+            "select": "tool-traffic",
+        },
+    ).json()
+    assert body["items"] == []
+    assert body["total"] == 4  # pre-filter total, unchanged
+
+
+def test_search_select_with_scope_global_is_422(tmp_path: Path, db_session: Session) -> None:
+    _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    resp = client.get(
+        "/api/v1/search", params={"q": "gemstone", "select": "you-chat"}
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert set(body) == {"status", "title", "detail"}
+    assert "session" in body["detail"]
+
+    resp_explicit_global = client.get(
+        "/api/v1/search",
+        params={"q": "gemstone", "scope": "global", "select": "you-chat"},
+    )
+    assert resp_explicit_global.status_code == 422
+
+
+def test_search_select_empty_is_422(tmp_path: Path, db_session: Session) -> None:
+    session_uuid = _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    resp = client.get(
+        "/api/v1/search",
+        params={"q": "gemstone", "scope": "session", "session": session_uuid, "select": ""},
+    )
+    assert resp.status_code == 422
+    assert "empty" in resp.json()["detail"]
+
+
+def test_search_select_unknown_slug_is_422_naming_it(
+    tmp_path: Path, db_session: Session
+) -> None:
+    session_uuid = _build_select_search_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    resp = client.get(
+        "/api/v1/search",
+        params={
+            "q": "gemstone", "scope": "session", "session": session_uuid,
+            "select": "you-chat,not-a-real-category",
+        },
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "not-a-real-category" in body["detail"]
+    for slug in ("you-chat", "claude-chat", "claude-thinking", "tool-traffic", "harness-system"):
+        assert slug in body["detail"]

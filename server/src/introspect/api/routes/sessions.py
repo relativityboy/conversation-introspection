@@ -19,7 +19,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import ColumnElement, and_, exists, func, or_, select, true
+from sqlalchemy import ColumnElement, and_, exists, false, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from introspect.api.deps import get_db
@@ -403,26 +403,47 @@ def _prose_visible() -> ColumnElement:
     )
 
 
+def _is_resolved_dispatch_block() -> ColumnElement:
+    """True when the CORRELATED ``ContentBlock`` (whichever query embeds this predicate) is a
+    ``tool_use`` that dispatched a captured subagent transcript -- the join a resolved
+    :class:`SubagentChip` renders client-side (``Transcript.parent_tool_use_id ==
+    ContentBlock.tool_use_id``).
+
+    Factored out of `_has_resolved_dispatch()` (Task T12) so BOTH the message-level EXISTS below
+    (`view=chat`/`chat-harness` row admission, final review C1) and
+    `_block_matches_categories()`'s block-level claude-chat routing (`select=`, owner ruling
+    2026-09-23: a resolved-dispatch `tool_use` block is claude-chat, not tool-traffic) share the
+    IDENTICAL join -- one mechanism, two use sites, so they can never disagree on what counts as
+    "resolved". ``.correlate(ContentBlock)`` is explicit (not relied on via auto-correlation)
+    because this predicate is embedded several EXISTS-levels deep at its `_block_matches_categories`
+    use site -- ``Transcript`` stays local to this inner EXISTS via ``select_from``, only
+    ``ContentBlock`` correlates outward. SQL equality with NULL is never true, so a block with no
+    ``tool_use_id``, or one no captured transcript claims, contributes nothing here -- no
+    explicit IS NOT NULL guard needed."""
+    return and_(
+        ContentBlock.block_kind == "tool_use",
+        exists(
+            select(1)
+            .select_from(Transcript)
+            .where(Transcript.parent_tool_use_id == ContentBlock.tool_use_id)
+        ).correlate(ContentBlock),
+    )
+
+
 def _has_resolved_dispatch() -> ColumnElement:
     """A row whose block set includes a ``tool_use`` that dispatched a captured subagent
-    transcript -- the join a resolved :class:`SubagentChip` renders client-side
-    (``Transcript.parent_tool_use_id == ContentBlock.tool_use_id``).
+    transcript -- the join a resolved :class:`SubagentChip` renders client-side.
 
     Layered onto ``_prose_visible()`` by `_view_filter` for `chat`/`chat-harness` (final review
     C1): an assistant transcript record carries ONE content block each, so a dispatch row's
     block IS its tool_use -- no text alongside it. ``_prose_visible()`` alone hides such a row
     (a dispatch tool_use never counts as "content"), which strands the chip -- the reader's sole
     doorway into that subagent transcript -- outside `all` even though spec §6/§10.7(c) mandate
-    it visible in every view. Production: 445 dispatch rows, 0 with any prose. SQL equality with
-    NULL is never true, so a row with no ``tool_use`` block, or a ``tool_use`` no captured
-    transcript claims, contributes nothing here -- no explicit IS NOT NULL guard needed."""
+    it visible in every view. Production: 445 dispatch rows, 0 with any prose."""
     return exists(
-        select(1)
-        .select_from(ContentBlock)
-        .join(Transcript, Transcript.parent_tool_use_id == ContentBlock.tool_use_id)
-        .where(
+        select(1).where(
             ContentBlock.message_id == Message.id,
-            ContentBlock.block_kind == "tool_use",
+            _is_resolved_dispatch_block(),
         )
     )
 
@@ -450,6 +471,231 @@ def _view_filter(view: str) -> ColumnElement:
     return and_(kind_ok, or_(_prose_visible(), _has_resolved_dispatch()))
 
 
+# --- select= category machinery (Task T9) ------------------------------------------------
+#
+# A finer-grained, block-level partition layered ALONGSIDE (not instead of) `view=`/
+# `_view_filter` above: every (message, block) pair maps to EXACTLY ONE of five categories,
+# derived from the SAME authorship-kind vocabulary `_view_filter` already reads (never a
+# parallel rule set -- see `_categorize`'s docstring for the priority order). `_categorize` is
+# the single Python source of truth, reused by three call sites: the SQL-side row predicate
+# (`_select_filter`, via `_block_matches_categories`) for `list_messages`, the per-block prune
+# in `_message_out`, and `routes/search.py`'s session-scope hit filter -- one function, three
+# sites, so the SQL and Python paths can never drift (the `_QMatcher` pattern above already
+# establishes this precedent in this same module). Task T12 grew its signature with a
+# resolved-dispatch context (a `tool_use_id` + the ids that resolved to a captured subagent
+# transcript) without changing this three-site reuse shape.
+#
+# Unlike `view=`, which only ever decides ROW visibility (a visible row's `blocks` array is
+# returned whole, untouched, by `_message_out` today), `select=` filters at BOTH granularities:
+# a row disappears iff none of its blocks are selected, AND a visible row's `blocks` array is
+# pruned to only the selected blocks. This means `select=<preset-equivalent-set>` is NOT
+# always byte-identical to the corresponding `view=` for a row whose blocks span more than one
+# category (e.g. a claude turn with both `thinking` and `text`, or a tool call combined with
+# narration text) -- see the write-up (claude_notes/2026-09-22-sdd-checkboxes-writeups.md) for
+# the exact preset<->select-set equivalences this was proven against and the discovered nuances.
+
+CATEGORY_SLUGS = ("you-chat", "claude-chat", "claude-thinking", "tool-traffic", "harness-system")
+
+#: The human family: spec's four listed kinds (human_typed / human_queued / human_inferred /
+#: attachment_queued_human) PLUS `interrupt_marker` -- not in the task brief's illustrative
+#: list, but `CHAT_KINDS`/`DIALOGUE_KINDS` in schema/authorship.py both group it with the human
+#: kinds ("they are the human's voice", authorship.py:29) and `view=chat`'s CHAT_KINDS
+#: membership test treats it identically to the four listed kinds. Derived from the EXISTING
+#: view logic (as instructed), not invented in parallel -- omitting it would desync
+#: `select=you-chat,...` from `view=chat` for every interrupted turn.
+_YOU_CHAT_AUTHORSHIP_KINDS = frozenset({
+    "human_typed", "human_queued", "human_inferred", "attachment_queued_human", "interrupt_marker",
+})
+
+#: The claude family (spec: claude / dispatch / coordinator).
+_CLAUDE_FAMILY_AUTHORSHIP_KINDS = frozenset({"claude", "dispatch", "coordinator"})
+
+
+def _categorize(
+    authorship_kind: str | None,
+    block_kind: str,
+    tool_use_id: str | None = None,
+    resolved_dispatch_tool_use_ids: frozenset[str] = frozenset(),
+) -> str:
+    """Map one (message authorship kind, block kind) pair to its `select=` category slug
+    (Task T9; resolved-dispatch routing added Task T12). Total over every input -- an
+    unrecognized/NULL `authorship_kind` and any `block_kind` land on `harness-system`, the
+    exhaustive floor, so a classification gap can never silently drop a block (a final
+    else-branch category, never an omission).
+
+    Priority, first match wins:
+      1. every block of a ``tool_result``-authorship MESSAGE is ``tool-traffic`` (spec: "AND
+         everything of tool_result-kind messages" -- the exchange is a unit).
+      2. a ``tool_use`` BLOCK whose ``tool_use_id`` is in `resolved_dispatch_tool_use_ids` (a
+         captured subagent transcript's ``parent_tool_use_id`` -- the SAME set
+         `_resolved_dispatch_tool_use_ids()` below and `_is_resolved_dispatch_block()`'s SQL
+         join both derive from) is ``claude-chat`` -- owner ruling 2026-09-23: a resolved
+         dispatch is a doorway into a Claude-voiced conversation, not mechanical traffic. Any
+         OTHER ``tool_use`` BLOCK (unresolved, or the resolved set omitted/empty) is
+         ``tool-traffic`` regardless of its message's authorship (spec: "wherever they appear")
+         -- checked before the family branches below so a tool_use block on a
+         claude/dispatch/coordinator message routes here, not to claude-chat/claude-thinking,
+         unless the resolved case above already claimed it.
+      3. the human family (`_YOU_CHAT_AUTHORSHIP_KINDS`) -> ``you-chat``.
+      4. the claude family (`_CLAUDE_FAMILY_AUTHORSHIP_KINDS`): a ``thinking`` block ->
+         ``claude-thinking``, everything else -> ``claude-chat``.
+      5. everything else (system records, skill/command furniture, notifications, non-rescued
+         attachments, unclassified/NULL authorship, a `thinking` block outside the claude
+         family, ...) -> ``harness-system``.
+    """
+    if authorship_kind == "tool_result":
+        return "tool-traffic"
+    if block_kind == "tool_use":
+        if tool_use_id is not None and tool_use_id in resolved_dispatch_tool_use_ids:
+            return "claude-chat"
+        return "tool-traffic"
+    if authorship_kind in _YOU_CHAT_AUTHORSHIP_KINDS:
+        return "you-chat"
+    if authorship_kind in _CLAUDE_FAMILY_AUTHORSHIP_KINDS:
+        return "claude-thinking" if block_kind == "thinking" else "claude-chat"
+    return "harness-system"
+
+
+def _resolved_dispatch_tool_use_ids(db: Session) -> frozenset[str]:
+    """The set of every ``tool_use_id`` some CAPTURED subagent transcript claims as its
+    ``parent_tool_use_id`` -- the id-set projection of `_is_resolved_dispatch_block()`'s join,
+    used by `_message_out`'s per-block `select=` prune (Task T12), which classifies in Python
+    via `_categorize` rather than SQL and so needs the resolved set materialized once per
+    request rather than re-querying per block. Deliberately unscoped by session/transcript,
+    matching `_is_resolved_dispatch_block()`'s own unscoped join -- ``tool_use_id``s are
+    globally unique, so scoping would only add complexity, not correctness."""
+    return frozenset(
+        db.scalars(
+            select(Transcript.parent_tool_use_id).where(Transcript.parent_tool_use_id.is_not(None))
+        )
+    )
+
+
+def _block_matches_categories(categories: frozenset[str]) -> ColumnElement:
+    """SQL-side twin of `_categorize`, built as an explicit OR of the SAME priority branches
+    (kept in lockstep by the equivalence tests) rather than calling `_categorize` per row --
+    this predicate runs inside the EXISTS subquery `_select_filter` builds below, correlated
+    to a `ContentBlock` joined to its owning `Message` in that same subquery.
+
+    One refinement beyond a bare port of `_categorize`: an EMPTY ``text`` block never matches
+    any category here, even though `_categorize` (a pure classifier, no notion of "empty")
+    would still slot it into its message's family. This mirrors `_prose_visible()`'s own
+    ``text_content IS NOT NULL AND text_content <> ''`` condition above and is what the task
+    brief's "same disappear rule views use" phrase calls for: without it, a tool-call row's
+    routinely-empty companion text block (the CLI always emits one alongside a `tool_use`, per
+    `_has_resolved_dispatch()`'s own count: 445 production rows, 0 with any prose) would, on
+    its own, make the row "have a selected block" under e.g. `select=claude-chat` even though
+    there is nothing to show -- a content-free row `view=chat`/`chat-harness` would never
+    surface either (`_prose_visible()` fails there for the identical reason). This check is
+    scoped to ROW VISIBILITY only (this EXISTS) -- the separate per-block prune in
+    `_message_out` (driven by `_categorize`, given the SAME resolved-dispatch set) still returns
+    an empty text block verbatim once its row is visible via some OTHER real block, exactly like
+    `view=` does today for an already-visible row.
+
+    A SECOND refinement (Task T12, owner ruling 2026-09-23): a ``tool_use`` block that resolved
+    to a CAPTURED subagent transcript is ``claude-chat``, not ``tool-traffic`` -- reusing
+    `_is_resolved_dispatch_block()`'s exact join (the same one `_has_resolved_dispatch()` above
+    uses for `view=`) rather than inventing a parallel resolution rule.
+    """
+    is_nonempty_or_not_text = or_(
+        ContentBlock.block_kind != "text",
+        and_(ContentBlock.text_content.is_not(None), ContentBlock.text_content != ""),
+    )
+    # NOTE(claude): every `Message.authorship_kind`-based check below is guarded with an
+    # explicit `is_not(None)` -- SQL's three-valued logic makes `NULL == 'x'` and
+    # `NULL IN (...)` evaluate to NULL (neither true nor false), which would otherwise poison
+    # the `~`/`and_` chains for a not-yet-classified row (NULL authorship_kind: the
+    # migrate->reparse window `_view_filter`'s own `legacy_fallback` above is NULL-tolerant
+    # about) into matching NO branch at all, including harness-system -- the opposite of
+    # `_categorize(None, ...)`'s Python behavior, which correctly floors an unrecognized/None
+    # kind to harness-system via a plain `in` test. Guarding makes each check a real
+    # true/false, not NULL, so `~is_you_chat_message`/`~is_claude_family_message` come out
+    # `True` for a NULL row and the harness-system branch (which needs exactly that) fires.
+    authorship_known = Message.authorship_kind.is_not(None)
+    is_tool_result_message = and_(authorship_known, Message.authorship_kind == "tool_result")
+    is_tool_use_block = ContentBlock.block_kind == "tool_use"
+    is_resolved_dispatch_block = _is_resolved_dispatch_block()
+    is_you_chat_message = and_(
+        authorship_known, Message.authorship_kind.in_(_YOU_CHAT_AUTHORSHIP_KINDS)
+    )
+    is_claude_family_message = and_(
+        authorship_known, Message.authorship_kind.in_(_CLAUDE_FAMILY_AUTHORSHIP_KINDS)
+    )
+    is_thinking_block = ContentBlock.block_kind == "thinking"
+
+    branches: list[ColumnElement] = []
+    if "tool-traffic" in categories:
+        branches.append(
+            or_(is_tool_result_message, and_(is_tool_use_block, ~is_resolved_dispatch_block))
+        )
+    if "you-chat" in categories:
+        branches.append(and_(~is_tool_result_message, ~is_tool_use_block, is_you_chat_message))
+    if "claude-thinking" in categories:
+        branches.append(
+            and_(
+                ~is_tool_result_message, ~is_tool_use_block,
+                is_claude_family_message, is_thinking_block,
+            )
+        )
+    if "claude-chat" in categories:
+        branches.append(
+            or_(
+                and_(
+                    ~is_tool_result_message, ~is_tool_use_block,
+                    is_claude_family_message, ~is_thinking_block,
+                ),
+                and_(~is_tool_result_message, is_resolved_dispatch_block),
+            )
+        )
+    if "harness-system" in categories:
+        branches.append(
+            and_(
+                ~is_tool_result_message, ~is_tool_use_block,
+                ~is_you_chat_message, ~is_claude_family_message,
+            )
+        )
+    return and_(is_nonempty_or_not_text, or_(*branches) if branches else false())
+
+
+def _select_filter(categories: frozenset[str]) -> ColumnElement:
+    """A message row is visible iff it has >=1 block whose category is in `categories` (Task
+    T9's disappear rule) -- an EXISTS predicate, so it plugs into the same four query sites
+    `list_messages` already threads `type_filter` through (total / anchor resolution / ordinal
+    count / page fetch), exactly like `_view_filter` above."""
+    return exists(
+        select(1).where(
+            ContentBlock.message_id == Message.id,
+            _block_matches_categories(categories),
+        )
+    )
+
+
+def _parse_select_param(select_param: str | None) -> frozenset[str] | None:
+    """CSV of category slugs -> a validated set, or `None` when `select=` was not given at all
+    (the caller falls back to `view=`). Raises `HTTPException(422)` for an empty selection
+    (`select=` -- "a selection of nothing is a caller bug, not 'show nothing'", spec) or any
+    unrecognized slug (named, alongside the valid set) -- caught by the app's registered
+    `StarletteHTTPException` handler (errors.py) into the same problem-JSON shape every other
+    422 in this API uses, from whichever route calls this (also imported by `routes/search.py`).
+    """
+    if select_param is None:
+        return None
+    slugs = [s.strip() for s in select_param.split(",") if s.strip()]
+    valid = ", ".join(CATEGORY_SLUGS)
+    if not slugs:
+        raise HTTPException(
+            status_code=422, detail=f"select must not be empty -- valid categories: {valid}"
+        )
+    unknown = [s for s in slugs if s not in CATEGORY_SLUGS]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown select {'category' if len(unknown) == 1 else 'categories'} "
+            f"{', '.join(unknown)} -- valid: {valid}",
+        )
+    return frozenset(slugs)
+
+
 @router.get("/transcripts/{transcript_id}/messages", response_model=MessageList)
 def list_messages(
     transcript_id: int,
@@ -460,6 +706,10 @@ def list_messages(
     from_: str | None = Query(default=None, alias="from"),
     until: str | None = None,
     view: Literal["chat", "chat-harness", "all"] = "all",
+    # NOTE(claude): NOT named `select` -- `sqlalchemy.select` is imported into this module's
+    # namespace and used throughout this very function; a param named `select` would shadow it.
+    # Aliased exactly like `from_`/`from` above.
+    select_: str | None = Query(default=None, alias="select"),
 ) -> MessageList:
     transcript = db.get(Transcript, transcript_id)
     if transcript is None:
@@ -472,14 +722,22 @@ def list_messages(
 
     limit = min(max(limit, 1), _MAX_LIMIT)
 
+    # Task T9: `select=` takes precedence over `view=` when both are given -- parsed first (may
+    # raise a 422) so an invalid `select=` fails fast, before any query runs.
+    categories = _parse_select_param(select_)
+
     # Built ONCE, applied at all four query sites below (total, around-target resolution,
     # around ordinal count, page fetch) -- missing any one desyncs totals/offsets/centering
     # (see module docstring + task-p4-5-brief.md). `view="all"` yields `True` (no-op filter),
     # so the default path's generated SQL/results are unchanged. `_view_filter()`'s two
     # EXISTS-over-blocks clauses (`_prose_visible()` and `_has_resolved_dispatch()`) ride along
     # automatically since the filter is still built once here and reused at all four sites
-    # (authorship spec §5; resolved-dispatch rows, final review C1).
-    type_filter: ColumnElement = _view_filter(view)
+    # (authorship spec §5; resolved-dispatch rows, final review C1). `_select_filter()` is the
+    # T9 sibling: same four-site reuse, sourced from `categories` instead of `view` whenever a
+    # `select=` was given.
+    type_filter: ColumnElement = (
+        _select_filter(categories) if categories is not None else _view_filter(view)
+    )
 
     total = db.scalar(
         select(func.count(Message.id)).where(
@@ -544,16 +802,44 @@ def list_messages(
         .limit(effective_limit)
     ).scalars().all()
 
-    items = [_message_out(db, m) for m in messages]
+    # Task T12: only fetched when `select=` was given -- `_categorize`'s resolved-dispatch arm is
+    # a no-op without it (an empty set never matches any `tool_use_id`), and `view=` mode never
+    # calls `_categorize` at all (its blocks return whole, untouched, below).
+    resolved_dispatch_tool_use_ids = (
+        _resolved_dispatch_tool_use_ids(db) if categories is not None else frozenset()
+    )
+    items = [_message_out(db, m, categories, resolved_dispatch_tool_use_ids) for m in messages]
     return MessageList(items=items, total=total or 0, offset=effective_offset)
 
 
-def _message_out(db: Session, message: Message) -> MessageOut:
+def _message_out(
+    db: Session,
+    message: Message,
+    categories: frozenset[str] | None = None,
+    resolved_dispatch_tool_use_ids: frozenset[str] = frozenset(),
+) -> MessageOut:
     blocks = db.execute(
         select(ContentBlock)
         .where(ContentBlock.message_id == message.id)
         .order_by(ContentBlock.block_index)
     ).scalars().all()
+    if categories is not None:
+        # Task T9: unlike `view=` (which never filters blocks within an already-visible row),
+        # `select=` prunes to only the SELECTED blocks -- "a block renders iff its category is
+        # selected". The row itself was already admitted by `_select_filter`'s EXISTS above
+        # (>=1 block selected), so this can never prune a row down to zero blocks. Task T12:
+        # `resolved_dispatch_tool_use_ids` routes a resolved dispatch's `tool_use` block to
+        # claude-chat here too, so a chip pruned-in by `_select_filter` doesn't get pruned back
+        # OUT by this second, independent classification pass.
+        blocks = [
+            b
+            for b in blocks
+            if _categorize(
+                message.authorship_kind, b.block_kind, b.tool_use_id,
+                resolved_dispatch_tool_use_ids,
+            )
+            in categories
+        ]
     return MessageOut(
         record_uuid=message.record_uuid,
         parent_uuid=message.parent_uuid,

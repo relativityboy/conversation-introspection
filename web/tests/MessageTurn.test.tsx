@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BlockOut, MessageOut, TranscriptInfo } from '../src/api/types'
 import { MessageTurn, speakerFor } from '../src/components/reader/MessageTurn'
 import { TranscriptsProvider } from '../src/components/reader/transcripts-context'
+import { PRESET_SETS, type CategorySlug } from '../src/lib/viewMode'
 
 // MessageTurn is deliberately tested UN-virtualized (plain render, no Virtuoso) — jsdom has no
 // layout engine, so these assertions stay honest: class names, DOM order, and markdown output
@@ -246,7 +247,7 @@ describe('block ordering and dispatch', () => {
   })
 })
 
-describe('conversation-only block hiding (view prop)', () => {
+describe('conversation-only block hiding (selection prop, Task T10)', () => {
   function toolBlock(index: number, over: Partial<BlockOut> = {}): BlockOut {
     return {
       block_index: index,
@@ -259,26 +260,24 @@ describe('conversation-only block hiding (view prop)', () => {
     }
   }
 
-  it.each(['chat', 'chat-harness'] as const)(
-    'hides tool_use and tool_result blocks but keeps text/thinking/image (view=%s)',
-    (view) => {
+  const FILTERED_PRESETS = [
+    ['chat', PRESET_SETS.chat],
+    ['chat-harness', PRESET_SETS['chat-harness']],
+  ] as const
+
+  // A tool_use BLOCK is tool-traffic regardless of its message's authorship (categoryOfBlock's
+  // priority #2), so it hides independently of the surrounding text/image on the SAME claude
+  // turn.
+  it.each(FILTERED_PRESETS)(
+    'hides an unresolved tool_use block but keeps text/image on the same turn (selection=%s)',
+    (_name, selection) => {
       const msg = message({
+        authorship_kind: 'claude',
         blocks: [
           textBlock(0, 'kept text'),
           toolBlock(1, { block_kind: 'tool_use', tool_name: 'Bash', tool_use_id: 'no-match' }),
-          toolBlock(2, { block_kind: 'tool_result', text_content: 'tool output' }),
           {
-            block_index: 3,
-            block_kind: 'thinking',
-            // Empty text_content deliberately: this test is about view-based block HIDING, not
-            // the T7 content-vs-glyph distinction, which has its own tests.
-            text_content: null,
-            tool_name: null,
-            tool_use_id: null,
-            is_error: null,
-          },
-          {
-            block_index: 4,
+            block_index: 2,
             block_kind: 'image',
             text_content: null,
             tool_name: null,
@@ -287,31 +286,73 @@ describe('conversation-only block hiding (view prop)', () => {
           },
         ],
       })
-      const { container } = renderTurn(<MessageTurn message={msg} view={view} />)
-      // tool_use (as ToolBlock, no transcript match) and tool_result both vanish.
+      const { container } = renderTurn(<MessageTurn message={msg} selection={selection} />)
+      // tool_use (as ToolBlock, no transcript match) vanishes.
       expect(container.querySelector('.tool-block')).toBeNull()
       // conversational blocks remain.
       expect(container.textContent).toContain('kept text')
-      expect(container.querySelector('.thinking-glyph')).not.toBeNull()
       expect(container.textContent).toContain('[image]')
     },
   )
 
-  // Spec §6/§10.7c supersedes the earlier "chip disappears with its tool_use" ledger #7 read: a
-  // RESOLVED subagent dispatch survives in every view — SubagentChip is the reader's sole doorway
-  // into a subagent transcript, so filtering it out with ordinary tool noise would delete subagent
-  // navigation from the default view. Only an UNRESOLVED tool_use (no matching transcript) stays
-  // hidden outside `all` (next test). This case pairs a leading text block with the dispatch —
-  // isVisibleInView's prose-visibility gate (lib/viewMode) already keeps the ROW past that block
-  // alone, so it isolates the BLOCK-level rendering (does a resolved tool_use always render the
-  // chip, never falling back to ToolBlock) from row-level survival. The row-level half of this fix
-  // — a dispatch with NO other content, final review C1 — gets its own test right below: without
-  // it, this test alone would pass on old (pre-fix) code too, since the leading text block was
-  // already enough to keep the row visible before `isVisibleInView` gained its dispatch-aware
-  // third argument.
-  it.each(['chat', 'chat-harness'] as const)(
-    'keeps the subagent chip when its tool_use resolves to a dispatch (view=%s)',
-    (view) => {
+  // A tool_result-AUTHORSHIP message is tool-traffic in EVERY one of its blocks
+  // (categoryOfBlock's priority #1, "the exchange is a unit") -- unlike the tool_use case
+  // above, this hides the WHOLE row, including any text riding along with the tool_result block,
+  // and the row disappears entirely (isVisibleInSelection false) rather than rendering an
+  // eyebrow with some blocks pruned.
+  it.each(FILTERED_PRESETS)(
+    'hides an entire tool_result-authorship row, text included (selection=%s)',
+    (_name, selection) => {
+      const msg = message({
+        authorship_kind: 'tool_result',
+        blocks: [textBlock(0, 'tool said'), toolBlock(1, { block_kind: 'tool_result' })],
+      })
+      const { container } = renderTurn(<MessageTurn message={msg} selection={selection} />)
+      expect(container.querySelector('.message-turn')).toBeNull()
+      expect(container.textContent).not.toContain('tool said')
+    },
+  )
+
+  it('a thinking block is hidden unless claude-thinking is in the selection', () => {
+    const msg = message({
+      authorship_kind: 'claude',
+      blocks: [
+        textBlock(0, 'kept text'),
+        {
+          block_index: 1,
+          block_kind: 'thinking',
+          text_content: null,
+          tool_name: null,
+          tool_use_id: null,
+          is_error: null,
+        },
+      ],
+    })
+    // A genuinely custom combination WITHOUT claude-thinking -- the `chat` preset itself now
+    // includes it (Task T10 correction: reproducing `view=chat`'s block-level behavior exactly
+    // requires claude-thinking in the preset, see PRESET_SETS's doc), so it can't be used here.
+    const withoutThinking = renderTurn(
+      <MessageTurn message={msg} selection={new Set<CategorySlug>(['you-chat', 'claude-chat'])} />,
+    )
+    expect(withoutThinking.container.querySelector('.thinking-glyph')).toBeNull()
+    expect(withoutThinking.container.textContent).toContain('kept text')
+
+    const withThinking = renderTurn(
+      <MessageTurn message={{ ...msg, record_uuid: 'rec-2' }} selection={PRESET_SETS.chat} />,
+    )
+    expect(withThinking.container.querySelector('.thinking-glyph')).not.toBeNull()
+  })
+
+  // Owner ruling 2026-09-23 (Task T12), superseding the T10 correction this test previously
+  // pinned (test_select_does_not_reproduce_resolved_dispatch_chip_visibility, now itself flipped
+  // server-side): a resolved-dispatch `tool_use` block is `claude-chat` -- a doorway into a
+  // Claude-voiced conversation, not mechanical traffic -- so the chip is visible under
+  // `chat`/`chat-harness` again, same as the retired `view=`'s `hasResolvedDispatch` carve-out
+  // used to make it, but now via `categoryOfBlock` itself (threaded `dispatchToolUseIds`) rather
+  // than a row-visibility-only special case.
+  it.each(FILTERED_PRESETS)(
+    "shows the subagent chip under chat/chat-harness now that its tool_use resolves to a dispatch (selection=%s)",
+    (_name, selection) => {
       const dispatch: TranscriptInfo = {
         id: 2,
         kind: 'subagent',
@@ -320,27 +361,29 @@ describe('conversation-only block hiding (view prop)', () => {
         agent_description: null,
         parent_tool_use_id: 'tu-1',
       }
-      const msg = message({ blocks: [textBlock(0, 'dispatching'), toolBlock(1)] })
+      const msg = message({
+        authorship_kind: 'dispatch',
+        blocks: [textBlock(0, 'dispatching'), toolBlock(1)],
+      })
       renderTurn(
         <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
-          <MessageTurn message={msg} view={view} />
+          <MessageTurn message={msg} selection={selection} />
         </TranscriptsProvider>,
       )
       expect(screen.getByRole('link', { name: /view transcript/ })).not.toBeNull()
       expect(screen.getByText(/subagent/)).not.toBeNull()
+      expect(screen.getByText('dispatching')).not.toBeNull()
     },
   )
 
   // Production shape (final review C1): a REAL dispatch row's ONLY block is the tool_use itself
-  // — no accompanying text. Production: 445 dispatch rows, 0 with any prose. Before this fix,
-  // `isVisibleInView` had no way to know this tool_use resolves to a captured subagent transcript,
-  // so a content-less dispatch row vanished at the ROW level in every filtered view, taking the
-  // chip below it out with it — invisible in `chat`/`chat-harness` despite spec §6/§10.7(c)
-  // mandating it. This is the test the case above (with its leading text block) never actually
-  // exercised.
-  it.each(['chat', 'chat-harness'] as const)(
-    'keeps the subagent chip visible with NO other content — the real production shape (view=%s)',
-    (view) => {
+  // — no accompanying text (production: 445 dispatch rows, 0 with any prose). Owner ruling
+  // 2026-09-23: a resolved dispatch's `tool_use` block is `claude-chat`, which both `chat` and
+  // `chat-harness` include, so the row is visible via its chip alone -- row-visibility
+  // (`isVisibleInSelection`) now agrees with the chip itself, not just the block-render gate.
+  it.each(FILTERED_PRESETS)(
+    'shows a NO-other-content dispatch row via its chip alone — the real production shape (selection=%s)',
+    (_name, selection) => {
       const dispatch: TranscriptInfo = {
         id: 2,
         kind: 'subagent',
@@ -349,18 +392,54 @@ describe('conversation-only block hiding (view prop)', () => {
         agent_description: null,
         parent_tool_use_id: 'tu-1',
       }
-      const msg = message({ blocks: [toolBlock(0)] })
-      renderTurn(
+      const msg = message({ authorship_kind: 'dispatch', blocks: [toolBlock(0)] })
+      const { container } = renderTurn(
         <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
-          <MessageTurn message={msg} view={view} />
+          <MessageTurn message={msg} selection={selection} />
         </TranscriptsProvider>,
       )
+      expect(container.querySelector('.message-turn')).not.toBeNull()
       expect(screen.getByRole('link', { name: /view transcript/ })).not.toBeNull()
-      expect(screen.getByText(/subagent/)).not.toBeNull()
     },
   )
 
-  it('does not fall back to a plain ToolBlock for an unresolved tool_use in a filtered view, even with a TranscriptsProvider present', () => {
+  // The ruling's flip side: claude-chat UNSELECTED, only tool-traffic selected -- a resolved
+  // chip's block is claude-chat now, not tool-traffic, so `categoryOfBlock` gates it out before
+  // SubagentChip ever runs, and (its only block) the whole row disappears.
+  it('hides the resolved dispatch chip — and the whole row — when only tool-traffic is selected (claude-chat unselected)', () => {
+    const dispatch: TranscriptInfo = {
+      id: 2,
+      kind: 'subagent',
+      agent_hex_id: 'a1b2c3',
+      agent_type: 'Explore',
+      agent_description: null,
+      parent_tool_use_id: 'tu-1',
+    }
+    const msg = message({ authorship_kind: 'dispatch', blocks: [toolBlock(0)] })
+    const { container } = renderTurn(
+      <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [dispatch] }}>
+        <MessageTurn message={msg} selection={new Set<CategorySlug>(['tool-traffic'])} />
+      </TranscriptsProvider>,
+    )
+    expect(screen.queryByRole('link', { name: /view transcript/ })).toBeNull()
+    expect(screen.queryByText(/subagent/)).toBeNull()
+    expect(container.querySelector('.message-turn')).toBeNull()
+  })
+
+  // The other half of the flip side: an ORDINARY (unresolved) tool_use row is unaffected --
+  // still shown once tool-traffic is selected, same as before this ruling.
+  it('still shows an ordinary (unresolved) tool_use row when only tool-traffic is selected', () => {
+    const msg = message({
+      authorship_kind: 'dispatch',
+      blocks: [toolBlock(0, { tool_use_id: 'tu-unresolved' })],
+    })
+    const { container } = renderTurn(
+      <MessageTurn message={msg} selection={new Set<CategorySlug>(['tool-traffic'])} />,
+    )
+    expect(container.querySelector('.tool-block')).not.toBeNull()
+  })
+
+  it('does not fall back to a plain ToolBlock for an unresolved tool_use in a filtered selection, even with a TranscriptsProvider present', () => {
     const unrelated: TranscriptInfo = {
       id: 3,
       kind: 'subagent',
@@ -372,16 +451,24 @@ describe('conversation-only block hiding (view prop)', () => {
     const msg = message({ blocks: [textBlock(0, 'thinking about it'), toolBlock(1)] })
     const { container } = renderTurn(
       <TranscriptsProvider value={{ sessionUuid: 'sess', transcripts: [unrelated] }}>
-        <MessageTurn message={msg} view="chat-harness" />
+        <MessageTurn message={msg} selection={PRESET_SETS['chat-harness']} />
       </TranscriptsProvider>,
     )
     expect(container.querySelector('.tool-block')).toBeNull()
     expect(screen.queryByText(/subagent/)).toBeNull()
   })
 
-  it('renders tool blocks normally when view is all (default, no prop)', () => {
+  it('renders tool blocks normally when every category is selected (default, no prop)', () => {
     const msg = message({ blocks: [toolBlock(0, { block_kind: 'tool_result', text_content: 'x' })] })
     const { container } = renderTurn(<MessageTurn message={msg} />)
+    expect(container.querySelector('.tool-block')).not.toBeNull()
+  })
+
+  it('renders an unresolved tool_use as a plain ToolBlock once tool-traffic is selected', () => {
+    const msg = message({ blocks: [toolBlock(0)] })
+    const { container } = renderTurn(
+      <MessageTurn message={msg} selection={new Set<CategorySlug>(['tool-traffic'])} />,
+    )
     expect(container.querySelector('.tool-block')).not.toBeNull()
   })
 })
@@ -405,24 +492,44 @@ describe('attachment voice (rescued queued commands)', () => {
     expect(container.textContent).toContain('queued human words')
   })
 
-  it('keeps a zero-block attachment as plain SYSTEM in full mode (mist accent)', () => {
+  // Task T10 correction: a zero-block message is now ALWAYS invisible (server-confirmed,
+  // test_select_never_shows_blockless_rows_unlike_view_all) -- including the default
+  // (all-five-equivalent) selection, unlike the retired `all` view which showed it as a plain
+  // SYSTEM row. The label logic itself (`speakerFor`, unaffected by this task) is still proven
+  // separately below ("speakerFor — null-kind legacy fallback").
+  it('hides a zero-block attachment entirely, even under the default (every-category) selection', () => {
     const msg = message({ type: 'attachment', blocks: [] })
     const { container } = renderTurn(<MessageTurn message={msg} />)
-    expect(turnOf(container).classList.contains('turn-system')).toBe(true)
-    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM · /)
-    expect(accentOf(container)).toContain('var(--mist)')
-  })
-
-  it('hides a zero-block attachment entirely under a filtered view', () => {
-    const msg = message({ type: 'attachment', blocks: [] })
-    const { container } = renderTurn(<MessageTurn message={msg} view="chat" />)
     expect(container.querySelector('.message-turn')).toBeNull()
     expect(container.textContent).toBe('')
   })
 
-  it('keeps a block-bearing attachment visible under a filtered view', () => {
+  it('hides a zero-block attachment under a narrower filtered selection too', () => {
+    const msg = message({ type: 'attachment', blocks: [] })
+    const { container } = renderTurn(<MessageTurn message={msg} selection={PRESET_SETS.chat} />)
+    expect(container.querySelector('.message-turn')).toBeNull()
+    expect(container.textContent).toBe('')
+  })
+
+  // Task T10 correction: `categoryOfBlock` has NO legacy type-based fallback for a NULL
+  // (pre-backfill) authorship_kind, unlike `isVisibleInView`'s `legacyFallback` -- a NULL kind
+  // floors to harness-system unconditionally (server-confirmed: `_categorize`'s exhaustiveness
+  // test includes `None` in its harness_kinds list, never consulting the record's `type`). So a
+  // block-bearing attachment with a NULL kind needs harness-system selected to show, NOT the
+  // `chat` preset (which never includes it) -- a real, narrow divergence from the retired
+  // `view=chat`'s legacy tolerance, flagged in the write-up.
+  it('a NULL-kind block-bearing attachment needs harness-system selected (chat-harness), not the bare chat preset', () => {
     const msg = message({ type: 'attachment', blocks: [textBlock(0, 'still a human turn')] })
-    const { container } = renderTurn(<MessageTurn message={msg} view="chat" />)
+    const hiddenUnderChat = renderTurn(<MessageTurn message={msg} selection={PRESET_SETS.chat} />)
+    expect(hiddenUnderChat.container.querySelector('.message-turn')).toBeNull()
+
+    const shownUnderChatHarness = renderTurn(
+      <MessageTurn
+        message={{ ...msg, record_uuid: 'rec-2' }}
+        selection={PRESET_SETS['chat-harness']}
+      />,
+    )
+    const { container } = shownUnderChatHarness
     expect(container.querySelector('.message-turn')).not.toBeNull()
     expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM \(YOU\) · /)
     expect(container.textContent).toContain('still a human turn')

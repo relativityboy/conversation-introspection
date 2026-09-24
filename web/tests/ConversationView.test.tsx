@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type MessagesOptions } from '../src/api/client'
 import type { MessageList, MessageOut } from '../src/api/types'
 import { ConversationView } from '../src/components/reader/ConversationView'
-import type { ViewMode } from '../src/lib/viewMode'
+import { ALL_CATEGORIES_SET, PRESET_SETS, type CategorySlug } from '../src/lib/viewMode'
 
 // Windowing is tested at the LOGIC level per the task contract: jsdom has no layout engine, so
 // real react-virtuoso can never honestly fire startReached/endReached from scrolling. The mock
@@ -94,8 +94,8 @@ function pageOf(offset: number, count: number, total: number): MessageList {
 
 function renderView(
   initialAroundUuid?: string,
-  view: ViewMode = 'all',
-  setView: (value: ViewMode) => void = () => {},
+  selection: ReadonlySet<CategorySlug> = ALL_CATEGORIES_SET,
+  setSelection: (value: ReadonlySet<CategorySlug>) => void = () => {},
 ) {
   // We deliberately DON'T disable retry here: useMessages owns the retry policy (skip 404s,
   // else the default 3), and the 404/offline cases below exist to exercise exactly that.
@@ -106,8 +106,8 @@ function renderView(
       <ConversationView
         transcriptId={TRANSCRIPT_ID}
         initialAroundUuid={initialAroundUuid}
-        view={view}
-        setView={setView}
+        selection={selection}
+        setSelection={setSelection}
       />
     </QueryClientProvider>,
   )
@@ -349,7 +349,7 @@ describe('persistent deep-link marker', () => {
 describe('view threads through every fetch site', () => {
   it('seeds offset 0 with the current view', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
-    renderView(undefined, 'chat')
+    renderView(undefined, PRESET_SETS.chat)
 
     await screen.findAllByTestId('row')
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
@@ -361,7 +361,7 @@ describe('view threads through every fetch site', () => {
 
   it('seeds the around page with the current view', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
-    renderView('uuid-90', 'chat')
+    renderView('uuid-90', PRESET_SETS.chat)
 
     await screen.findAllByTestId('row')
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
@@ -373,7 +373,7 @@ describe('view threads through every fetch site', () => {
 
   it('carries the current view into loadBefore (startReached) and loadAfter (endReached)', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(40, 100, 250))
-    renderView('uuid-90', 'chat')
+    renderView('uuid-90', PRESET_SETS.chat)
     await screen.findAllByTestId('row')
 
     fetchMessages.mockResolvedValueOnce(pageOf(0, 40, 250))
@@ -398,7 +398,7 @@ describe('view threads through every fetch site', () => {
 
   it('sends view explicitly even for the unfiltered default (all)', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
-    renderView(undefined, 'all')
+    renderView(undefined, ALL_CATEGORIES_SET)
 
     await screen.findAllByTestId('row')
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
@@ -469,7 +469,7 @@ describe('top / end reader controls', () => {
 
   it('threads the current view through the end re-seed fetch', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
-    renderView(undefined, 'chat')
+    renderView(undefined, PRESET_SETS.chat)
     await screen.findAllByTestId('row')
 
     fetchMessages.mockResolvedValueOnce(pageOf(150, 100, 250))
@@ -527,7 +527,7 @@ describe('raw-record inspector wiring', () => {
 describe('around-404 recovery under a filtered view (critique #12)', () => {
   it('offers "show all message types" only when the view is filtered', async () => {
     fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'filtered out'))
-    renderView('uuid-x', 'chat')
+    renderView('uuid-x', PRESET_SETS.chat)
 
     expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
     expect(screen.getByRole('button', { name: 'view from the beginning' })).toBeDefined()
@@ -536,21 +536,21 @@ describe('around-404 recovery under a filtered view (critique #12)', () => {
 
   it('hides "show all message types" when the view is already all (meaningless there)', async () => {
     fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'nope'))
-    renderView('uuid-x', 'all')
+    renderView('uuid-x', ALL_CATEGORIES_SET)
 
     expect(await screen.findByText(/message not found in this conversation/)).toBeDefined()
     expect(screen.queryByRole('button', { name: 'show all message types' })).toBeNull()
     expect(screen.getByRole('button', { name: 'view from the beginning' })).toBeDefined()
   })
 
-  it('"show all message types" calls setView(\'all\')', async () => {
-    const setView = vi.fn()
+  it('"show all message types" calls setSelection with every category selected', async () => {
+    const setSelection = vi.fn()
     fetchMessages.mockRejectedValueOnce(new ApiError(404, 'Not Found', 'filtered out'))
-    renderView('uuid-x', 'chat', setView)
+    renderView('uuid-x', PRESET_SETS.chat, setSelection)
 
     await screen.findByText(/message not found in this conversation/)
     await userEvent.click(screen.getByRole('button', { name: 'show all message types' }))
-    expect(setView).toHaveBeenCalledWith('all')
+    expect(setSelection).toHaveBeenCalledWith(ALL_CATEGORIES_SET)
   })
 
   it('full recovery: switching to all re-resolves the SAME around target unfiltered', async () => {
@@ -563,13 +563,13 @@ describe('around-404 recovery under a filtered view (critique #12)', () => {
     )
 
     function Harness() {
-      const [view, setView] = useState<ViewMode>('chat')
+      const [selection, setSelection] = useState<ReadonlySet<CategorySlug>>(PRESET_SETS.chat)
       return (
         <ConversationView
           transcriptId={TRANSCRIPT_ID}
           initialAroundUuid="uuid-90"
-          view={view}
-          setView={setView}
+          selection={selection}
+          setSelection={setSelection}
         />
       )
     }

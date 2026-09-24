@@ -334,6 +334,50 @@ describe('ConversationSearch', () => {
       expect(params.get('projects')).toBe('alpha')
     })
   })
+
+  // Task T10: the restrict-search toggle. It's a plain checkbox next to the search box, off by
+  // default, writing/clearing ?restrict=1 -- never leaking to the global /search page (SearchPage
+  // never reads it).
+  describe('restrict-search toggle', () => {
+    it('renders off by default', () => {
+      setup(<ConversationSearch sessionUuid="uuid-1" />, '/s/uuid-1')
+      const toggle = screen.getByRole('checkbox', { name: 'search selected types only' })
+      expect((toggle as HTMLInputElement).checked).toBe(false)
+    })
+
+    it('reads its checked state from ?restrict=1', () => {
+      setup(<ConversationSearch sessionUuid="uuid-1" />, '/s/uuid-1?restrict=1')
+      const toggle = screen.getByRole('checkbox', { name: 'search selected types only' })
+      expect((toggle as HTMLInputElement).checked).toBe(true)
+    })
+
+    it('checking it writes ?restrict=1, preserving other params', async () => {
+      const user = userEvent.setup()
+      const { locationRef } = setup(
+        <ConversationSearch sessionUuid="uuid-1" />,
+        '/s/uuid-1?q=needle',
+      )
+
+      await user.click(screen.getByRole('checkbox', { name: 'search selected types only' }))
+
+      await waitFor(() => {
+        const params = new URLSearchParams(locationRef.current?.search)
+        expect(params.get('restrict')).toBe('1')
+        expect(params.get('q')).toBe('needle')
+      })
+    })
+
+    it('unchecking it clears ?restrict=', async () => {
+      const user = userEvent.setup()
+      const { locationRef } = setup(<ConversationSearch sessionUuid="uuid-1" />, '/s/uuid-1?restrict=1')
+
+      await user.click(screen.getByRole('checkbox', { name: 'search selected types only' }))
+
+      await waitFor(() => {
+        expect(new URLSearchParams(locationRef.current?.search).has('restrict')).toBe(false)
+      })
+    })
+  })
 })
 
 describe('ConversationSearchResults', () => {
@@ -386,6 +430,55 @@ describe('ConversationSearchResults', () => {
         undefined,
       ),
     )
+  })
+
+  // Task T10: the restrict-search toggle. Off (no ?restrict=1) is today's behavior — no 7th
+  // positional arg reaches fetchSearch (see hooks.ts useSearch's conditional call). On, the
+  // session search carries the CURRENT category selection as a `select=` CSV — never for global
+  // scope (SearchPage/GlobalSearchTab never read ?restrict= or pass select).
+  describe('restrict-search toggle', () => {
+    it('adds select= (the current selection) to the session search fetch when restrict is on', async () => {
+      fetchSearch.mockResolvedValue({ items: [], total: 0 } satisfies SessionSearchResult)
+      setup(
+        <ConversationSearchResults sessionUuid="uuid-1" q="foo" />,
+        '/s/uuid-1?q=foo&restrict=1&select=you-chat,tool-traffic',
+      )
+
+      await waitFor(() => expect(fetchSearch).toHaveBeenCalled())
+      const call = fetchSearch.mock.calls.at(-1)
+      expect(call?.[0]).toBe('foo')
+      expect(call?.[1]).toBe('session')
+      expect(call?.[2]).toBe('uuid-1')
+      expect(new Set((call?.[6] as string).split(','))).toEqual(
+        new Set(['you-chat', 'tool-traffic']),
+      )
+    })
+
+    it('sends no select= (today\'s 6-arg call) when restrict is off, even with a custom selection in the URL', async () => {
+      fetchSearch.mockResolvedValue({ items: [], total: 0 } satisfies SessionSearchResult)
+      setup(
+        <ConversationSearchResults sessionUuid="uuid-1" q="foo" />,
+        '/s/uuid-1?q=foo&select=you-chat',
+      )
+
+      await waitFor(() =>
+        expect(fetchSearch).toHaveBeenCalledWith('foo', 'session', 'uuid-1', undefined, undefined, undefined),
+      )
+    })
+
+    it('defaults the restricted selection to the chat preset when the URL carries neither ?select= nor ?view=', async () => {
+      fetchSearch.mockResolvedValue({ items: [], total: 0 } satisfies SessionSearchResult)
+      setup(
+        <ConversationSearchResults sessionUuid="uuid-1" q="foo" />,
+        '/s/uuid-1?q=foo&restrict=1',
+      )
+
+      await waitFor(() => expect(fetchSearch).toHaveBeenCalled())
+      const call = fetchSearch.mock.calls.at(-1)
+      expect(new Set((call?.[6] as string).split(','))).toEqual(
+        new Set(['you-chat', 'claude-chat', 'claude-thinking']),
+      )
+    })
   })
 
   // Distinct from the query above: ?projects= is still a deep-link concern even in session scope

@@ -3,7 +3,8 @@ import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useSearch } from '../../api/hooks'
 import type { SessionSearchResult } from '../../api/types'
-import { readProjects } from '../../lib/urlState'
+import { readProjects, readRestrict, writeRestrict } from '../../lib/urlState'
+import { readSelection } from '../../lib/viewMode'
 import { HitSnippet } from './HitSnippet'
 
 // Layout only; contrast (background, border, text, placeholder) comes from the shared `.sw-input`
@@ -27,15 +28,32 @@ const BACK_STYLE: CSSProperties = {
   color: 'var(--dragonfly)',
 }
 
+const RESTRICT_LABEL_STYLE: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  marginLeft: 10,
+  fontFamily: 'var(--mono)',
+  fontSize: 11,
+  color: 'var(--mist)',
+  cursor: 'pointer',
+}
+
 /**
  * The conversation-scoped search box that lives in the session header. Committing (Enter) always
  * navigates to the BASE session path `/s/{uuid}?q=term` (a push, and dropping any `/m/` deep-link
  * segment) so a search lands on the results view rather than a stale scrolled-to message.
+ *
+ * Also hosts the Task T10 "restrict search to selection" toggle (`?restrict=1`) — a plain
+ * checkbox, off by default, read by `ConversationSearchResults` below. It never reaches
+ * `useSearch` here directly: this component only owns the URL bit, the results panel is what
+ * actually threads `select=` through to the fetch.
  */
 export function ConversationSearch({ sessionUuid }: { sessionUuid: string }) {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const q = searchParams.get('q') ?? ''
+  const restrict = readRestrict(searchParams)
 
   // Re-sync the box when q changes externally (deep-link click, back/forward) via React's
   // adjust-state-during-render pattern rather than an effect. See SearchPage for the rationale.
@@ -57,17 +75,27 @@ export function ConversationSearch({ sessionUuid }: { sessionUuid: string }) {
   }
 
   return (
-    <form onSubmit={commit} role="search">
-      <input
-        className="sw-input"
-        type="search"
-        aria-label="Search this conversation"
-        placeholder="Search this conversation…"
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        style={INPUT_STYLE}
-      />
-    </form>
+    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+      <form onSubmit={commit} role="search">
+        <input
+          className="sw-input"
+          type="search"
+          aria-label="Search this conversation"
+          placeholder="Search this conversation…"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          style={INPUT_STYLE}
+        />
+      </form>
+      <label style={RESTRICT_LABEL_STYLE}>
+        <input
+          type="checkbox"
+          checked={restrict}
+          onChange={() => setSearchParams((prev) => writeRestrict(prev, !restrict))}
+        />
+        search selected types only
+      </label>
+    </span>
   )
 }
 
@@ -84,7 +112,13 @@ export function ConversationSearchResults({ sessionUuid, q }: { sessionUuid: str
   // read here, is used ONLY to carry the filter onto each hit's deep link (a link-preservation
   // concern, not a query one) — see the `projects` prop passed to HitSnippet below.
   const projects = readProjects(searchParams)
-  const query = useSearch(q, 'session', sessionUuid)
+  // Task T10: the restrict-search toggle. Off (the default) is today's behavior — `select` stays
+  // `undefined`, so useSearch's call to fetchSearch keeps its pre-T10 shape exactly (see hooks.ts).
+  // On, the CURRENT category selection rides along as a `select=` CSV — the same selection the
+  // reader body is filtering by, read the same way (readSelection).
+  const restrict = readRestrict(searchParams)
+  const select = restrict ? [...readSelection(searchParams)].join(',') : undefined
+  const query = useSearch(q, 'session', sessionUuid, undefined, select)
   const result = query.data as SessionSearchResult | undefined
 
   function backToConversation() {

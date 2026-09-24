@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   readProjects,
+  readRestrict,
   readSidebarParams,
   writeProjects,
+  writeRestrict,
   writeSidebarParams,
 } from '../src/lib/urlState'
 
@@ -129,5 +131,33 @@ describe('writeProjects', () => {
     const prev = new URLSearchParams('projects=alpha')
     writeProjects(prev, ['beta'])
     expect(prev.get('projects')).toBe('alpha')
+  })
+})
+
+describe('readRestrict / writeRestrict', () => {
+  it('defaults to false when absent', () => {
+    expect(readRestrict(new URLSearchParams())).toBe(false)
+  })
+
+  it('reads restrict=1 as true, anything else as false', () => {
+    expect(readRestrict(new URLSearchParams('restrict=1'))).toBe(true)
+    expect(readRestrict(new URLSearchParams('restrict=true'))).toBe(false)
+  })
+
+  it('writes restrict=1 when true and deletes it when false, preserving other params', () => {
+    const prev = new URLSearchParams('q=other')
+    const on = writeRestrict(prev, true)
+    expect(on.get('restrict')).toBe('1')
+    expect(on.get('q')).toBe('other')
+
+    const off = writeRestrict(new URLSearchParams('restrict=1&q=other'), false)
+    expect(off.has('restrict')).toBe(false)
+    expect(off.get('q')).toBe('other')
+  })
+
+  it('does not mutate the input URLSearchParams', () => {
+    const prev = new URLSearchParams('restrict=1')
+    writeRestrict(prev, false)
+    expect(prev.get('restrict')).toBe('1')
   })
 })

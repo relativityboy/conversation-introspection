@@ -4,6 +4,13 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.14.0 — 2026-09-23
+- The reader's view toggle grew into a category filter: five checkboxes — You chat, Claude chat, Claude thinking, Tool traffic, Harness/system — with the old views as one-click presets (chat, chat+harness, all); every block belongs to exactly one category, so no combination silently loses a record.
+- Claude's thinking is now checkable alongside chat: preserved thinking is readable in ordinary reading, not only the everything-view.
+- Resolved subagent chips count as Claude chat — the doorways into subagent work stay visible in the default view; ordinary tool calls and results share one Tool traffic box because the exchange belongs together.
+- The in-conversation search gains "search selected types only", restricting session-scoped search to the checked categories (API: `select=` on the messages and session-search endpoints; unknown or empty selections are refused, never silently ignored).
+- Your filter choice rides the URL (`?view=` for presets, `?select=` for custom sets) so links carry their filter; the header view's local-storage stickiness is retired, and the raw-record inspector keeps its own in-modal filter.
+
 ## 1.13.0 — 2026-09-20
 - Claude's thinking is now shown when the CLI preserved it: a thinking block with real text renders its words — a quiet, dragonfly-ruled register distinct from spoken prose — in place of the dotted circle, and an assistant turn that is entirely thinking is labeled CLAUDE (THINKING); empty thinking keeps the honest ◌ and its "content not persisted" note, which is now only shown when it's true.
 - Search finds thinking now: non-empty thinking text is indexed in both search scopes, and hits carry `block_kind: thinking` like any other hit; updating rebuilds the search index automatically (migration 0012) — older conversations' preserved thinking becomes findable with no reparse and no manual step.

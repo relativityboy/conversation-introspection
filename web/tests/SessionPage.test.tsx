@@ -71,8 +71,13 @@ function makeMessage(uuid: string): MessageOut {
     type: 'assistant',
     model: null,
     timestamp: null,
-    authorship_kind: null,
-    authorship_basis: null,
+    // Task T10: a realistic (classified) authorship_kind, not null -- the new select= default
+    // (`chat` preset) has no legacy NULL-kind tolerance (categoryOfBlock floors NULL straight to
+    // harness-system, which `chat` never includes), so a null-kind fixture here would silently
+    // vanish under this file's real default selection. Production rows are always classified
+    // post-backfill; this fixture now matches that steady state.
+    authorship_kind: 'claude',
+    authorship_basis: 'verified — record type assistant',
     authorship_detail: null,
     blocks: [
       {
@@ -289,17 +294,38 @@ describe('SessionPage view toggle', () => {
     expect(await screen.findByText('42 msgs total')).toBeDefined()
   })
 
-  it('is sticky: a session opened with introspect.view.v1=all seeds unfiltered from first paint', async () => {
-    window.localStorage.setItem('introspect.view.v1', 'all')
+  // Task T10: category selection is URL-persisted now, not localStorage-sticky (the retired
+  // `introspect.view.v1` mechanism is gone — zero-legacy). A shared/bookmarked `?view=all` link
+  // is what seeds the reader unfiltered from first paint.
+  it('URL-persisted: a session opened with ?view=all seeds unfiltered from first paint', async () => {
     fetchSession.mockResolvedValue(makeSession())
     fetchMessages.mockImplementation((_id: number, opts?: { view?: string }) =>
       Promise.resolve(pageOf(0, [opts?.view === 'all' ? 'full' : 'filtered'], 1)),
     )
-    renderAt(PATH)
+    renderAt(`${PATH}?view=all`)
 
     expect(await screen.findByText('text for full')).toBeDefined()
     expect(screen.getByRole('button', { name: 'all' }).getAttribute('aria-pressed')).toBe('true')
     expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, view: 'all' })
     expect(fetchMessages).not.toHaveBeenCalledWith(1, { offset: 0, limit: 100, view: 'chat' })
+  })
+
+  it('clicking a header checkbox re-seeds the reader body with the resulting custom combination', async () => {
+    fetchSession.mockResolvedValue(makeSession())
+    fetchMessages.mockResolvedValue(pageOf(0, ['m1'], 1))
+    renderAt(PATH)
+    await screen.findByText('text for m1')
+
+    // Unchecking is the reachable custom combination here: the default `chat` preset is already
+    // {you-chat, claude-chat, claude-thinking}, and every other single-box toggle from it either
+    // reproduces `chat-harness` (adding harness-system) or `all` (nothing left to add) — so this
+    // is deliberately an UNcheck, leaving {you-chat, claude-chat}, which matches no preset.
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Claude — thinking' }))
+
+    await waitFor(() => {
+      const lastCall = fetchMessages.mock.calls.at(-1)
+      const select = (lastCall?.[1] as { select?: string } | undefined)?.select
+      expect(new Set(select?.split(','))).toEqual(new Set(['you-chat', 'claude-chat']))
+    })
   })
 })

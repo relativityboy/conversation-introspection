@@ -47,7 +47,8 @@ const searchKey = (
   scope: SearchScope,
   sessionUuid: string | undefined,
   projects: string[] | undefined,
-) => ['search', q, scope, sessionUuid, projects] as const
+  select: string | undefined,
+) => ['search', q, scope, sessionUuid, projects, select] as const
 const rawRecordKey = (uuid: string) => ['rawRecord', uuid] as const
 const statusKey = ['status'] as const
 const projectsKey = ['projects'] as const
@@ -91,10 +92,25 @@ export function useMessages(transcriptId: number, opts: MessagesOptions = {}) {
 // §14.2's binding note). Passing it through uniformly (rather than branching on scope here) keeps
 // this hook a plain, unconditional plumb — the "don't pass projects for session scope" rule lives
 // entirely at the CALL SITE (ConversationSearchResults just never supplies the 4th arg).
-export function useSearch(q: string, scope: SearchScope, sessionUuid?: string, projects?: string[]) {
+// `select` (Task T10, session-scope "restrict search to selection" toggle) is threaded as a real
+// positional arg the same way `projects` is — omitted entirely by every call site that doesn't use
+// it. The `fetchSearch` call below is deliberately CONDITIONAL on `select` rather than always
+// passing it through (even as an explicit `undefined`): a bare 6-arg call when `select` is
+// undefined keeps every pre-T10 `fetchSearch` call-shape assertion byte-identical, since JS
+// records the exact arguments a call site writes, not the callee's full parameter list.
+export function useSearch(
+  q: string,
+  scope: SearchScope,
+  sessionUuid?: string,
+  projects?: string[],
+  select?: string,
+) {
   return useQuery({
-    queryKey: searchKey(q, scope, sessionUuid, projects),
-    queryFn: () => fetchSearch(q, scope, sessionUuid, undefined, undefined, projects),
+    queryKey: searchKey(q, scope, sessionUuid, projects, select),
+    queryFn: () =>
+      select !== undefined
+        ? fetchSearch(q, scope, sessionUuid, undefined, undefined, projects, select)
+        : fetchSearch(q, scope, sessionUuid, undefined, undefined, projects),
     enabled: q.trim().length > 0,
   })
 }

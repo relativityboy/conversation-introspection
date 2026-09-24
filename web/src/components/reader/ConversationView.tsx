@@ -5,7 +5,12 @@ import { ApiError, fetchMessages } from '../../api/client'
 import { useMessages } from '../../api/hooks'
 import type { MessageList, MessageOut } from '../../api/types'
 import { applyGlow } from '../../lib/glow'
-import type { ViewMode } from '../../lib/viewMode'
+import {
+  ALL_CATEGORIES_SET,
+  presetForSelection,
+  type CategorySlug,
+  type ViewMode,
+} from '../../lib/viewMode'
 import { MessageTurn } from './MessageTurn'
 import { RawRecordInspector } from './RawRecordInspector'
 
@@ -27,21 +32,29 @@ export interface ConversationViewProps {
   /** Seed the window around this record and start scrolled to it. Accepted now so the
    * windowing model is complete; the route plumbing that supplies it lands in Task 7. */
   initialAroundUuid?: string
-  /** Reader view mode (authorship spec §5), OWNED by the page (useViewMode) and passed in — never
-   * sourced locally, so header and body can't desync (plan critique F4). Threads through all
-   * three fetch sites and down to MessageTurn's block-level hiding. */
-  view: ViewMode
-  /** Passed only so the around-404 notice can offer "show all message types" (critique #12). */
-  setView: (value: ViewMode) => void
+  /** Reader category selection (Task T10, replaces the retired ViewMode `view`/`setView` props),
+   * OWNED by the page (the URL-backed selection hook) and passed in — never sourced locally, so
+   * header and body can't desync (plan critique F4, carried over). Threads through all three
+   * fetch sites and down to MessageTurn's block-level hiding. */
+  selection: ReadonlySet<CategorySlug>
+  /** Passed only so the around-404 notice can offer "show all message types" (critique #12),
+   * which now means "select all five categories". */
+  setSelection: (value: ReadonlySet<CategorySlug>) => void
 }
 
-// `view` must ride EVERY fetch site (seed + both edge loaders): a differently-filtered edge page
-// spliced into a filtered window would corrupt the offset math (§14.4). ALWAYS explicit (never
-// omitted) — unlike the retired boolean flag this replaces, the server's own default ('all')
-// differs from the client's ('chat'), so omitting it would silently change what a bare fetch
-// returns.
-function withView<T extends object>(opts: T, view: ViewMode): T & { view: ViewMode } {
-  return { ...opts, view }
+// `selection` must ride EVERY fetch site (seed + both edge loaders): a differently-filtered edge
+// page spliced into a filtered window would corrupt the offset math (§14.4). ALWAYS explicit
+// (never omitted) — the server's own default ('all') differs from the client's ('chat' preset),
+// so omitting it would silently change what a bare fetch returns. Sends the pretty `view=<preset>`
+// when `selection` equals a preset exactly (stable/pretty URLs and request shapes, matching the
+// retired `view` mechanism byte-for-byte for the common case) and `select=<csv>` only for a
+// genuinely custom combination — see urlState.ts's `writeSelection`, the same rule.
+function withSelection<T extends object>(
+  opts: T,
+  selection: ReadonlySet<CategorySlug>,
+): T & { view?: ViewMode; select?: string } {
+  const preset = presetForSelection(selection)
+  return preset !== null ? { ...opts, view: preset } : { ...opts, select: [...selection].join(',') }
 }
 
 // NOTE(claude): fetch strategy — the INITIAL page goes through the useMessages react-query
@@ -53,8 +66,8 @@ function withView<T extends object>(opts: T, view: ViewMode): T & { view: ViewMo
 export function ConversationView({
   transcriptId,
   initialAroundUuid,
-  view,
-  setView,
+  selection,
+  setSelection,
 }: ConversationViewProps) {
   // Re-seed control. `seedOverride` pins an explicit page — Top → offset 0, End → the last page,
   // and the 404 "view from the beginning" recovery → offset 0 — winning over the deep-link
@@ -77,13 +90,13 @@ export function ConversationView({
 
   const initial = useMessages(
     transcriptId,
-    withView(
+    withSelection(
       seedOverride
         ? { offset: seedOverride.offset, limit: PAGE_SIZE }
         : around
           ? { around, limit: PAGE_SIZE }
           : { offset: 0, limit: PAGE_SIZE },
-      view,
+      selection,
     ),
   )
 
@@ -93,11 +106,12 @@ export function ConversationView({
     // not-found, not the archive being offline. Offer a calm jump to the start instead (and
     // useMessages' retry policy skips the react-query retry storm for these 404s).
     if (around && initial.error instanceof ApiError && initial.error.status === 404) {
-      // Under a filtered view the 404 may mean "the target is a record filtered OUT of this set",
-      // not "not in this transcript at all" — so offer a second recovery that KEEPS the same
-      // around seed and just switches to 'all' (critique #12), distinct from "view from the
-      // beginning" which drops the around seed. Shown only when NOT already 'all' (meaningless
-      // there).
+      // Under a filtered selection the 404 may mean "the target is a record filtered OUT of this
+      // set", not "not in this transcript at all" — so offer a second recovery that KEEPS the
+      // same around seed and just selects every category (critique #12), distinct from "view from
+      // the beginning" which drops the around seed. Shown only when not already all-five
+      // (meaningless there).
+      const allSelected = presetForSelection(selection) === 'all'
       return (
         <Calm>
           message not found in this conversation{' '}
@@ -108,12 +122,12 @@ export function ConversationView({
           >
             view from the beginning
           </button>
-          {view !== 'all' && (
+          {!allSelected && (
             <>
               {' · '}
               <button
                 type="button"
-                onClick={() => setView('all')}
+                onClick={() => setSelection(ALL_CATEGORIES_SET)}
                 style={LINK_BUTTON_STYLE}
               >
                 show all message types
@@ -130,24 +144,26 @@ export function ConversationView({
   // The key resets the window state whenever the identity of the stream changes — a new
   // transcript or a new around-target must re-seed rather than mutate the old window. Keying on
   // the EFFECTIVE `around` also re-seeds cleanly when a Top/End/"view from the beginning" drops
-  // it, on `view` so switching views remounts the window (a differently-filtered edge page mixed
-  // into the old window would corrupt the offset math, §14.4), and on `seedNonce` so a repeated
-  // Top/End press re-seeds even when the target page is unchanged. The remount is also the
-  // isolation boundary for an in-flight edge fetch — see MessageStream's pendingRef note.
+  // it, on the selection (order-independent) so switching categories remounts the window (a
+  // differently-filtered edge page mixed into the old window would corrupt the offset math,
+  // §14.4), and on `seedNonce` so a repeated Top/End press re-seeds even when the target page is
+  // unchanged. The remount is also the isolation boundary for an in-flight edge fetch — see
+  // MessageStream's pendingRef note.
   const total = initial.data.total
+  const selectionKey = [...selection].sort().join(',')
   return (
     <div style={{ position: 'relative', height: '100%' }}>
       <MessageStream
-        key={`${transcriptId}:${around ?? ''}:${view}:${seedNonce}`}
+        key={`${transcriptId}:${around ?? ''}:${selectionKey}:${seedNonce}`}
         transcriptId={transcriptId}
         seed={initial.data}
         initialAroundUuid={around}
-        view={view}
+        selection={selection}
         landAtEnd={seedOverride?.landAtEnd ?? false}
       />
       <ReaderJumpControls
         onTop={() => reseed({ offset: 0, landAtEnd: false })}
-        // End pins the LAST page within the CURRENT view filter — `total` already respects it
+        // End pins the LAST page within the CURRENT selection — `total` already respects it
         // (server-side), so the same arithmetic works filtered or not.
         onEnd={() => reseed({ offset: Math.max(0, total - PAGE_SIZE), landAtEnd: true })}
       />
@@ -217,7 +233,7 @@ interface MessageStreamProps {
   transcriptId: number
   seed: MessageList
   initialAroundUuid?: string
-  view: ViewMode
+  selection: ReadonlySet<CategorySlug>
   /** End re-seed: start scrolled to the LAST message of the seeded (last) page. */
   landAtEnd: boolean
 }
@@ -226,7 +242,7 @@ function MessageStream({
   transcriptId,
   seed,
   initialAroundUuid,
-  view,
+  selection,
   landAtEnd,
 }: MessageStreamProps) {
   const [stream, setStream] = useState<StreamWindow>(() => ({
@@ -238,10 +254,11 @@ function MessageStream({
   // page is still in flight; without the guard the same page would prepend/append twice.
   //
   // pendingRef is per-INSTANCE (a fresh useRef per MessageStream), and so is `stream`. Switching
-  // `view` changes ConversationView's key, unmounting THIS instance and mounting a new one: any
-  // edge fetch still in flight here resolves into a setStream on the unmounted instance (a React
-  // no-op) — it can never splice a page filtered under the OLD view into the new window. The new
-  // instance starts with pendingRef=false and re-seeds from the fresh (correctly filtered) `seed`.
+  // `selection` changes ConversationView's key, unmounting THIS instance and mounting a new one:
+  // any edge fetch still in flight here resolves into a setStream on the unmounted instance (a
+  // React no-op) — it can never splice a page filtered under the OLD selection into the new
+  // window. The new instance starts with pendingRef=false and re-seeds from the fresh (correctly
+  // filtered) `seed`.
   const pendingRef = useRef(false)
 
   // The raw-record inspector (§15.2) is a single reader-level instance, NOT one-per-row: a row's
@@ -322,7 +339,7 @@ function MessageStream({
       // would prepend duplicates.
       const page = await fetchMessages(
         transcriptId,
-        withView({ offset, limit: firstItemIndex - offset }, view),
+        withSelection({ offset, limit: firstItemIndex - offset }, selection),
       )
       setStream((prev) => ({
         firstItemIndex: prev.firstItemIndex - page.items.length,
@@ -334,7 +351,7 @@ function MessageStream({
     } finally {
       pendingRef.current = false
     }
-  }, [stream, transcriptId, view])
+  }, [stream, transcriptId, selection])
 
   const loadAfter = useCallback(async () => {
     const offset = stream.firstItemIndex + stream.items.length
@@ -343,7 +360,7 @@ function MessageStream({
     try {
       const page = await fetchMessages(
         transcriptId,
-        withView({ offset, limit: PAGE_SIZE }, view),
+        withSelection({ offset, limit: PAGE_SIZE }, selection),
       )
       setStream((prev) => ({
         ...prev,
@@ -355,7 +372,7 @@ function MessageStream({
     } finally {
       pendingRef.current = false
     }
-  }, [stream, transcriptId, view])
+  }, [stream, transcriptId, selection])
 
   // NOTE(claude): totalCount is the WINDOW length, not the archive total — deliberate
   // deviation from the plan's literal "totalCount=response.total". With firstItemIndex set,
@@ -397,7 +414,7 @@ function MessageStream({
               ref={isTarget ? glowTarget : undefined}
               style={{ padding: '0 24px' }}
             >
-              <MessageTurn message={message} view={view} onInspect={setInspectUuid} />
+              <MessageTurn message={message} selection={selection} onInspect={setInspectUuid} />
             </div>
           )
         }}
@@ -406,7 +423,12 @@ function MessageStream({
         <RawRecordInspector
           items={stream.items}
           initialUuid={inspectUuid}
-          parentView={view}
+          // RawRecordInspector's own in-modal filter is the retired three-state ViewMode
+          // (independent, unaffected by Task T10 — see the write-up). It "follows parent" by
+          // seeding from whichever preset the current selection matches; a custom (non-preset)
+          // combination has no ViewMode equivalent, so it seeds the modal at its most permissive
+          // 'all' — the user can still narrow it with the modal's own toggle.
+          parentView={presetForSelection(selection) ?? 'all'}
           onClose={() => setInspectUuid(null)}
         />
       )}

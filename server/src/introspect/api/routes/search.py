@@ -52,7 +52,7 @@ import re
 from http import HTTPStatus
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import Select, func, select
@@ -61,9 +61,11 @@ from sqlalchemy.orm import Session
 from introspect.api.deps import get_db
 from introspect.api.models import _DEFAULT_LIMIT, _MAX_LIMIT, HitOut, Problem, SessionSummary
 from introspect.api.routes.sessions import (
+    _categorize,
     _is_favorited,
     _main_message_count,
     _parse_projects_param,
+    _parse_select_param,
     _summary,
     _user_title,
 )
@@ -161,6 +163,52 @@ def _drop_archived_hits(db: Session, hits: list[SearchHit]) -> list[SearchHit]:
     if not archived:
         return hits
     return [hit for hit in hits if hit.session_uuid not in archived]
+
+
+# --- select= category filtering (Task T9), scope=session only --------------------------
+
+
+def _filter_hits_by_category(
+    db: Session, hits: list[SearchHit], categories: frozenset[str]
+) -> list[SearchHit]:
+    """Keep only hits whose (message authorship, block_kind) maps into `categories`, via the
+    SAME `_categorize` priority `routes.sessions` uses for `select=` on the messages endpoint
+    (single source of truth, never a parallel rule).
+
+    Like `_drop_archived_hits` above, this is a route-level POST-filter over one page of hits
+    (never pushed into the FTS query): `total` is left as the pre-filter match count
+    `SearchIndex.search` reports -- the same accepted-cost precedent that function already
+    documents for this route.
+
+    NOTE(claude): `content_fts` only indexes `text`/`thinking` blocks (fts5.py's
+    `_INDEXED_PREDICATE`) -- a `tool_use`/`tool_result` block is never a search hit at all, so
+    `select=tool-traffic` under scope=session is a well-formed, always-empty filter here, not a
+    bug (documented in the T9 write-up).
+    """
+    if not hits:
+        return hits
+    message_ids = {hit.message_id for hit in hits}
+    authorship_by_message = dict(
+        db.execute(
+            select(Message.id, Message.authorship_kind).where(Message.id.in_(message_ids))
+        ).all()
+    )
+    return [
+        hit
+        for hit in hits
+        if _categorize(
+            authorship_by_message.get(hit.message_id),
+            hit.block_kind,
+            # Task T12 grew `_categorize`'s signature with a resolved-dispatch context (a
+            # `tool_use_id` + the set of ids that resolved to a captured subagent transcript).
+            # An FTS/id-lookup hit is never a `tool_use` block (`content_fts` only indexes
+            # text/thinking, see the module docstring above), so that context can never matter
+            # here -- passing `None`/empty is correct, not a shortcut.
+            None,
+            frozenset(),
+        )
+        in categories
+    ]
 
 
 # --- Id-shaped `q` bypass (Task T3): exact-match on Message.api_message_id --------------
@@ -391,6 +439,10 @@ def search(
     session: str | None = None,
     projects: str | None = None,
     sources: str | None = None,
+    # NOTE(claude): NOT named `select` -- `sqlalchemy.select` is imported into this module's
+    # namespace and used throughout this route function; a param named `select` would shadow
+    # it. Aliased exactly like `sessions.py`'s `list_messages` does for the same reason.
+    select_: str | None = Query(default=None, alias="select"),
     limit: int = _DEFAULT_LIMIT,
     offset: int = 0,
 ) -> GlobalSearchResult | SessionSearchResult | JSONResponse:
@@ -398,6 +450,11 @@ def search(
         return _problem("q must not be empty")
     if scope == "session" and not session:
         return _problem("session is required when scope=session")
+    # Task T9: `select=` is a deliberate, session-scope-only focus (spec) -- scope=global with
+    # select= given is a 422, not a silent ignore.
+    if select_ is not None and scope != "session":
+        return _problem("select is only supported with scope=session")
+    categories = _parse_select_param(select_)  # None, or a validated frozenset; may 422
     source_set = _parse_sources_param(sources)
     if isinstance(source_set, JSONResponse):
         return source_set
@@ -421,6 +478,8 @@ def search(
                 db, q, session_uuid=session, sources=source_set, limit=limit, offset=offset
             )
         hits = _drop_archived_hits(db, hits)
+        if categories is not None:
+            hits = _filter_hits_by_category(db, hits, categories)
         agent_hex = _agent_hex_by_transcript(db, hits)
         return SessionSearchResult(
             items=[_hit_out(h, agent_hex) for h in hits], total=total

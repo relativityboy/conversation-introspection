@@ -3,7 +3,14 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import type { BlockOut, MessageOut } from '../../api/types'
 import { normalizeChatFences } from '../../lib/chatFences'
-import { isVisibleInView, type ViewMode } from '../../lib/viewMode'
+import {
+  ALL_CATEGORIES_SET,
+  CLAUDE_KINDS,
+  HUMAN_KINDS,
+  categoryOfBlock,
+  isVisibleInSelection,
+  type CategorySlug,
+} from '../../lib/viewMode'
 import { ImageBlock } from './ImageBlock'
 import { MarkdownProse } from './MarkdownProse'
 import { SubagentChip } from './SubagentChip'
@@ -57,9 +64,9 @@ function legacyVoiceOf(message: MessageOut): Voice {
 
 // Kind buckets behind §3.3's accent grouping. Dawn is reserved for human-authored content — ONLY
 // human_* and attachment_queued_human may take it; every other kind is dragonfly (Claude-voiced)
-// or mist (everything else).
-const HUMAN_KINDS = new Set(['human_typed', 'human_queued', 'human_inferred'])
-const CLAUDE_KINDS = new Set(['claude', 'dispatch', 'coordinator'])
+// or mist (everything else). HUMAN_KINDS/CLAUDE_KINDS now live in lib/viewMode.ts (Task T10) so
+// the eyebrow's voice grouping and the category filter's chat-category mapping can never drift —
+// imported above rather than redefined here.
 
 // Task 1 (chat-fence-normalizer plan): which kinds get their text blocks run through
 // `normalizeChatFences` before rendering. Deliberately a SEPARATE set from `HUMAN_KINDS` rather
@@ -202,18 +209,18 @@ function useEntryHref(recordUuid: string): string | null {
 
 export interface MessageTurnProps {
   message: MessageOut
-  /** Reader view mode (authorship spec §5): gates both whole-message visibility
-   * (`isVisibleInView`) and block-level hiding of tool_use/tool_result — see `Block`. Owned by the
-   * page via useViewMode; defaults to 'all' (show everything) when omitted, matching the
-   * un-virtualized unit tests that predate this filtering. */
-  view?: ViewMode
+  /** Reader category selection (Task T10, replaces the retired ViewMode `view` prop): gates both
+   * whole-message visibility (`isVisibleInSelection`) and per-block rendering — see `Block`.
+   * Owned by the page via the URL-backed selection hook; defaults to every category selected when
+   * omitted, matching the un-virtualized unit tests that predate this filtering. */
+  selection?: ReadonlySet<CategorySlug>
   /** Opens the raw-record inspector for this row (§15.2), wired to the speaker-name button.
    * Supplied by the reader (MessageStream); absent in the un-virtualized unit tests, where the
    * name renders as plain text instead. */
   onInspect?: (recordUuid: string) => void
 }
 
-export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnProps) {
+export function MessageTurn({ message, selection = ALL_CATEGORIES_SET, onInspect }: MessageTurnProps) {
   const href = useEntryHref(message.record_uuid)
   const dispatchToolUseIds = useDispatchToolUseIds()
   const [copied, setCopied] = useState(false)
@@ -239,17 +246,19 @@ export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnPro
     }, 1600)
   }
 
-  // A filtered view hides rows whose authorship kind/type doesn't qualify OR that show no content
-  // there (spec §4/§5): thinking-only / tool-only / empty-text rows collapse to nothing, including
-  // the ~800 zero-block deferred_tools_delta / skill_listing / task_reminder attachment stubs,
-  // while a block-bearing attachment (a rescued human queued prompt) stays. A RESOLVED dispatch
-  // row is the one exception carved back OUT of that trim (final review C1): its `tool_use` block
-  // is its only content, yet `dispatchToolUseIds` (this session's transcripts, threaded via
-  // `useDispatchToolUseIds`) keeps it past the gate so the chip below stays reachable outside
-  // `all`. `isVisibleInView` is the SAME predicate the raw inspector's prev/next uses
-  // (lib/viewMode) and mirrors the server's `_view_filter`, so the rows this reader hides and the
-  // rows that navigation skips can never drift.
-  if (!isVisibleInView(message, view, dispatchToolUseIds)) return null
+  // A filtered selection hides a row when NONE of its blocks' categories are selected (Task T10
+  // FROZEN contract, resolved-dispatch routing added Task T12) — including EVERY zero-block row
+  // (the ~800 deferred_tools_delta / skill_listing / task_reminder attachment stubs, and any
+  // bare `system`-type record), which is always invisible under any selection including
+  // all-five (server-confirmed divergence from the retired `all` view — see
+  // `isVisibleInSelection`'s doc in viewMode.ts). A RESOLVED dispatch row with no other content
+  // is now visible once `claude-chat` is selected (owner ruling 2026-09-23: a resolved-dispatch
+  // `tool_use` block IS claude-chat, a doorway into a Claude-voiced conversation, not mechanical
+  // traffic) — an UNRESOLVED tool_use row still needs `tool-traffic` selected, unchanged.
+  // `isVisibleInSelection` needs the SAME `dispatchToolUseIds` set `Block` below reads to decide
+  // this, both sourced from `useDispatchToolUseIds()` so the two can never drift on which
+  // rows/blocks that is.
+  if (!isVisibleInSelection(message, selection, dispatchToolUseIds)) return null
 
   const { label: baseLabel, accent } = speakerFor(message)
   const label = isAllThinkingMessage(message) ? 'CLAUDE (THINKING)' : baseLabel
@@ -310,8 +319,9 @@ export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnPro
           <Block
             key={block.block_index}
             block={block}
-            view={view}
-            authorshipKind={message.authorship_kind}
+            message={message}
+            selection={selection}
+            dispatchToolUseIds={dispatchToolUseIds}
           />
         ))}
       </div>
@@ -319,26 +329,34 @@ export function MessageTurn({ message, view = 'all', onInspect }: MessageTurnPro
   )
 }
 
-// Per-kind dispatch. tool_use ALWAYS routes through SubagentChip, which resolves the transcript
-// join; `renderFallback` (spec §6) controls what happens when it DOESN'T resolve to a subagent
-// dispatch — true (only in `all`) falls back to the ordinary ToolBlock render, false (every
-// filtered view) renders nothing. A RESOLVED dispatch chip therefore survives `chat` and
-// `chat-harness` alike (spec §6/§10.7c: the chip is the reader's sole doorway into a subagent
-// transcript, so filtering it out with ordinary tool noise would delete subagent navigation from
-// the default view — this supersedes an earlier "chip disappears with its tool_use" ledger #7
-// read). tool_result stays gated to `all` in every view: harness prose (text/thinking/image, and
-// forward-tolerant unknown kinds) always renders regardless of view; only the two tool-shaped
-// block kinds are view-gated. Unknown block kinds render a mono chip rather than throwing — the
-// archive may grow block kinds this reader predates, and a forward-tolerant marker beats a crash.
+// Per-kind dispatch, gated by the Task T10/T12 category contract: a block renders iff
+// `categoryOfBlock` resolves to a category in `selection` (checked once up front — every case
+// below only has to decide HOW to render, never whether). tool_use ALWAYS routes through
+// SubagentChip, which independently re-resolves the SAME transcript join (`useTranscripts()`) to
+// decide what to draw. `categoryOfBlock` now carries a resolved-dispatch carve-out (owner ruling
+// 2026-09-23): a `tool_use` block whose id is in `dispatchToolUseIds` categorizes `claude-chat`,
+// an unresolved one stays `tool-traffic` — so a RESOLVED chip reaches this switch once
+// `claude-chat` is selected (independent of `tool-traffic`), while an unresolved tool_use only
+// reaches it when `tool-traffic` is selected. `renderFallback` (spec §6) is still exactly
+// `selection.has('tool-traffic')`: it only matters inside SubagentChip's un-resolved branch, and
+// by construction an unresolved tool_use can only reach this switch when tool-traffic IS
+// selected, so the value already read is always right by the time it's used. Unknown block kinds
+// render a mono chip rather than throwing — the archive may grow block kinds this reader
+// predates, and a forward-tolerant marker beats a crash.
 function Block({
   block,
-  view,
-  authorshipKind,
+  message,
+  selection,
+  dispatchToolUseIds,
 }: {
   block: BlockOut
-  view: ViewMode
-  authorshipKind: string | null
+  message: MessageOut
+  selection: ReadonlySet<CategorySlug>
+  dispatchToolUseIds: ReadonlySet<string>
 }) {
+  if (!selection.has(categoryOfBlock(block, message, dispatchToolUseIds))) return null
+
+  const authorshipKind = message.authorship_kind
   switch (block.block_kind) {
     case 'text': {
       if (!block.text_content) return null
@@ -356,9 +374,9 @@ function Block({
     case 'image':
       return <ImageBlock />
     case 'tool_use':
-      return <SubagentChip block={block} renderFallback={view === 'all'} />
+      return <SubagentChip block={block} renderFallback={selection.has('tool-traffic')} />
     case 'tool_result':
-      return view === 'all' ? <ToolBlock block={block} /> : null
+      return <ToolBlock block={block} />
     default:
       return <UnknownChip kind={block.block_kind} />
   }

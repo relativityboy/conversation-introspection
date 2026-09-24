@@ -88,3 +88,28 @@ export function writeProjects(prev: URLSearchParams, slugs: string[]): URLSearch
   }
   return next
 }
+
+// --- reader restrict-search toggle (Task T10) ----------------------------------------------
+//
+// `?restrict=1` — session search only carries the current category selection as `select=` when
+// this is on (ConversationSearch/ConversationSearchResults). Deliberately never read by the
+// global /search page (SearchPage.tsx never calls these), so the toggle can't leak scope.
+
+/** Reads the restrict-search toggle. Anything other than the literal `restrict=1` reads as off —
+ * same falsy-tolerant convention as `readSidebarParams`' `fav`. */
+export function readRestrict(searchParams: URLSearchParams): boolean {
+  return searchParams.get('restrict') === '1'
+}
+
+/** Returns a NEW `URLSearchParams` with `restrict` set — `prev` is never mutated. `false` deletes
+ * the param (mirroring `writeSidebarParams`' falsy-deletes idiom) so the toggle being off leaves a
+ * clean URL. */
+export function writeRestrict(prev: URLSearchParams, value: boolean): URLSearchParams {
+  const next = new URLSearchParams(prev)
+  if (value) {
+    next.set('restrict', '1')
+  } else {
+    next.delete('restrict')
+  }
+  return next
+}

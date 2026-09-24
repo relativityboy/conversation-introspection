@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import type { BlockOut, MessageOut } from '../api/types'
 
 export type ViewMode = 'chat' | 'chat-harness' | 'all'
@@ -143,4 +144,289 @@ export function useViewMode(): { view: ViewMode; setView: (view: ViewMode) => vo
     writeStored(value)
   }, [])
   return { view, setView }
+}
+
+// --- category filter (Task T10) -----------------------------------------------------------
+//
+// The five-checkbox replacement for the three-state ViewMode toggle ABOVE. `ViewMode`/
+// `useViewMode`/`isVisibleInView`/`ViewToggle` are deliberately left untouched — they remain the
+// mechanism for RawRecordInspector's own independent in-modal filter (a narrower, separate
+// concern from the reader header this task replaces; see the T10 write-up). Everything below is
+// NEW and additive.
+//
+// Slugs are FROZEN (shared contract with the server's T9 task — see
+// claude_notes/2026-09-20-15-58-plan-task-queue-round-one.md "Feature 3"): every (message, block)
+// maps to exactly one category, never dropped silently.
+export type CategorySlug =
+  | 'you-chat'
+  | 'claude-chat'
+  | 'claude-thinking'
+  | 'tool-traffic'
+  | 'harness-system'
+
+export const ALL_CATEGORIES: readonly CategorySlug[] = [
+  'you-chat',
+  'claude-chat',
+  'claude-thinking',
+  'tool-traffic',
+  'harness-system',
+]
+
+export const ALL_CATEGORIES_SET: ReadonlySet<CategorySlug> = new Set(ALL_CATEGORIES)
+
+export const CATEGORY_LABELS: Record<CategorySlug, string> = {
+  'you-chat': 'You — chat',
+  'claude-chat': 'Claude — chat',
+  'claude-thinking': 'Claude — thinking',
+  'tool-traffic': 'Tool traffic',
+  'harness-system': 'Harness/system',
+}
+
+// Kind buckets shared with MessageTurn's eyebrow logic — moved here so `categoryOfBlock` and
+// `voiceClassOf`/`accentFor` (MessageTurn.tsx) can never drift on who counts as "human" vs
+// "Claude" voiced. MessageTurn imports these back rather than keeping its own copy.
+export const HUMAN_KINDS: ReadonlySet<string> = new Set([
+  'human_typed',
+  'human_queued',
+  'human_inferred',
+])
+export const CLAUDE_KINDS: ReadonlySet<string> = new Set(['claude', 'dispatch', 'coordinator'])
+
+// The category contract's "human family" (server sessions.py `_YOU_CHAT_AUTHORSHIP_KINDS`) —
+// HUMAN_KINDS above PLUS `attachment_queued_human` and `interrupt_marker`. A separate constant
+// from HUMAN_KINDS on purpose: HUMAN_KINDS drives the eyebrow's narrower dawn-accent grouping
+// (§3.3, MessageTurn.tsx), which special-cases attachment_queued_human on its own for the
+// fourth "attachment" voice and doesn't include interrupt_marker (that kind gets the plain
+// SYSTEM (INTERRUPT) label/mist accent there) — two independent groupings over the same kind
+// vocabulary, for two independent purposes.
+const YOU_CHAT_AUTHORSHIP_KINDS: ReadonlySet<string> = new Set([
+  ...HUMAN_KINDS,
+  'attachment_queued_human',
+  'interrupt_marker',
+])
+
+// Owner-ratified preset↔set equivalence, corrected 2026-09-22 against the server's T9
+// implementation (server/src/introspect/api/routes/sessions.py `_categorize` + its own
+// equivalence test suite, `test_select_*_equals_view_*` in test_api_sessions.py) — the FROZEN
+// contract this file's earlier draft got wrong before that code existed to check against.
+// `select=` prunes BLOCKS within an already-visible row (`view=` never does), so reproducing
+// `view=chat`'s exact rows AND blocks needs `claude-thinking` in the `chat` set too: a claude
+// turn combining `thinking` + `text` shows BOTH blocks under `view=chat` today (thinking was
+// never block-level gated by the retired ViewMode — see `isVisibleInView` above), and dropping
+// `claude-thinking` from the equivalent `select=` set would silently prune that block. Same
+// reasoning extends `chat-harness` by one slug. "EXISTING VIEW BEHAVIOR WINS" (server test
+// docstring) is the tiebreak both sides independently landed on.
+export const PRESET_SETS: Record<ViewMode, ReadonlySet<CategorySlug>> = {
+  chat: new Set(['you-chat', 'claude-chat', 'claude-thinking']),
+  'chat-harness': new Set(['you-chat', 'claude-chat', 'claude-thinking', 'harness-system']),
+  all: ALL_CATEGORIES_SET,
+}
+
+function setsEqual<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
+  if (a.size !== b.size) return false
+  for (const value of a) if (!b.has(value)) return false
+  return true
+}
+
+/** The preset name whose set exactly equals `selection`, or `null` for a custom combination.
+ * Drives BOTH the URL's `view=`-vs-`select=` choice (urlState.ts) and the CategoryFilter chips'
+ * highlight state — the SAME equality check for both, so a chip can never read "active" while the
+ * URL disagrees. */
+export function presetForSelection(selection: ReadonlySet<CategorySlug>): ViewMode | null {
+  for (const [preset, set] of Object.entries(PRESET_SETS) as Array<[ViewMode, ReadonlySet<CategorySlug>]>) {
+    if (setsEqual(selection, set)) return preset
+  }
+  return null
+}
+
+/** The FROZEN per-block category contract, a byte-for-byte port of the server's `_categorize`
+ * (sessions.py, Task T9; resolved-dispatch routing added Task T12) — total over every
+ * (authorship_kind, block_kind) pair, never raises, never returns outside the five slugs.
+ * First-match priority, mirrored exactly:
+ *
+ *  1. every block of a `tool_result`-AUTHORSHIP message is `tool-traffic` — "the exchange is a
+ *     unit", so the message-level override beats whatever an individual block looks like.
+ *  2. a `tool_use` BLOCK whose id is in `dispatchToolUseIds` (a captured subagent transcript's
+ *     `parent_tool_use_id` — the SAME join `SubagentChip`/`useDispatchToolUseIds` use to decide
+ *     a chip resolves) is `claude-chat` — owner ruling 2026-09-23: a resolved dispatch is a
+ *     doorway into a Claude-voiced conversation, not mechanical traffic (supersedes this
+ *     function's earlier "deliberately no carve-out" contract, which the server's own
+ *     `test_select_does_not_reproduce_resolved_dispatch_chip_visibility` test used to pin —
+ *     that server test is now flipped to
+ *     `test_select_reproduces_resolved_dispatch_chip_visibility_as_claude_chat`). Any OTHER
+ *     `tool_use` BLOCK (unresolved, or `dispatchToolUseIds` omitted/empty) is `tool-traffic`
+ *     regardless of its message's authorship ("wherever it appears") — checked before the
+ *     family branches so a tool_use on a claude/dispatch/coordinator message routes here, not
+ *     to claude-chat/claude-thinking, unless the resolved case above already claimed it.
+ *  3. the human family (`YOU_CHAT_AUTHORSHIP_KINDS`) → `you-chat`.
+ *  4. the claude family (`CLAUDE_KINDS`): a `thinking` block → `claude-thinking`, everything
+ *     else → `claude-chat`.
+ *  5. everything else — system records, skill/command furniture, notifications, non-rescued
+ *     attachments, unclassified/NULL authorship (no legacy type-based tolerance here, unlike
+ *     `isVisibleInView`'s `legacyFallback` — the server's `_categorize` floors a NULL kind to
+ *     harness-system unconditionally, unbacked by `message.type`), and any block kind this
+ *     client predates — → `harness-system`, the exhaustive floor. Never hidden by omission.
+ *
+ * `dispatchToolUseIds` defaults to empty for callers outside a `TranscriptsProvider` (bare unit
+ * renders): every `tool_use` then degrades to `tool-traffic`, matching `SubagentChip`'s own
+ * degrade-to-ToolBlock behavior under the same conditions — see `useDispatchToolUseIds`
+ * (transcripts-context.ts).
+ */
+export function categoryOfBlock(
+  block: BlockOut,
+  message: MessageOut,
+  dispatchToolUseIds: ReadonlySet<string> = new Set(),
+): CategorySlug {
+  if (message.authorship_kind === 'tool_result') return 'tool-traffic'
+  if (block.block_kind === 'tool_use') {
+    return block.tool_use_id != null && dispatchToolUseIds.has(block.tool_use_id)
+      ? 'claude-chat'
+      : 'tool-traffic'
+  }
+  const kind = message.authorship_kind
+  if (kind != null && YOU_CHAT_AUTHORSHIP_KINDS.has(kind)) return 'you-chat'
+  if (kind != null && CLAUDE_KINDS.has(kind)) {
+    return block.block_kind === 'thinking' ? 'claude-thinking' : 'claude-chat'
+  }
+  return 'harness-system'
+}
+
+/** Whether `block` renders under `selection` — the block-level half of the FROZEN contract ("a
+ * block renders iff its category is selected"). Used by MessageTurn's `Block` dispatcher. */
+export function isBlockCategorySelected(
+  block: BlockOut,
+  message: MessageOut,
+  selection: ReadonlySet<CategorySlug>,
+  dispatchToolUseIds: ReadonlySet<string> = new Set(),
+): boolean {
+  return selection.has(categoryOfBlock(block, message, dispatchToolUseIds))
+}
+
+/** Row-level half of the FROZEN contract ("a row disappears iff none of its blocks are
+ * selected") — the selection-aware sibling of `isVisibleInView` above, used the SAME places:
+ * MessageTurn's row gate and (were it ever threaded there) RawRecordInspector-style prev/next
+ * navigation.
+ *
+ * A message with ZERO blocks has no block whose category could ever be selected, so it is
+ * ALWAYS invisible — including under the `all` preset (every category selected). This is a
+ * server-confirmed divergence from the retired `all` view (which showed a blockless row, e.g. a
+ * bare `system`-type record, as an empty eyebrow-only row): the server's own equivalence suite
+ * pins this exact nuance (`test_select_never_shows_blockless_rows_unlike_view_all`) — "select='s
+ * disappear rule … is vacuously true for a row with zero blocks. view=all shows it anyway (no
+ * filtering at all, not even a content check). Deliberate, not fixed."
+ *
+ * One refinement beyond a bare `.some(categoryOfBlock ∈ selection)`, ported from the server's
+ * `_block_matches_categories` (found via genuine red on their side, claude_notes/2026-09-22-sdd-
+ * checkboxes-writeups.md "T9" nuance 4): an EMPTY `text` block never counts toward row
+ * visibility, even though `categoryOfBlock` still slots it into its message's family. The CLI's
+ * real production shape for a dispatch tool_use is an empty companion `text` block riding along
+ * — without this guard, that empty block's category (its message's voice, e.g. `claude-chat`)
+ * alone would make the row read "visible" under a selection that excludes `tool-traffic`, even
+ * though nothing actually renders (`Block()` already refuses to render empty text, and the
+ * tool_use block is separately gated out) — an empty ghost row instead of a correctly-vanished
+ * one. Scoped ONLY to this row-visibility check, mirroring the server's own scoping: an empty
+ * text block that rides along on an otherwise-visible row (visible via some OTHER real block)
+ * still passes `isBlockCategorySelected`/`Block()`'s per-block gate unchanged — it just renders
+ * nothing there too, exactly like today.
+ *
+ * `dispatchToolUseIds` (Task T12, default empty) threads straight through to `categoryOfBlock`
+ * so a resolved dispatch row's sole `tool_use` block (owner ruling 2026-09-23: claude-chat, not
+ * tool-traffic) keeps this row visible under a selection that includes `claude-chat`, matching
+ * exactly what `Block()`/`SubagentChip` render for the same row — see `categoryOfBlock`'s doc. */
+export function isVisibleInSelection(
+  message: MessageOut,
+  selection: ReadonlySet<CategorySlug>,
+  dispatchToolUseIds: ReadonlySet<string> = new Set(),
+): boolean {
+  return message.blocks.some((block) => {
+    if (!selection.has(categoryOfBlock(block, message, dispatchToolUseIds))) return false
+    if (block.block_kind === 'text' && (block.text_content == null || block.text_content === '')) {
+      return false
+    }
+    return true
+  })
+}
+
+// --- URL persistence + hook (Task T10) ------------------------------------------------------
+//
+// `?select=<csv>` (a custom combination) or `?view=<preset>` (chat/chat-harness/all — the retired
+// ViewMode's own string values, reused so a preset URL stays stable/pretty) carries the reader
+// header's checkbox selection. `select=` wins when both are present — a malformed/stale `view=`
+// alongside a fresh `select=` link should never override the more specific param. Co-located here
+// (rather than urlState.ts, which the rest of the app's filter state lives in) because
+// `readSelection`/`writeSelection` need `PRESET_SETS`/`presetForSelection`/`CategorySlug` above,
+// and urlState.ts is deliberately framework-free/domain-free — putting them there would either
+// duplicate this module's category logic or create an import cycle.
+const CATEGORY_SLUGS: ReadonlySet<CategorySlug> = new Set(ALL_CATEGORIES)
+
+function isCategorySlug(value: string): value is CategorySlug {
+  return CATEGORY_SLUGS.has(value as CategorySlug)
+}
+
+/** Reads the reader's category selection. Absent/unrecognized `select=`/`view=` (no params, a
+ * stale/foreign value, or a `select=` that parses to nothing) falls back to the `chat` preset —
+ * the same default the retired `useViewMode` used. */
+export function readSelection(searchParams: URLSearchParams): ReadonlySet<CategorySlug> {
+  const selectRaw = searchParams.get('select')
+  if (selectRaw !== null) {
+    const slugs = selectRaw
+      .split(',')
+      .map((slug) => slug.trim())
+      .filter(isCategorySlug)
+    if (slugs.length > 0) return new Set(slugs)
+  }
+  const viewRaw = searchParams.get('view')
+  if (viewRaw === 'chat' || viewRaw === 'chat-harness' || viewRaw === 'all') {
+    return PRESET_SETS[viewRaw]
+  }
+  return PRESET_SETS.chat
+}
+
+/**
+ * Returns a NEW `URLSearchParams` with the category selection written — every other param passes
+ * through untouched, and `prev` is never mutated. When `selection` equals a preset's set exactly,
+ * writes the pretty `?view=<preset>` and clears any `?select=`; otherwise writes the CSV
+ * `?select=` and clears `?view=` (mutually exclusive — a stale param from the other shape must
+ * never linger to confuse a later read).
+ */
+export function writeSelection(
+  prev: URLSearchParams,
+  selection: ReadonlySet<CategorySlug>,
+): URLSearchParams {
+  const next = new URLSearchParams(prev)
+  const preset = presetForSelection(selection)
+  if (preset !== null) {
+    next.set('view', preset)
+    next.delete('select')
+  } else {
+    next.set('select', [...selection].join(','))
+    next.delete('view')
+  }
+  return next
+}
+
+/**
+ * URL-backed replacement for the retired `useViewMode` (Task T10). Same "ONE owner per reader
+ * page" contract as the docstring at the top of this file describes — each `SessionPage` /
+ * `SubagentPage` calls this exactly once and threads `{selection, setSelection}` down to both the
+ * header's CategoryFilter and the ConversationView body, so they can never desync (plan critique
+ * F4, carried over). Deliberately URL-only (no localStorage fallback): the retired hook's
+ * `introspect.view.v1` stickiness is retired along with it (zero-legacy) — a shared/bookmarked
+ * link is the shareable state now, not a per-browser default. `setSelection` pushes a new history
+ * entry (matches the sidebar's `writeProjects`/`writeSidebarParams` callers, e.g. Sidebar's
+ * favorites chip) rather than replacing, so checkbox changes are back/forward-navigable.
+ */
+export function useCategorySelection(): {
+  selection: ReadonlySet<CategorySlug>
+  setSelection: (selection: ReadonlySet<CategorySlug>) => void
+} {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selection = readSelection(searchParams)
+  const setSelection = useCallback(
+    (next: ReadonlySet<CategorySlug>) => {
+      setSearchParams((prev) => writeSelection(prev, next))
+    },
+    [setSearchParams],
+  )
+  return { selection, setSelection }
 }

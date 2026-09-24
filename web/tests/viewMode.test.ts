@@ -1,7 +1,23 @@
 import { act, renderHook } from '@testing-library/react'
+import { createElement, type ReactNode } from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BlockOut, MessageOut } from '../src/api/types'
-import { CHAT_KINDS, isVisibleInView, useViewMode } from '../src/lib/viewMode'
+import {
+  ALL_CATEGORIES_SET,
+  CHAT_KINDS,
+  PRESET_SETS,
+  categoryOfBlock,
+  isBlockCategorySelected,
+  isVisibleInSelection,
+  isVisibleInView,
+  presetForSelection,
+  readSelection,
+  useCategorySelection,
+  useViewMode,
+  writeSelection,
+  type CategorySlug,
+} from '../src/lib/viewMode'
 
 // The two localStorage keys in play: the new three-state key this hook owns, and the retired
 // boolean key (Task P4-4/5) it must never resurrect a reading from.
@@ -229,5 +245,358 @@ describe('useViewMode', () => {
     }).not.toThrow()
     expect(rendered?.result.current.view).toBe('chat')
     spy.mockRestore()
+  })
+})
+
+// --- category filter (Task T10) -------------------------------------------------------------
+
+function toolUseBlock(id: string, over: Partial<BlockOut> = {}): BlockOut {
+  return {
+    block_index: 0,
+    block_kind: 'tool_use',
+    text_content: null,
+    tool_name: 'Bash',
+    tool_use_id: id,
+    is_error: null,
+    ...over,
+  }
+}
+
+describe('PRESET_SETS / presetForSelection', () => {
+  // Corrected 2026-09-22 against the server's T9 equivalence suite: `select=` prunes blocks
+  // within an already-visible row (`view=` never did), so reproducing `view=chat`'s exact rows
+  // AND blocks needs `claude-thinking` in the `chat`/`chat-harness` sets too — see viewMode.ts's
+  // PRESET_SETS doc.
+  it('chat = you-chat + claude-chat + claude-thinking, chat-harness adds harness-system, all is every slug', () => {
+    expect(PRESET_SETS.chat).toEqual(new Set(['you-chat', 'claude-chat', 'claude-thinking']))
+    expect(PRESET_SETS['chat-harness']).toEqual(
+      new Set(['you-chat', 'claude-chat', 'claude-thinking', 'harness-system']),
+    )
+    expect(PRESET_SETS.all).toEqual(ALL_CATEGORIES_SET)
+  })
+
+  it('recognizes each preset back from its exact set', () => {
+    expect(presetForSelection(PRESET_SETS.chat)).toBe('chat')
+    expect(presetForSelection(PRESET_SETS['chat-harness'])).toBe('chat-harness')
+    expect(presetForSelection(PRESET_SETS.all)).toBe('all')
+  })
+
+  it('returns null for a custom combination', () => {
+    expect(presetForSelection(new Set(['you-chat', 'tool-traffic']))).toBeNull()
+  })
+})
+
+// A byte-for-byte port of the server's `_categorize` (sessions.py, Task T9) — every case here
+// mirrors one of that function's own test cases (test_api_sessions.py) so the two can never
+// drift silently.
+describe('categoryOfBlock', () => {
+  it('every block of a tool_result-AUTHORSHIP message is tool-traffic, regardless of block kind', () => {
+    const msg = message({ authorship_kind: 'tool_result' })
+    for (const block of [textBlock('x'), kindBlock('thinking'), kindBlock('image'), toolUseBlock('tu-1')]) {
+      expect(categoryOfBlock(block, msg)).toBe('tool-traffic')
+    }
+  })
+
+  it('an UNRESOLVED tool_use BLOCK is tool-traffic regardless of its message authorship (dispatchToolUseIds omitted or non-matching)', () => {
+    for (const kind of ['human_typed', 'harness_meta', 'claude', 'dispatch', 'coordinator']) {
+      // No third argument at all -- degrades to an empty resolved set.
+      expect(categoryOfBlock(toolUseBlock('tu-1'), message({ authorship_kind: kind }))).toBe(
+        'tool-traffic',
+      )
+      // A resolved set given, but this block's id isn't in it.
+      expect(
+        categoryOfBlock(toolUseBlock('tu-1'), message({ authorship_kind: kind }), new Set(['tu-other'])),
+      ).toBe('tool-traffic')
+    }
+  })
+
+  // Owner ruling 2026-09-23 (Task T12): a RESOLVED-dispatch tool_use block -- its id present in
+  // the caller-supplied `dispatchToolUseIds` set (the same set `useDispatchToolUseIds`/
+  // `SubagentChip` use to decide a chip resolves) -- is `claude-chat`, a doorway into a
+  // Claude-voiced conversation, not mechanical traffic. This wins over the family branches below
+  // regardless of the message's own authorship kind, same as the unresolved tool_use rule above.
+  it('a RESOLVED tool_use BLOCK (its id in dispatchToolUseIds) is claude-chat', () => {
+    const resolved = new Set(['tu-1'])
+    for (const kind of ['claude', 'dispatch', 'coordinator', 'human_typed', 'harness_meta']) {
+      expect(
+        categoryOfBlock(toolUseBlock('tu-1'), message({ authorship_kind: kind }), resolved),
+      ).toBe('claude-chat')
+    }
+    // A tool_result-AUTHORSHIP message still wins over even a resolved id (priority 1 first).
+    expect(
+      categoryOfBlock(toolUseBlock('tu-1'), message({ authorship_kind: 'tool_result' }), resolved),
+    ).toBe('tool-traffic')
+  })
+
+  // NOTE: unlike `tool_use`, there is no dedicated `block_kind === 'tool_result'` branch in the
+  // server's `_categorize` (or here) -- a tool_result BLOCK is only ever tool-traffic via the
+  // message-level `authorship_kind === 'tool_result'` override above (branch 1), because the
+  // classifier ALWAYS assigns that message kind whenever a record carries a tool_result block
+  // (schema/authorship.py `_classify_user`, rule 2: "tool result (block authoritative)"). A lone
+  // tool_result block on a differently-classified message is structurally unreachable in
+  // production, so (matching the server's own test suite, which doesn't test it either) it falls
+  // through to the ordinary family rules like any other non-thinking block would.
+
+  it('the you-chat family: human_typed/queued/inferred, attachment_queued_human, interrupt_marker', () => {
+    for (const kind of [
+      'human_typed',
+      'human_queued',
+      'human_inferred',
+      'attachment_queued_human',
+      'interrupt_marker',
+    ]) {
+      expect(categoryOfBlock(textBlock('hi'), message({ authorship_kind: kind }))).toBe(
+        'you-chat',
+      )
+    }
+  })
+
+  it('the claude family splits thinking from everything else', () => {
+    for (const kind of ['claude', 'dispatch', 'coordinator']) {
+      expect(categoryOfBlock(kindBlock('thinking'), message({ authorship_kind: kind }))).toBe(
+        'claude-thinking',
+      )
+      for (const blockKind of ['text', 'image', 'document', 'fallback']) {
+        expect(categoryOfBlock(kindBlock(blockKind), message({ authorship_kind: kind }))).toBe(
+          'claude-chat',
+        )
+      }
+    }
+  })
+
+  it('floors everything else (system, skill_injection, unclassified, NULL, unknown-future kinds) to harness-system', () => {
+    for (const kind of ['system', 'skill_injection', 'unclassified', 'harness_meta', 'some_future_kind', null]) {
+      expect(categoryOfBlock(textBlock('x'), message({ authorship_kind: kind }))).toBe(
+        'harness-system',
+      )
+    }
+    // A `thinking` block outside the claude family -- structurally unreachable in production
+    // (only an assistant record ever emits thinking, and that always classifies "claude"), but
+    // the server's own test proves it explicitly as a forward-tolerance case.
+    expect(categoryOfBlock(kindBlock('thinking'), message({ authorship_kind: 'harness_meta' }))).toBe(
+      'harness-system',
+    )
+  })
+
+  it('an unknown block kind is still categorized by message voice, never dropped', () => {
+    const unknown = kindBlock('mystery')
+    expect(categoryOfBlock(unknown, message({ authorship_kind: 'human_typed' }))).toBe('you-chat')
+    expect(categoryOfBlock(unknown, message({ authorship_kind: 'system' }))).toBe(
+      'harness-system',
+    )
+  })
+
+  // No legacy type-based tolerance for a NULL (pre-backfill) authorship_kind here, unlike
+  // `isVisibleInView`'s `legacyFallback` -- the server's `_categorize` floors NULL to
+  // harness-system unconditionally, never consulting `message.type`. Confirmed against the
+  // server's own exhaustiveness test (`test_categorize_harness_system_is_the_exhaustive_floor`,
+  // which includes `None` in its harness_kinds list).
+  it('a NULL authorship_kind floors to harness-system regardless of message.type', () => {
+    for (const type of ['user', 'assistant', 'attachment', 'system']) {
+      expect(categoryOfBlock(textBlock('x'), message({ type, authorship_kind: null }))).toBe(
+        'harness-system',
+      )
+    }
+  })
+})
+
+describe('isVisibleInSelection', () => {
+  it('a row is visible when at least one block is selected', () => {
+    const msg = message({ authorship_kind: 'human_typed', blocks: [textBlock('hi')] })
+    expect(isVisibleInSelection(msg, new Set(['you-chat']))).toBe(true)
+    expect(isVisibleInSelection(msg, new Set(['claude-chat']))).toBe(false)
+  })
+
+  it('a row disappears when none of its blocks are selected', () => {
+    const msg = message({
+      authorship_kind: 'claude',
+      blocks: [
+        { block_index: 0, block_kind: 'thinking', text_content: 'mulling', tool_name: null, tool_use_id: null, is_error: null },
+      ],
+    })
+    expect(isVisibleInSelection(msg, new Set(['claude-chat']))).toBe(false)
+    expect(isVisibleInSelection(msg, new Set(['claude-thinking']))).toBe(true)
+  })
+
+  // Server-confirmed nuance (test_api_sessions.py's discovered-bug writeup, nuance 4): an EMPTY
+  // text block never counts toward ROW VISIBILITY, even though `categoryOfBlock` still slots it
+  // into its message's family -- mirrors `_block_matches_categories`' extra guard, itself
+  // mirroring `isVisibleInView`'s `_prose_visible()`. Without this, a resolved-dispatch-shaped
+  // row (tool_use + an empty companion text block, the CLI's real production shape) would read
+  // as "visible" under a selection that excludes tool-traffic purely because its EMPTY text
+  // block's category (claude-chat) happens to be selected -- an empty ghost row with nothing
+  // actually rendered in it (Block()'s own text case already refuses to render empty text, and
+  // the tool_use block is separately gated out), instead of correctly disappearing entirely.
+  it('an empty text block never counts toward row visibility on its own, even if its category is selected', () => {
+    const emptyTextOnly = message({
+      authorship_kind: 'claude',
+      blocks: [textBlock('')],
+    })
+    expect(isVisibleInSelection(emptyTextOnly, new Set(['claude-chat']))).toBe(false)
+
+    const nullTextOnly = message({
+      authorship_kind: 'claude',
+      blocks: [textBlock(null)],
+    })
+    expect(isVisibleInSelection(nullTextOnly, new Set(['claude-chat']))).toBe(false)
+
+    // The real production shape: a resolved-dispatch tool_use plus an empty companion text
+    // block -- invisible under a selection that omits tool-traffic, since NEITHER block counts.
+    const dispatchShaped = message({
+      authorship_kind: 'dispatch',
+      blocks: [toolUseBlock('tu-1'), textBlock('')],
+    })
+    expect(isVisibleInSelection(dispatchShaped, PRESET_SETS.chat)).toBe(false)
+
+    // A NON-empty text block still counts as always.
+    const withRealText = message({
+      authorship_kind: 'claude',
+      blocks: [textBlock('real prose')],
+    })
+    expect(isVisibleInSelection(withRealText, new Set(['claude-chat']))).toBe(true)
+  })
+
+  // Server-confirmed divergence from the retired `all` view (test_select_never_shows_
+  // blockless_rows_unlike_view_all): a blockless row is invisible under EVERY selection,
+  // including all-five -- the disappear rule is vacuously true when there are no blocks to
+  // select from.
+  it('a zero-block message is always invisible, even under the all-five selection', () => {
+    const msg = message({ type: 'attachment', authorship_kind: null, blocks: [] })
+    expect(isVisibleInSelection(msg, PRESET_SETS.chat)).toBe(false)
+    expect(isVisibleInSelection(msg, PRESET_SETS['chat-harness'])).toBe(false)
+    expect(isVisibleInSelection(msg, ALL_CATEGORIES_SET)).toBe(false)
+  })
+
+  // Owner ruling 2026-09-23 (Task T12; server test flipped to
+  // test_select_reproduces_resolved_dispatch_chip_visibility_as_claude_chat): a RESOLVED
+  // dispatch row with no other content is now VISIBLE under the `chat` preset -- its tool_use
+  // block is claude-chat, which `chat` includes -- and the ruling's flip side: it's invisible
+  // once claude-chat is unselected and only tool-traffic is selected (its block no longer
+  // qualifies there), while an ORDINARY unresolved tool_use row is unaffected either way.
+  it('a resolved dispatch row with no other content is visible under chat, invisible under tool-traffic alone', () => {
+    const msg = message({ authorship_kind: 'dispatch', blocks: [toolUseBlock('tu-1')] })
+    const dispatchIds = new Set(['tu-1'])
+    expect(isVisibleInSelection(msg, PRESET_SETS.chat, dispatchIds)).toBe(true)
+    expect(isVisibleInSelection(msg, new Set(['tool-traffic']), dispatchIds)).toBe(false)
+    // Without the resolved-id context (bare unit render outside a TranscriptsProvider), it
+    // degrades to "unresolved" -- invisible under chat, visible once tool-traffic is selected --
+    // exactly the PRE-ruling behavior, so a caller that can't reach the context never breaks.
+    expect(isVisibleInSelection(msg, PRESET_SETS.chat)).toBe(false)
+    expect(isVisibleInSelection(msg, new Set(['tool-traffic']))).toBe(true)
+  })
+
+  it('an unresolved tool_use row is unaffected by the ruling: invisible under chat, visible under tool-traffic', () => {
+    const msg = message({ authorship_kind: 'dispatch', blocks: [toolUseBlock('tu-2')] })
+    const dispatchIds = new Set(['tu-other'])
+    expect(isVisibleInSelection(msg, PRESET_SETS.chat, dispatchIds)).toBe(false)
+    expect(isVisibleInSelection(msg, new Set(['tool-traffic']), dispatchIds)).toBe(true)
+  })
+})
+
+describe('isBlockCategorySelected', () => {
+  it('gates a single block on whether its category is in the selection', () => {
+    const msg = message({ authorship_kind: 'claude' })
+    expect(isBlockCategorySelected(textBlock('hi'), msg, new Set(['claude-chat']))).toBe(true)
+    expect(isBlockCategorySelected(textBlock('hi'), msg, new Set(['you-chat']))).toBe(false)
+  })
+
+  it('threads dispatchToolUseIds through to categoryOfBlock for a resolved tool_use block', () => {
+    const msg = message({ authorship_kind: 'dispatch' })
+    const resolved = new Set(['tu-1'])
+    expect(
+      isBlockCategorySelected(toolUseBlock('tu-1'), msg, new Set(['claude-chat']), resolved),
+    ).toBe(true)
+    expect(
+      isBlockCategorySelected(toolUseBlock('tu-1'), msg, new Set(['tool-traffic']), resolved),
+    ).toBe(false)
+    // Omitted -> unresolved -> tool-traffic.
+    expect(isBlockCategorySelected(toolUseBlock('tu-1'), msg, new Set(['tool-traffic']))).toBe(
+      true,
+    )
+  })
+})
+
+describe('readSelection', () => {
+  it('defaults to the chat preset when neither param is present', () => {
+    expect(readSelection(new URLSearchParams())).toEqual(PRESET_SETS.chat)
+  })
+
+  it('reads a preset from ?view=', () => {
+    expect(readSelection(new URLSearchParams('view=chat-harness'))).toEqual(
+      PRESET_SETS['chat-harness'],
+    )
+    expect(readSelection(new URLSearchParams('view=all'))).toEqual(ALL_CATEGORIES_SET)
+  })
+
+  it('falls back to the chat default on an unrecognized ?view=', () => {
+    expect(readSelection(new URLSearchParams('view=bogus'))).toEqual(PRESET_SETS.chat)
+  })
+
+  it('reads a custom combination from ?select=', () => {
+    const params = new URLSearchParams('select=you-chat,claude-thinking')
+    expect(readSelection(params)).toEqual(new Set(['you-chat', 'claude-thinking']))
+  })
+
+  it('select wins when both ?select= and ?view= are present', () => {
+    const params = new URLSearchParams('view=all&select=you-chat')
+    expect(readSelection(params)).toEqual(new Set(['you-chat']))
+  })
+
+  it('drops unrecognized slugs out of ?select= but keeps the recognized ones', () => {
+    const params = new URLSearchParams('select=you-chat,not-a-real-slug')
+    expect(readSelection(params)).toEqual(new Set(['you-chat']))
+  })
+
+  it('falls back to the chat default when ?select= parses to nothing usable', () => {
+    expect(readSelection(new URLSearchParams('select='))).toEqual(PRESET_SETS.chat)
+    expect(readSelection(new URLSearchParams('select=not-a-real-slug'))).toEqual(PRESET_SETS.chat)
+  })
+})
+
+describe('writeSelection', () => {
+  it('writes the pretty ?view= for a preset-equivalent selection and clears ?select=', () => {
+    const prev = new URLSearchParams('select=you-chat')
+    const next = writeSelection(prev, PRESET_SETS['chat-harness'])
+    expect(next.get('view')).toBe('chat-harness')
+    expect(next.has('select')).toBe(false)
+  })
+
+  it('writes ?select= for a custom combination and clears ?view=', () => {
+    const prev = new URLSearchParams('view=chat')
+    const next = writeSelection(prev, new Set<CategorySlug>(['you-chat', 'tool-traffic']))
+    expect(new Set(next.get('select')?.split(','))).toEqual(new Set(['you-chat', 'tool-traffic']))
+    expect(next.has('view')).toBe(false)
+  })
+
+  it('preserves unrelated params and does not mutate the input', () => {
+    const prev = new URLSearchParams('q=other')
+    const next = writeSelection(prev, PRESET_SETS.all)
+    expect(next.get('q')).toBe('other')
+    expect(prev.has('view')).toBe(false)
+  })
+})
+
+describe('useCategorySelection', () => {
+  function wrapper(initialPath: string) {
+    return ({ children }: { children: ReactNode }) =>
+      createElement(MemoryRouter, { initialEntries: [initialPath] }, children)
+  }
+
+  it('defaults to the chat preset with no URL params', () => {
+    const { result } = renderHook(() => useCategorySelection(), { wrapper: wrapper('/s/x') })
+    expect(result.current.selection).toEqual(PRESET_SETS.chat)
+  })
+
+  it('seeds from ?view= / ?select= already in the URL', () => {
+    const { result } = renderHook(() => useCategorySelection(), {
+      wrapper: wrapper('/s/x?view=all'),
+    })
+    expect(result.current.selection).toEqual(ALL_CATEGORIES_SET)
+  })
+
+  it('setSelection updates the read-back selection', () => {
+    const { result } = renderHook(() => useCategorySelection(), { wrapper: wrapper('/s/x') })
+    act(() => result.current.setSelection(new Set(['you-chat'])))
+    expect(result.current.selection).toEqual(new Set(['you-chat']))
   })
 })

@@ -107,8 +107,12 @@ function makeMessage(uuid: string): MessageOut {
         is_error: null,
       },
     ],
-    authorship_kind: null,
-    authorship_basis: null,
+    // Task T10: a realistic (classified) authorship_kind, not null -- see the identical note in
+    // SessionPage.test.tsx's makeMessage. The new select= default (`chat` preset) has no legacy
+    // NULL-kind tolerance, so a null-kind fixture would silently vanish under this file's real
+    // default selection.
+    authorship_kind: 'claude',
+    authorship_basis: 'verified — record type assistant',
     authorship_detail: null,
   }
 }
@@ -263,10 +267,12 @@ describe('lazy fetch contract', () => {
     // makeDispatchMessage()'s tool_use_id ('toolu_1') resolves to the subagent transcript's
     // parent_tool_use_id, so this row is a RESOLVED dispatch -- it renders (chip included) in
     // every view, `chat` included (final review C1), not just `all` as an older reading of
-    // spec §5 had it. Still seed the sticky view to 'all': this test isolates fetch laziness
-    // (not the view filter) and pins the later fetchMessages(42, {..., view: 'all'}) assertion
-    // to a known view, independent of useViewMode's own default ('chat').
-    window.localStorage.setItem('introspect.view.v1', 'all')
+    // spec §5 had it. Still seed the URL to 'all' (Task T10: category selection is URL-persisted,
+    // not localStorage-sticky): this test isolates fetch laziness (not the view filter) and pins
+    // the later fetchMessages(42, {..., view: 'all'}) assertion to a known view, independent of
+    // useCategorySelection's own default (the `chat` preset). SubagentChip's drill-in link now
+    // carries the current selection through (same as `?projects=`), so `all` survives the
+    // navigation onto the subagent route unaided.
     fetchSession.mockResolvedValue(makeSession())
     fetchMessages.mockImplementation((transcriptId: number) =>
       Promise.resolve(
@@ -279,7 +285,7 @@ describe('lazy fetch contract', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/s/uuid-1']}>
+        <MemoryRouter initialEntries={['/s/uuid-1?view=all']}>
           <Routes>
             <Route path="/s/:uuid" element={<SessionPage />} />
             <Route path="/s/:uuid/a/:agentHex" element={<SubagentPage />} />
@@ -350,19 +356,22 @@ describe('deep link', () => {
   })
 })
 
-// --- view toggle parity (ledger #6) -------------------------------------------------------------
-// SubagentPage owns its own useViewMode (one owner per reader page) exactly like SessionPage;
-// switching views from its header must re-seed the subagent transcript body.
+// --- category filter parity (ledger #6, Task T10) -----------------------------------------------
+// SubagentPage owns its own useCategorySelection (one owner per reader page) exactly like
+// SessionPage; switching the selection from its header must re-seed the subagent transcript body.
+// The "all" preset chip is still a <button aria-pressed> named "all" (CategoryFilter's chip
+// mirrors the retired ViewToggle's segment exactly for this case), so this test's assertions carry
+// over unchanged from the retired toggle.
 
-describe('SubagentPage view toggle parity', () => {
-  it('renders the toggle in the header and threads the current view into the transcript fetch', async () => {
+describe('SubagentPage category filter parity', () => {
+  it('renders the filter in the header and threads the current selection into the transcript fetch', async () => {
     fetchSession.mockResolvedValue(makeSession())
     fetchMessages.mockImplementation((_id: number, opts?: { view?: string }) =>
       Promise.resolve(pageOf(0, [opts?.view === 'all' ? 'sub-full' : 'sub-filtered'], 1)),
     )
     renderAt('/s/uuid-1/a/deadbeef')
 
-    // Body seeds filtered first — useViewMode's default is 'chat'.
+    // Body seeds filtered first — useCategorySelection's default is the `chat` preset.
     expect(await screen.findByText('text for sub-filtered')).toBeDefined()
     const allSegment = screen.getByRole('button', { name: 'all' })
     expect(allSegment.getAttribute('aria-pressed')).toBe('false')

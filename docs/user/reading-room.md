@@ -110,7 +110,7 @@ the line you get back says so. The same command works from any terminal:
 
 ## Session header
 
-The reader's header holds the conversation title, a message count, and an **`actions ▾`** dropdown menu. The three-way **view** control sits beside the menu, outside it — see "View modes" below.
+The reader's header holds the conversation title, a message count, and an **`actions ▾`** dropdown menu. The **category filter** (five checkboxes with preset chips) sits beside the menu, outside it — see "Choosing what you see" below.
 
 The **actions menu** contains three controls, each with status feedback:
 
@@ -118,38 +118,36 @@ The **actions menu** contains three controls, each with status feedback:
 - **`↓ .jsonl`** — Download the byte-identical transcript as a `.jsonl` file (works with right-click and save-as).
 - **Archive** — Removes the session from all read paths (sidebar, search, deep links) and drops you back at the home view. There's no confirmation dialog and no separate "archived" list; archived sessions are only recoverable via CLI with `introspect unarchive <uuid>` (you need to know the uuid — it's never listed anywhere).
 
-## View modes
+## Choosing what you see
 
-The reader's header has a three-way **view** control — **`chat`** · **`chat+harness`** · **`all`** —
-that decides how much of the transcript you see, from pure conversation up to everything the archive
-actually stored:
+The reader's header has a **category filter**: five checkboxes deciding how much of the transcript
+you see, plus three preset chips — **`chat`** · **`chat+harness`** · **`all`** — that set the boxes
+with one click. The five categories partition everything the archive stored — every block of every
+message belongs to exactly one, so no combination can silently lose a record:
 
-- **`chat`** (the default): the back-and-forth itself — what you typed or queued, Claude's replies
-  (its prose and thinking), and the moments that belong to the story even though the words are
-  harness-delivered: interruption markers and queued/pasted prompts. It also keeps the doorway into
-  subagent work — a dispatched subagent's opening prompt and any mid-run dispatcher chatter render as
-  Claude-voiced turns, and the chip linking into that subagent's own transcript stays visible even
-  though ordinary tool calls don't. Everything else — tool calls, tool results, skill/system
-  injections, task notifications, command furniture — is hidden.
-- **`chat+harness`**: adds all of that back, honestly labeled — skill expansions, task notifications,
-  command output, reminders, every other piece of harness prose the archive holds — except tool
-  **results**, which stay hidden.
-- **`all`**: everything, with nothing hidden.
+- **You — chat**: what you typed or queued (including queued prompts the harness delivered for you)
+  and interruption markers — the moments that are yours even when the words arrive harness-delivered.
+- **Claude — chat**: Claude's prose — replies, dispatcher chatter — and the chips that door into a
+  dispatched subagent's own transcript. A resolved dispatch reads as conversation, not machinery,
+  so the doorway into subagent work lives here and stays visible in the default view.
+- **Claude — thinking**: thinking blocks. Preserved thinking renders its words in the quiet
+  dragonfly register (an all-thinking turn reads **CLAUDE (THINKING)**); unpersisted thinking keeps
+  the honest marker (◌).
+- **Tool traffic**: ordinary tool calls and their results, deliberately one box — the exchange is
+  the unit worth seeing together.
+- **Harness/system**: skill expansions, task notifications, command output, reminders, and every
+  other piece of harness prose the archive holds, honestly labeled.
 
-In `chat` and `chat+harness`, a message row still **disappears** entirely if every one of its blocks
-renders nothing there — rows containing only tool calls, thinking-only content, or empty text. `all`
-always shows every row and every block, including thinking: when the CLI preserved a thinking
-block's actual text (newer CLIs sometimes do), the words themselves render in a quiet
-dragonfly-ruled register — an all-thinking turn is labeled **CLAUDE (THINKING)** — and when it
-didn't, the honest marker (◌) stands in as before. Preserved thinking is also searchable in both
-search scopes.
+Presets: **`chat`** (the default) is You — chat + Claude — chat + Claude — thinking. **`chat+harness`**
+adds Harness/system. **`all`** checks every box. A message row disappears entirely when none of its
+blocks is selected; at least one box is always checked. One honest nuance: a record with no content
+blocks at all (bare system furniture) has nothing to select, so it only appears via the `all`
+preset — which is why "show all message types" in the deep-link recovery flow switches to `all` and
+is the one state guaranteed to contain every record.
 
-If a shared deep link targets a row that's been filtered out, the "view from the beginning" recovery
-also offers a "show all message types" option, which switches to `all` — the only view guaranteed to
-contain every record — and brings the trimmed row back into view.
-
-The view you pick is **sticky across sessions** — it's remembered in your browser's local storage, not
-in the URL — so it stays put until you change it.
+Your choice rides the URL — presets as `?view=`, custom combinations as `?select=` — so a link
+carries its filter with it. (The old local-storage stickiness is retired; the URL is the state.)
+The raw-record inspector keeps its own independent in-modal filter.
 
 ## Message labels
 
@@ -203,6 +201,12 @@ There are two search *scopes*:
   archived conversation, grouped by session.
 - **Session-scoped search** — a box in the reader header that searches within the conversation
   you're reading, as a flat, rank-ordered hit list.
+
+The in-conversation search also offers **"search selected types only"**: when toggled on, the
+session-scoped search is restricted to the categories currently checked in the reader's filter —
+find a phrase only in Claude's thinking, or only in your own words. (Tool traffic never appears in
+text search regardless: tool payloads aren't indexed.) The global search page doesn't carry the
+toggle — it always searches everything.
 
 In both, **Enter commits the query** (runs or updates the search) — it does not jump you into a
 result. You open a result by **clicking** it: a group header opens the session, and a hit snippet

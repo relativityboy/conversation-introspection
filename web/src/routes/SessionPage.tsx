@@ -9,11 +9,11 @@ import {
   ConversationSearchResults,
 } from '../components/search/ConversationSearch'
 import { ActionsMenu } from '../components/ActionsMenu'
+import { CategoryFilter } from '../components/reader/CategoryFilter'
 import { ConversationView } from '../components/reader/ConversationView'
 import { TranscriptsProvider } from '../components/reader/transcripts-context'
-import { ViewToggle } from '../components/reader/ViewToggle'
 import { TitleEditor } from '../components/TitleEditor'
-import { useViewMode } from '../lib/viewMode'
+import { useCategorySelection } from '../lib/viewMode'
 import { readProjects, writeProjects } from '../lib/urlState'
 
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', fontSize: 13, padding: '18px 24px' }
@@ -85,9 +85,10 @@ export function SessionPage() {
     readProjects(searchParams),
   ).toString()
   const query = useSession(uuid)
-  // The ONE owner of view-mode state for this reader page (plan critique F4): the header toggle
-  // and the ConversationView body both read this same {view, setView}.
-  const { view, setView } = useViewMode()
+  // The ONE owner of category-selection state for this reader page (plan critique F4, Task T10):
+  // the header CategoryFilter and the ConversationView body both read this same
+  // {selection, setSelection}.
+  const { selection, setSelection } = useCategorySelection()
 
   if (query.isPending) return <p style={MIST_TEXT}>…</p>
 
@@ -122,15 +123,17 @@ export function SessionPage() {
         <ConversationView
           transcriptId={main.id}
           initialAroundUuid={msgUuid}
-          view={view}
-          setView={setView}
+          selection={selection}
+          setSelection={setSelection}
         />
       )
     // trim(): useSearch gates on q.trim(), so a whitespace-only ?q= (e.g. ?q=%20) would mount
     // the results panel with a query that never fires — an eternal pending "…". Fall through to
     // the conversation instead.
     if (q.trim()) return <ConversationSearchResults sessionUuid={session.session_uuid} q={q} />
-    return <ConversationView transcriptId={main.id} view={view} setView={setView} />
+    return (
+      <ConversationView transcriptId={main.id} selection={selection} setSelection={setSelection} />
+    )
   }
 
   // Publish the transcript inventory (and the session uuid the subagent links need) for the
@@ -169,7 +172,7 @@ export function SessionPage() {
               archive all live inside this actions ▾ panel now (spec §3.1) — see ActionsMenu for
               the per-item detail. */}
             <ActionsMenu session={session} backSearch={backToArchiveSearch} />
-            <ViewToggle view={view} setView={setView} />
+            <CategoryFilter selection={selection} setSelection={setSelection} />
           </div>
           <div style={{ margin: '14px 0 6px' }}>
             <HorizonBand start={session.started_at} end={session.last_activity_at} variant="full" />

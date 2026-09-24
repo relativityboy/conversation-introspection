@@ -134,6 +134,10 @@ export interface MessagesOptions {
   limit?: number
   around?: string
   view?: ViewMode
+  /** Task T10: a CSV of category slugs, precedence over `view` server-side. Reader call sites
+   * (ConversationView's `withSelection`) send exactly one of `view`/`select`, never both — see
+   * urlState.ts's `writeSelection` for the same preset-vs-custom rule applied to the URL. */
+  select?: string
 }
 
 export function fetchMessages(
@@ -147,8 +151,9 @@ export function fetchMessages(
     // Sent verbatim when present -- unlike the retired boolean flag this replaces, `view`'s three
     // states have no "absent means off" reading, and the server's own default ('all') differs
     // from the client's ('chat'), so every reader call site passes it explicitly (see
-    // ConversationView's `withView`).
+    // ConversationView's `withSelection`).
     view: opts.view,
+    select: opts.select,
   })
   return apiFetch<MessageList>(`/transcripts/${transcriptId}/messages${qs}`)
 }
@@ -195,6 +200,10 @@ export function fetchSearch(
   // Global-scope callers only -- the server explicitly IGNORES `projects=` under
   // `scope=session` (spec critique #7), so session-scope callers must not pass this.
   projects?: string[],
+  // Task T10, session-scope callers only ("restrict search to selection" toggle): a CSV of
+  // category slugs. The server 422s `select=` under `scope=global` — never pass this from a
+  // global-search code path (SearchPage.tsx/GlobalSearchTab never do).
+  select?: string,
 ): Promise<GlobalSearchResult | SessionSearchResult> {
   const qs = buildQuery({
     q,
@@ -207,6 +216,7 @@ export function fetchSearch(
     sources: 'all',
     limit,
     offset,
+    select,
   })
   return apiFetch<GlobalSearchResult | SessionSearchResult>(`/search${qs}`)
 }

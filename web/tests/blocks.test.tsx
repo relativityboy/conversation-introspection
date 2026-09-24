@@ -215,11 +215,15 @@ describe('SubagentChip', () => {
     )
   }
 
+  // Task T10: the drill-in also carries the reader's current category selection (readSelection
+  // defaults to the `chat` preset when the URL has neither `?select=` nor `?view=`), so a bare
+  // '/' entry now writes the pretty `?view=chat` rather than no param at all — writeSelection
+  // never omits it (see viewMode.ts).
   it('renders a subagent pill and links to the transcript when matched', () => {
     renderChip(toolUse({ tool_use_id: 'tu-1' }), [transcript()])
     expect(screen.getByText('⑂ subagent · Explore')).not.toBeNull()
     const link = screen.getByRole('link', { name: /view transcript/ })
-    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3')
+    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?view=chat')
   })
 
   // Task 9: the "view transcript →" drill-in is a deep link — it must carry the current project
@@ -229,7 +233,31 @@ describe('SubagentChip', () => {
     const link = screen.getByRole('link', { name: /view transcript/ })
     // %2C: URLSearchParams.toString() percent-encodes commas on serialization (same as every
     // other writeProjects-built link in this app — see Sidebar.test.tsx for the full note).
-    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?projects=alpha%2Cmid')
+    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?projects=alpha%2Cmid&view=chat')
+  })
+
+  // Task T10: the selection half of the same carry-through — a custom (non-preset) combination
+  // writes `?select=` instead, and a preset writes the pretty `?view=` even when it's the only
+  // param present.
+  it('carries the current category selection onto the "view transcript" link', () => {
+    renderChip(toolUse({ tool_use_id: 'tu-1' }), [transcript()], '/s/sess-uuid?view=all')
+    const link = screen.getByRole('link', { name: /view transcript/ })
+    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?view=all')
+  })
+
+  it('writes ?select= for a custom (non-preset) category combination', () => {
+    renderChip(
+      toolUse({ tool_use_id: 'tu-1' }),
+      [transcript()],
+      '/s/sess-uuid?select=you-chat,tool-traffic',
+    )
+    const link = screen.getByRole('link', { name: /view transcript/ })
+    const href = link.getAttribute('href') ?? ''
+    const [path, qs] = href.split('?')
+    expect(path).toBe('/s/sess-uuid/a/a1b2c3')
+    expect(new Set(new URLSearchParams(qs).get('select')?.split(','))).toEqual(
+      new Set(['you-chat', 'tool-traffic']),
+    )
   })
 
   it('truncates a long agent description to 60 chars', () => {

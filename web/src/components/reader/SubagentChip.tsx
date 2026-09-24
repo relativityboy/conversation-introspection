@@ -1,5 +1,6 @@
 import { Link, useSearchParams } from 'react-router-dom'
 import type { BlockOut } from '../../api/types'
+import { readSelection, writeSelection } from '../../lib/viewMode'
 import { readProjects, writeProjects } from '../../lib/urlState'
 import { ToolBlock } from './ToolBlock'
 import { useTranscripts } from './transcripts-context'
@@ -29,6 +30,12 @@ export function SubagentChip({
   // not transcript state, so it doesn't belong in that context.
   const [searchParams] = useSearchParams()
   const projects = readProjects(searchParams)
+  // Task T10: the drill-in carries the reader's current category selection too, the same way it
+  // already carries `projects=` — SubagentPage owns its OWN independent useCategorySelection
+  // instance (one per reader page, plan critique F4), so without this the subagent transcript
+  // would silently reset to the `chat` default on every drill-in regardless of what the parent
+  // conversation had selected.
+  const selection = readSelection(searchParams)
 
   const transcript = block.tool_use_id
     ? transcripts.find((t) => t.parent_tool_use_id === block.tool_use_id)
@@ -74,7 +81,10 @@ export function SubagentChip({
         <Link
           to={{
             pathname: `/s/${sessionUuid}/a/${transcript.agent_hex_id}`,
-            search: writeProjects(new URLSearchParams(), projects).toString(),
+            search: writeSelection(
+              writeProjects(new URLSearchParams(), projects),
+              selection,
+            ).toString(),
           }}
           style={{ color: 'var(--dragonfly)', textDecoration: 'none' }}
         >

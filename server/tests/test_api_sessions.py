@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from introspect.api import create_app
+from introspect.api.routes.sessions import CATEGORY_SLUGS, _categorize
 from introspect.ingest.capture import capture_file
 from introspect.ingest.discovery import discover
 from introspect.ingest.interpret import classify_pending
@@ -1313,3 +1314,604 @@ def test_view_chat_around_resolved_dispatch_row_succeeds(
     )
     assert r.status_code == 200
     assert resolved_uuid in _message_uuids(r)
+
+
+# --- Transcript messages -- select= category filtering (Task T9) -------------------------
+#
+# Generalizes the fixed `view=` presets to arbitrary category selection. Every (message,
+# block) maps to EXACTLY ONE of five categories (`_categorize`, sessions.py): you-chat,
+# claude-chat, claude-thinking, tool-traffic, harness-system.
+#
+# `_categorize`'s exhaustiveness is proven directly (pure function, no HTTP) below. The
+# endpoint-level equivalence tests use a "clean" fixture where every message's blocks belong to
+# a SINGLE category group (no message mixes e.g. a `tool_use` block with narration text) --
+# `view=` never filters blocks WITHIN an already-visible row (only `select=` does), so a row
+# that straddles categories is only ROW-equivalent, not BLOCK-equivalent, between the two
+# mechanisms; keeping the equivalence fixture single-category-per-message sidesteps that
+# without hiding it -- the straddling cases (a claude turn combining `thinking` + `text`, a
+# resolved dispatch chip, a blockless `system` row) are each exercised by their own dedicated
+# test below instead, and are written up in
+# claude_notes/2026-09-22-sdd-checkboxes-writeups.md.
+
+
+# All 20 authorship kinds `schema/authorship.py::classify` can produce (read off every
+# `Authorship("...", ...)` literal in that module) -- this list is the exhaustiveness oracle,
+# not a subset.
+_ALL_AUTHORSHIP_KINDS = [
+    "compact_summary", "tool_result", "skill_injection", "tool_injection", "task_notification",
+    "coordinator", "human_typed", "human_queued", "sdk_automation", "command_expansion",
+    "command_output", "harness_meta", "interrupt_marker", "dispatch", "unclassified",
+    "human_inferred", "claude", "system", "attachment_queued_human", "attachment_furniture",
+]
+_ALL_BLOCK_KINDS = ["text", "thinking", "tool_use", "tool_result", "image", "document", "fallback"]
+
+
+def test_categorize_is_exhaustive_and_total() -> None:
+    """`_categorize` must return one of the five frozen slugs for every (authorship_kind,
+    block_kind) pair, including None authorship (the pre-reparse NULL window) and a made-up
+    forward-drift block kind -- never raise, never return something outside `CATEGORY_SLUGS`."""
+    for authorship_kind in [*_ALL_AUTHORSHIP_KINDS, None, "some-future-unclassified-kind"]:
+        for block_kind in [*_ALL_BLOCK_KINDS, "some-future-block-kind"]:
+            assert _categorize(authorship_kind, block_kind) in CATEGORY_SLUGS
+
+
+def test_categorize_tool_result_message_wins_regardless_of_block_kind() -> None:
+    # Spec: "AND everything of tool_result-kind messages" -- the message-level override beats
+    # whatever the block itself looks like.
+    for block_kind in _ALL_BLOCK_KINDS:
+        assert _categorize("tool_result", block_kind) == "tool-traffic"
+
+
+def test_categorize_tool_use_block_wins_over_family() -> None:
+    # Spec: "tool_use blocks (wherever they appear)" -- even on a you-chat/harness kind (never
+    # happens in practice, since only AssistantRecord ever emits tool_use, but the priority
+    # must still hold structurally). No `tool_use_id`/resolved-set given -> always unresolved.
+    for authorship_kind in ("human_typed", "harness_meta", "claude", "dispatch", "coordinator"):
+        assert _categorize(authorship_kind, "tool_use") == "tool-traffic"
+
+
+def test_categorize_resolved_dispatch_tool_use_is_claude_chat() -> None:
+    """Owner ruling 2026-09-23 (Task T12): a resolved-dispatch `tool_use` block -- its
+    `tool_use_id` present in the caller-supplied resolved-dispatch set -- is `claude-chat`, a
+    doorway into a Claude-voiced conversation, not mechanical traffic. An unresolved `tool_use`
+    (id absent from the set, or no id at all) stays `tool-traffic`, unconditionally, even on a
+    you-chat/harness authorship kind (structurally unreachable today, but the priority holds)."""
+    resolved = frozenset({"toolu_resolved"})
+    for authorship_kind in ("claude", "dispatch", "coordinator", "human_typed", "harness_meta"):
+        assert (
+            _categorize(authorship_kind, "tool_use", "toolu_resolved", resolved) == "claude-chat"
+        )
+        assert _categorize(authorship_kind, "tool_use", "toolu_other", resolved) == "tool-traffic"
+        assert _categorize(authorship_kind, "tool_use", None, resolved) == "tool-traffic"
+    # A `tool_result`-authorship message still wins over even a resolved id (priority 1 first).
+    assert _categorize("tool_result", "tool_use", "toolu_resolved", resolved) == "tool-traffic"
+
+
+def test_categorize_you_chat_kinds() -> None:
+    for kind in (
+        "human_typed", "human_queued", "human_inferred", "attachment_queued_human",
+        "interrupt_marker",
+    ):
+        assert _categorize(kind, "text") == "you-chat"
+
+
+def test_categorize_claude_family_splits_thinking_from_everything_else() -> None:
+    for kind in ("claude", "dispatch", "coordinator"):
+        assert _categorize(kind, "thinking") == "claude-thinking"
+        for block_kind in ("text", "image", "document", "fallback"):
+            assert _categorize(kind, block_kind) == "claude-chat"
+
+
+def test_categorize_harness_system_is_the_exhaustive_floor() -> None:
+    harness_kinds = (
+        "compact_summary", "skill_injection", "tool_injection", "task_notification",
+        "sdk_automation", "command_expansion", "command_output", "harness_meta",
+        "unclassified", "system", "attachment_furniture", None, "some-future-kind",
+    )
+    for kind in harness_kinds:
+        assert _categorize(kind, "text") == "harness-system"
+    # A `thinking` block outside the claude family -- structurally unreachable today (only
+    # AssistantRecord emits thinking, and AssistantRecord always classifies "claude"), but the
+    # contract calls it out explicitly ("thinking outside claude-family if that exists") as a
+    # forward-tolerance case, so it is proven here rather than left implicit.
+    assert _categorize("harness_meta", "thinking") == "harness-system"
+
+
+# --- select= equivalence fixture -----------------------------------------------------------
+
+_SELECT_SESSION_UUID = "12121212-1212-4212-8212-121212121212"
+
+
+def _build_select_equivalence_tree(db: Session, tmp_path: Path) -> tuple[int, dict[str, str]]:
+    """One message per category, each with blocks entirely inside a SINGLE category (see the
+    section docstring above). Returns ``(transcript_id, {label: record_uuid})``."""
+    root = tmp_path / "select_tree"
+    proj = root / "-Users-x-select"
+    proj.mkdir(parents=True)
+    lines = [
+        make_user_line(
+            text="you-chat: a synthetic human message",
+            promptSource="typed",
+            origin={"kind": "human"},
+            uuid="u-you-chat",
+            sessionId=_SELECT_SESSION_UUID,
+        ),
+        make_assistant_line(
+            text="claude-chat: a synthetic claude reply, no thinking, no tool use",
+            uuid="u-claude-chat",
+            sessionId=_SELECT_SESSION_UUID,
+        ),
+        make_assistant_line(
+            text="claude-chat half of a thinking+text turn",
+            with_thinking=True,
+            thinking_text="claude-thinking half of a thinking+text turn",
+            uuid="u-claude-thinking",
+            sessionId=_SELECT_SESSION_UUID,
+        ),
+        make_tool_result_user_line(
+            tool_use_id="toolu_orphan_select_test",
+            result_text="tool-traffic: a synthetic tool result",
+            uuid="u-tool-result",
+            sessionId=_SELECT_SESSION_UUID,
+        ),
+        make_user_line(
+            content=[
+                {
+                    "type": "text",
+                    "text": "<system-reminder>harness-system: synthetic harness note</system-reminder>",
+                }
+            ],
+            isMeta=True,
+            uuid="u-harness",
+            sessionId=_SELECT_SESSION_UUID,
+        ),
+        make_user_line(
+            text="[Request interrupted by user]",
+            uuid="u-interrupt",
+            sessionId=_SELECT_SESSION_UUID,
+        ),
+    ]
+    (proj / f"{_SELECT_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
+    _capture(db, root)
+    classify_pending(db)
+    db.commit()
+
+    tid = _main_transcript_id(db, _SELECT_SESSION_UUID)
+    return tid, {
+        "you_chat": "u-you-chat",
+        "claude_chat": "u-claude-chat",
+        "claude_thinking": "u-claude-thinking",
+        "tool_result": "u-tool-result",
+        "harness": "u-harness",
+        "interrupt": "u-interrupt",
+    }
+
+
+def _item_by_uuid(resp, uuid: str) -> dict:
+    items = {m["record_uuid"]: m for m in resp.json()["items"]}
+    assert uuid in items, f"{uuid} missing from response"
+    return items[uuid]
+
+
+def _block_kinds(item: dict) -> list[str]:
+    return [b["block_kind"] for b in item["blocks"]]
+
+
+def test_select_you_chat_claude_chat_claude_thinking_equals_view_chat(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """The discovered nuance (documented in the write-up): `view=chat` never filters BLOCKS
+    within an already-visible row, so a claude turn combining `thinking` + `text` shows BOTH
+    blocks under `view=chat` today. The select-set that reproduces `view=chat` exactly (same
+    rows, same blocks) is therefore `{you-chat, claude-chat, claude-thinking}`, not the
+    2-slug set -- EXISTING VIEW BEHAVIOR WINS per the task brief's own NOTE."""
+    tid, u = _build_select_equivalence_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    view_resp = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "chat"})
+    select_resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking"},
+    )
+    assert view_resp.status_code == select_resp.status_code == 200
+
+    view_uuids = set(_message_uuids(view_resp))
+    select_uuids = set(_message_uuids(select_resp))
+    assert view_uuids == select_uuids == {
+        u["you_chat"], u["claude_chat"], u["claude_thinking"], u["interrupt"],
+    }
+    assert view_resp.json()["total"] == select_resp.json()["total"] == 4
+
+    # Same blocks too, not just the same rows -- the load-bearing part of the equivalence.
+    for label in ("you_chat", "claude_chat", "claude_thinking", "interrupt"):
+        uuid = u[label]
+        view_item = _item_by_uuid(view_resp, uuid)
+        select_item = _item_by_uuid(select_resp, uuid)
+        assert _block_kinds(view_item) == _block_kinds(select_item)
+        assert [b["text_content"] for b in view_item["blocks"]] == [
+            b["text_content"] for b in select_item["blocks"]
+        ]
+    # The thinking+text row specifically carries BOTH block kinds under both mechanisms.
+    assert _block_kinds(_item_by_uuid(select_resp, u["claude_thinking"])) == ["thinking", "text"]
+
+
+# --- Task T12: the chat-preset<->select-set equivalence, strengthened with a resolved chip -----
+#
+# Owner ruling 2026-09-23 makes a resolved-dispatch `tool_use` block `claude-chat` (T9's own
+# equivalence fixture above deliberately EXCLUDED a resolved-dispatch row -- see its "Discovered
+# nuances" #2 in the write-up -- because under T9's rules the equivalence didn't hold for it).
+# This fixture adds one resolved AND one unresolved dispatch-shaped row (same idiom as
+# `_build_view_dispatch_tree`) on top of the existing single-category tree, so the equivalence
+# can be proven chip-for-chip, not just for the single-category rows.
+
+_SELECT_DISPATCH_SESSION_UUID = "56565656-5656-4656-8656-565656565656"
+_SELECT_DISPATCH_RESOLVED_TOOL_USE_ID = "toolu_selectdispatch_resolved"
+_SELECT_DISPATCH_UNRESOLVED_TOOL_USE_ID = "toolu_selectdispatch_unresolved"
+_SELECT_DISPATCH_AGENT_HEX_ID = "beef5678"  # valid hex only -- discovery's agent-<hex>.jsonl regex
+
+
+def _build_select_equivalence_tree_with_resolved_dispatch(
+    db: Session, tmp_path: Path
+) -> tuple[int, dict[str, str]]:
+    """`_build_select_equivalence_tree`'s six single-category rows PLUS a resolved and an
+    unresolved dispatch-shaped row (`_build_view_dispatch_tree`'s idiom: empty text + tool_use,
+    one `tool_use_id` resolving to a REALLY captured subagent transcript, the other resolving to
+    nothing). Returns ``(transcript_id, {label: record_uuid})`` with two new keys,
+    ``resolved_dispatch``/``unresolved_dispatch``, alongside the original six."""
+    root = tmp_path / "select_tree_with_dispatch"
+    proj = root / "-Users-x-selectdispatch"
+    proj.mkdir(parents=True)
+    lines = [
+        make_user_line(
+            text="you-chat: a synthetic human message",
+            promptSource="typed",
+            origin={"kind": "human"},
+            uuid="u-you-chat",
+            sessionId=_SELECT_DISPATCH_SESSION_UUID,
+        ),
+        make_assistant_line(
+            text="claude-chat: a synthetic claude reply, no thinking, no tool use",
+            uuid="u-claude-chat",
+            sessionId=_SELECT_DISPATCH_SESSION_UUID,
+        ),
+        make_assistant_line(
+            text="claude-chat half of a thinking+text turn",
+            with_thinking=True,
+            thinking_text="claude-thinking half of a thinking+text turn",
+            uuid="u-claude-thinking",
+            sessionId=_SELECT_DISPATCH_SESSION_UUID,
+        ),
+        make_tool_result_user_line(
+            tool_use_id="toolu_orphan_select_dispatch_test",
+            result_text="tool-traffic: a synthetic tool result",
+            uuid="u-tool-result",
+            sessionId=_SELECT_DISPATCH_SESSION_UUID,
+        ),
+        make_user_line(
+            content=[
+                {
+                    "type": "text",
+                    "text": "<system-reminder>harness-system: synthetic harness note</system-reminder>",
+                }
+            ],
+            isMeta=True,
+            uuid="u-harness",
+            sessionId=_SELECT_DISPATCH_SESSION_UUID,
+        ),
+        make_user_line(
+            text="[Request interrupted by user]",
+            uuid="u-interrupt",
+            sessionId=_SELECT_DISPATCH_SESSION_UUID,
+        ),
+        make_assistant_line(
+            text="",
+            with_tool_use=True,
+            tool_use_id=_SELECT_DISPATCH_RESOLVED_TOOL_USE_ID,
+            uuid="u-resolved-dispatch",
+            sessionId=_SELECT_DISPATCH_SESSION_UUID,
+        ),
+        make_assistant_line(
+            text="",
+            with_tool_use=True,
+            tool_use_id=_SELECT_DISPATCH_UNRESOLVED_TOOL_USE_ID,
+            uuid="u-unresolved-dispatch",
+            sessionId=_SELECT_DISPATCH_SESSION_UUID,
+        ),
+    ]
+    (proj / f"{_SELECT_DISPATCH_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
+
+    subagents_dir = proj / _SELECT_DISPATCH_SESSION_UUID / "subagents"
+    subagents_dir.mkdir(parents=True)
+    subagent_lines = [
+        make_user_line(
+            text="synthetic subagent prompt", sessionId=_SELECT_DISPATCH_SESSION_UUID
+        ),
+        make_assistant_line(
+            text="synthetic subagent reply", sessionId=_SELECT_DISPATCH_SESSION_UUID
+        ),
+    ]
+    (subagents_dir / f"agent-{_SELECT_DISPATCH_AGENT_HEX_ID}.jsonl").write_bytes(
+        make_session_file(subagent_lines)
+    )
+    (subagents_dir / f"agent-{_SELECT_DISPATCH_AGENT_HEX_ID}.meta.json").write_text(
+        json.dumps(
+            {
+                "agentType": "Explore",
+                "description": "Synthetic select-equivalence dispatch fixture agent.",
+                "toolUseId": _SELECT_DISPATCH_RESOLVED_TOOL_USE_ID,
+            }
+        )
+    )
+
+    _capture(db, root)
+    classify_pending(db)
+    db.commit()
+
+    tid = _main_transcript_id(db, _SELECT_DISPATCH_SESSION_UUID)
+    return tid, {
+        "you_chat": "u-you-chat",
+        "claude_chat": "u-claude-chat",
+        "claude_thinking": "u-claude-thinking",
+        "tool_result": "u-tool-result",
+        "harness": "u-harness",
+        "interrupt": "u-interrupt",
+        "resolved_dispatch": "u-resolved-dispatch",
+        "unresolved_dispatch": "u-unresolved-dispatch",
+    }
+
+
+def test_select_chat_preset_equals_view_chat_including_resolved_dispatch_chip(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Strengthens `test_select_you_chat_claude_chat_claude_thinking_equals_view_chat` with a
+    resolved dispatch row in the mix (owner ruling 2026-09-23, Task T12): `view=chat` and
+    `select=you-chat,claude-chat,claude-thinking` must now agree CHIP-FOR-CHIP, not just on the
+    plain single-category rows -- the resolved dispatch row (a `tool_use` block, categorized
+    `claude-chat`) shows under both, block-identical, while the unresolved dispatch row (stays
+    `tool-traffic`) is excluded from both."""
+    tid, u = _build_select_equivalence_tree_with_resolved_dispatch(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    view_resp = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "chat"})
+    select_resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking"},
+    )
+    assert view_resp.status_code == select_resp.status_code == 200
+
+    expected = {
+        u["you_chat"], u["claude_chat"], u["claude_thinking"], u["interrupt"],
+        u["resolved_dispatch"],
+    }
+    view_uuids = set(_message_uuids(view_resp))
+    select_uuids = set(_message_uuids(select_resp))
+    assert view_uuids == select_uuids == expected
+    assert u["unresolved_dispatch"] not in view_uuids | select_uuids
+    assert u["tool_result"] not in view_uuids | select_uuids
+
+    # Chip-for-chip: same blocks (kind + text_content), not just the same rows -- including the
+    # resolved dispatch row's `tool_use` block itself.
+    for uuid in expected:
+        view_item = _item_by_uuid(view_resp, uuid)
+        select_item = _item_by_uuid(select_resp, uuid)
+        assert _block_kinds(view_item) == _block_kinds(select_item)
+        assert [b["text_content"] for b in view_item["blocks"]] == [
+            b["text_content"] for b in select_item["blocks"]
+        ]
+    resolved_item = _item_by_uuid(select_resp, u["resolved_dispatch"])
+    assert _block_kinds(resolved_item) == ["text", "tool_use"]
+
+
+def test_select_full_chat_harness_set_equals_view_chat_harness(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, u = _build_select_equivalence_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    view_resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"view": "chat-harness"}
+    )
+    select_resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking,harness-system"},
+    )
+    assert view_resp.status_code == select_resp.status_code == 200
+
+    expected = {
+        u["you_chat"], u["claude_chat"], u["claude_thinking"], u["interrupt"], u["harness"],
+    }
+    view_uuids = set(_message_uuids(view_resp))
+    select_uuids = set(_message_uuids(select_resp))
+    assert view_uuids == select_uuids == expected
+    # tool_result stays OUT of chat-harness under both mechanisms.
+    assert u["tool_result"] not in view_uuids and u["tool_result"] not in select_uuids
+
+    for uuid in expected:
+        assert _block_kinds(_item_by_uuid(view_resp, uuid)) == _block_kinds(
+            _item_by_uuid(select_resp, uuid)
+        )
+
+
+def test_select_all_five_equals_view_all(db_session: Session, tmp_path: Path) -> None:
+    tid, u = _build_select_equivalence_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    view_resp = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "all"})
+    select_resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": ",".join(CATEGORY_SLUGS)},
+    )
+    assert view_resp.status_code == select_resp.status_code == 200
+
+    all_uuids = set(u.values())
+    view_uuids = set(_message_uuids(view_resp))
+    select_uuids = set(_message_uuids(select_resp))
+    assert view_uuids == select_uuids == all_uuids
+    assert view_resp.json()["total"] == select_resp.json()["total"] == len(all_uuids)
+
+    for uuid in all_uuids:
+        assert _block_kinds(_item_by_uuid(view_resp, uuid)) == _block_kinds(
+            _item_by_uuid(select_resp, uuid)
+        )
+
+
+def test_select_claude_thinking_alone_returns_only_thinking_blocks(
+    db_session: Session, tmp_path: Path
+) -> None:
+    tid, u = _build_select_equivalence_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"select": "claude-thinking"}
+    )
+    assert resp.status_code == 200
+    uuids = _message_uuids(resp)
+    assert uuids == [u["claude_thinking"]]
+    item = _item_by_uuid(resp, u["claude_thinking"])
+    # Its `text` block (category claude-chat) is pruned -- only the thinking block renders.
+    assert _block_kinds(item) == ["thinking"]
+
+
+def test_select_tool_traffic_returns_the_tool_exchange(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """`tool-traffic` is one category on purpose: a `tool_use` row and its `tool_result`
+    row are both admitted -- "the exchange is a unit"."""
+    root = tmp_path / "select_tool_exchange_tree"
+    proj = root / "-Users-x-selecttools"
+    proj.mkdir(parents=True)
+    session_uuid = "34343434-3434-4434-8434-343434343434"
+    tool_use_id = "toolu_select_exchange"
+    lines = [
+        make_assistant_line(
+            text="",
+            with_tool_use=True,
+            tool_use_id=tool_use_id,
+            uuid="u-tool-use",
+            sessionId=session_uuid,
+        ),
+        make_tool_result_user_line(
+            tool_use_id=tool_use_id,
+            uuid="u-tool-result-exchange",
+            sessionId=session_uuid,
+        ),
+    ]
+    (proj / f"{session_uuid}.jsonl").write_bytes(make_session_file(lines))
+    _capture(db_session, root)
+    classify_pending(db_session)
+    db_session.commit()
+    tid = _main_transcript_id(db_session, session_uuid)
+
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    resp = client.get(f"/api/v1/transcripts/{tid}/messages", params={"select": "tool-traffic"})
+    assert resp.status_code == 200
+    assert set(_message_uuids(resp)) == {"u-tool-use", "u-tool-result-exchange"}
+    tool_use_item = _item_by_uuid(resp, "u-tool-use")
+    # The empty text block (category claude-chat) is pruned; only the tool_use block remains.
+    assert _block_kinds(tool_use_item) == ["tool_use"]
+
+
+def test_select_takes_precedence_over_view(db_session: Session, tmp_path: Path) -> None:
+    tid, u = _build_select_equivalence_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    # tool_result never shows under view=chat alone...
+    chat_only = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "chat"})
+    assert u["tool_result"] not in _message_uuids(chat_only)
+
+    # ...but select=tool-traffic wins when BOTH are given, ignoring view= entirely.
+    both = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"view": "chat", "select": "tool-traffic"},
+    )
+    assert _message_uuids(both) == [u["tool_result"]]
+
+
+def test_select_empty_is_422(db_session: Session, tmp_path: Path) -> None:
+    tid, _u = _build_select_equivalence_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    resp = client.get(f"/api/v1/transcripts/{tid}/messages", params={"select": ""})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert set(body) == {"status", "title", "detail"}
+    assert "empty" in body["detail"]
+
+
+def test_select_unknown_slug_is_422_naming_it(db_session: Session, tmp_path: Path) -> None:
+    tid, _u = _build_select_equivalence_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,bogus-category"},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "bogus-category" in body["detail"]
+    for slug in CATEGORY_SLUGS:
+        assert slug in body["detail"]
+
+
+# --- select= discovered-nuance regression tests (documented in the write-up) --------------
+
+
+def test_select_reproduces_resolved_dispatch_chip_visibility_as_claude_chat(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Owner ruling 2026-09-23 (Task T12), flipping this test's former (pre-ruling) pinning:
+    `_has_resolved_dispatch()` makes `view=chat`/`chat-harness` show a content-free
+    `tool_use`-only row when it dispatched a CAPTURED subagent transcript (the SubagentChip's
+    only doorway) -- a chip is a doorway into a Claude-voiced conversation, not mechanical
+    traffic, so its block now categorizes `claude-chat`. `select=you-chat,claude-chat,
+    claude-thinking` (the `chat` preset's set) now reproduces that visibility exactly. The
+    ruling's flip side: with `claude-chat` UNSELECTED and only `tool-traffic` selected, the
+    resolved chip disappears (its block is no longer tool-traffic) while an ORDINARY
+    (unresolved) tool_use row still shows -- tool-traffic is unaffected for the unresolved case.
+    """
+    tid, resolved_uuid, unresolved_uuid = _build_view_dispatch_tree(db_session, tmp_path)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    chat = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "chat"})
+    assert resolved_uuid in _message_uuids(chat)
+
+    selected = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking"},
+    )
+    assert resolved_uuid in _message_uuids(selected)
+    assert unresolved_uuid not in _message_uuids(selected)
+
+    # The ruling's flip side: claude-chat unselected, tool-traffic selected -- the resolved chip
+    # is NOT shown (its tool_use block is claude-chat now, not tool-traffic), but the ordinary
+    # unresolved tool_use row still is.
+    tools_only = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"select": "tool-traffic"}
+    )
+    assert resolved_uuid not in _message_uuids(tools_only)
+    assert unresolved_uuid in _message_uuids(tools_only)
+
+
+def test_select_never_shows_blockless_rows_unlike_view_all(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Discovered nuance: a bare `system`-type record (`SystemRecord.blocks()` is always
+    `[]`) has NO blocks to select, so it is invisible under `select=` for EVERY combination of
+    categories -- `select=`'s disappear rule ("a row disappears iff none of its blocks are
+    selected") is vacuously true for a row with zero blocks. `view=all` shows it anyway (no
+    filtering at all, not even a content check). Deliberate, not fixed (see the write-up)."""
+    tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
+    system_uuids = {u for u, t in zip(record_uuids, types) if t == "system"}
+    assert system_uuids  # sanity: the shared harness tree really does carry system rows
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    all_view = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "all"})
+    assert system_uuids <= set(_message_uuids(all_view))
+
+    select_all = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": ",".join(CATEGORY_SLUGS)},
+    )
+    assert not (system_uuids & set(_message_uuids(select_all)))
+    # The non-system rows (NULL authorship_kind in this tree -> harness-system catch-all) are
+    # unaffected -- only the structurally blockless rows drop out.
+    non_system_uuids = set(record_uuids) - system_uuids
+    assert non_system_uuids <= set(_message_uuids(select_all))
