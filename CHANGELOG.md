@@ -4,6 +4,9 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.15.1 — 2026-09-24
+- A project is now always named after the folder its root sessions ran in — a subagent that worked in another directory can no longer lend the project its name (this showed as two sidebar projects with the same name); existing archives are corrected automatically when you update.
+
 ## 1.15.0 — 2026-09-24
 - The session list now knows which sessions are yours: root conversations (a human typed in them) show by default, and standalone subagent runs — dispatched reviews, minion builds — sit one reveal away ("N subagent sessions hidden — show"), count always visible so nothing is ever silently missing; revealed subagent rows render quieter so root sessions stay the anchor.
 - Global search excludes subagent sessions by default; an "include subagent sessions" toggle (and `subagent_sessions=true` on the API) brings them in — in-conversation search is unchanged.

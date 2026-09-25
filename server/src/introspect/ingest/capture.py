@@ -226,7 +226,11 @@ def _capture_chunk(
             ingested_at=utcnow(),
         )
         db.add(record)
-        _backfill_project_cwd(project, pr)
+        if transcript.kind == "main":
+            # NOTE(claude): subagents take their project from the root session. A subagent can
+            # run in another directory, and its file may be captured before the main one, so
+            # only the root session's own cwd may name the project.
+            _backfill_project_cwd(project, pr)
         captured.append((pr, record, anomaly_specs))
 
     checkpoint = chunk[-1].end_offset  # every unit in the chunk was consumed (stored or skipped)

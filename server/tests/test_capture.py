@@ -135,6 +135,32 @@ def test_envelope_cwd_backfills_project(db_session, fixture_tree):
     assert proj.resolved_cwd == DEFAULT_CWD
 
 
+def test_project_cwd_comes_from_main_transcript_not_subagent(db_session, tmp_path):
+    """A subagent's cwd never names the project -- subagents take their project from the root.
+
+    Regression: a subagent that ran in another directory was captured before its session's
+    main file, so its cwd became the project's resolved_cwd and the project wore another
+    project's name in the sidebar.
+    """
+    root_cwd = "/home/dev/root-project"
+    subagent_cwd = "/home/dev/elsewhere"
+    session_dir = tmp_path / "transcripts" / "-home-dev-root-project" / SESSION_UUID_1
+    (session_dir / "subagents").mkdir(parents=True)
+    (session_dir.parent / f"{SESSION_UUID_1}.jsonl").write_bytes(make_user_line(cwd=root_cwd))
+    (session_dir / "subagents" / "agent-abc123.jsonl").write_bytes(
+        make_user_line(cwd=subagent_cwd)
+    )
+    files = sorted(discover(tmp_path / "transcripts"), key=lambda f: f.kind != "subagent")
+    assert [f.kind for f in files] == ["subagent", "main"]
+
+    capture_file(db_session, files[0])
+    proj = db_session.query(Project).one()
+    assert proj.resolved_cwd is None  # a subagent alone never names the project
+
+    capture_file(db_session, files[1])
+    assert proj.resolved_cwd == root_cwd
+
+
 def test_whitespace_line_captured_as_info_not_error(db_session, fixture_tree):
     main = next(f for f in discover(fixture_tree) if f.kind == "main")
     with main.path.open("ab") as fh:
