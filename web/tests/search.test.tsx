@@ -538,7 +538,7 @@ describe('ConversationSearchResults', () => {
       )
     })
 
-    it('defaults the restricted selection to the chat preset when the URL carries neither ?select= nor ?view=', async () => {
+    it('defaults the restricted selection to the chat preset when the URL carries no ?select=', async () => {
       fetchSearch.mockResolvedValue({ items: [], total: 0 } satisfies SessionSearchResult)
       setup(
         <ConversationSearchResults sessionUuid="uuid-1" q="foo" />,

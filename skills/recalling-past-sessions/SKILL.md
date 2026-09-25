@@ -71,9 +71,12 @@ for within-one-session; `limit`/`offset` page over hits.
   — the page CENTERS on that record. `from=<record_uuid>` starts AT it and runs forward
   (read onward from a cited moment; page forward for "to the end"); `until=<record_uuid>`
   ends AT it and never shows a row past it. The three anchors are mutually exclusive.
-  Prefer an anchor over offset paging when you hold a record id. Add `view=chat` to filter
-  to dialogue turns server-side; plain `offset`/`limit` page normally otherwise. Keep
-  limits small.
+  Prefer an anchor over offset paging when you hold a record id. `select=` filters to
+  dialogue turns server-side (omit it entirely for the same effect — it's the default):
+  `select=you-chat,claude-chat,claude-thinking` for dialogue only, add `,harness-system` for
+  dialogue+harness chatter, or all five (`you-chat,claude-chat,claude-thinking,tool-traffic,
+  harness-system`) to see everything including tool traffic. Plain `offset`/`limit` page
+  normally otherwise. Keep limits small.
 
 ## Decision rule: direct query vs subagent reader
 

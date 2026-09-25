@@ -307,13 +307,15 @@ export function isBlockCategorySelected(
  * MessageTurn's row gate and (were it ever threaded there) RawRecordInspector-style prev/next
  * navigation.
  *
- * A message with ZERO blocks has no block whose category could ever be selected, so it is
- * ALWAYS invisible — including under the `all` preset (every category selected). This is a
- * server-confirmed divergence from the retired `all` view (which showed a blockless row, e.g. a
- * bare `system`-type record, as an empty eyebrow-only row): the server's own equivalence suite
- * pins this exact nuance (`test_select_never_shows_blockless_rows_unlike_view_all`) — "select='s
- * disappear rule … is vacuously true for a row with zero blocks. view=all shows it anyway (no
- * filtering at all, not even a content check). Deliberate, not fixed."
+ * A message with ZERO blocks has no block whose category could ever be selected — the server
+ * contract update (T17 follow-up, 2026-09-25) covers this with a MESSAGE-level rule instead of a
+ * block-level one: such a message categorizes as `harness-system`, visible iff `harness-system`
+ * is in `selection`. This restores "select=<all five> ≡ old view=all" including blockless
+ * furniture (bare `system`-type records, non-rescued zero-block `attachment` stubs) — the earlier
+ * T10/T12-era contract left these ALWAYS invisible (even under all-five), a deliberate divergence
+ * from the retired `all` view that this update reverses; see
+ * claude_notes/2026-09-25-sdd-filter-dropdown-writeups.md's T17 follow-up section for the change
+ * record.
  *
  * One refinement beyond a bare `.some(categoryOfBlock ∈ selection)`, ported from the server's
  * `_block_matches_categories` (found via genuine red on their side, claude_notes/2026-09-22-sdd-
@@ -338,6 +340,7 @@ export function isVisibleInSelection(
   selection: ReadonlySet<CategorySlug>,
   dispatchToolUseIds: ReadonlySet<string> = new Set(),
 ): boolean {
+  if (message.blocks.length === 0) return selection.has('harness-system')
   return message.blocks.some((block) => {
     if (!selection.has(categoryOfBlock(block, message, dispatchToolUseIds))) return false
     if (block.block_kind === 'text' && (block.text_content == null || block.text_content === '')) {
@@ -347,25 +350,29 @@ export function isVisibleInSelection(
   })
 }
 
-// --- URL persistence + hook (Task T10) ------------------------------------------------------
+// --- URL persistence + hook (Task T10; `?view=` retired Task T17) --------------------------
 //
-// `?select=<csv>` (a custom combination) or `?view=<preset>` (chat/chat-harness/all — the retired
-// ViewMode's own string values, reused so a preset URL stays stable/pretty) carries the reader
-// header's checkbox selection. `select=` wins when both are present — a malformed/stale `view=`
-// alongside a fresh `select=` link should never override the more specific param. Co-located here
-// (rather than urlState.ts, which the rest of the app's filter state lives in) because
-// `readSelection`/`writeSelection` need `PRESET_SETS`/`presetForSelection`/`CategorySlug` above,
-// and urlState.ts is deliberately framework-free/domain-free — putting them there would either
-// duplicate this module's category logic or create an import cycle.
+// `?select=<csv>` carries the reader header's checkbox selection — the ONLY wire param (owner
+// ruling 2026-09-25): the earlier `?view=<preset>` pretty-URL shorthand is deleted entirely, both
+// read and write, matching the server's own frozen contract (`view=` deleted server-side too). A
+// legacy `?view=` arriving in a URL is simply ignored, never consulted — it opens at the chat
+// default exactly as if no param were present at all, not silently upgraded to the preset it used
+// to name. `?select=` absent, empty, or made of only unrecognized slugs likewise falls back to
+// the `chat` preset. Co-located here (rather than urlState.ts, which the rest of the app's filter
+// state lives in) because `readSelection`/`writeSelection` need
+// `PRESET_SETS`/`presetForSelection`/`CategorySlug` above, and urlState.ts is deliberately
+// framework-free/domain-free — putting them there would either duplicate this module's category
+// logic or create an import cycle.
 const CATEGORY_SLUGS: ReadonlySet<CategorySlug> = new Set(ALL_CATEGORIES)
 
 function isCategorySlug(value: string): value is CategorySlug {
   return CATEGORY_SLUGS.has(value as CategorySlug)
 }
 
-/** Reads the reader's category selection. Absent/unrecognized `select=`/`view=` (no params, a
- * stale/foreign value, or a `select=` that parses to nothing) falls back to the `chat` preset —
- * the same default the retired `useViewMode` used. */
+/** Reads the reader's category selection from `?select=` only. Absent/unrecognized (no param, or
+ * a `select=` that parses to nothing usable) falls back to the `chat` preset — the same default
+ * the retired `useViewMode` used. A `?view=` anywhere in the URL is never read here — see the
+ * section doc above. */
 export function readSelection(searchParams: URLSearchParams): ReadonlySet<CategorySlug> {
   const selectRaw = searchParams.get('select')
   if (selectRaw !== null) {
@@ -375,32 +382,26 @@ export function readSelection(searchParams: URLSearchParams): ReadonlySet<Catego
       .filter(isCategorySlug)
     if (slugs.length > 0) return new Set(slugs)
   }
-  const viewRaw = searchParams.get('view')
-  if (viewRaw === 'chat' || viewRaw === 'chat-harness' || viewRaw === 'all') {
-    return PRESET_SETS[viewRaw]
-  }
   return PRESET_SETS.chat
 }
 
 /**
  * Returns a NEW `URLSearchParams` with the category selection written — every other param passes
- * through untouched, and `prev` is never mutated. When `selection` equals a preset's set exactly,
- * writes the pretty `?view=<preset>` and clears any `?select=`; otherwise writes the CSV
- * `?select=` and clears `?view=` (mutually exclusive — a stale param from the other shape must
- * never linger to confuse a later read).
+ * through untouched, and `prev` is never mutated. When `selection` equals the `chat` DEFAULT
+ * exactly, deletes `?select=` entirely (clean URLs for the common case); otherwise writes the CSV
+ * `?select=` — including for the `chat-harness`/`all` presets, which no longer get a pretty
+ * `?view=` shorthand (that param is dead code on the write side, deleted along with the read side
+ * above).
  */
 export function writeSelection(
   prev: URLSearchParams,
   selection: ReadonlySet<CategorySlug>,
 ): URLSearchParams {
   const next = new URLSearchParams(prev)
-  const preset = presetForSelection(selection)
-  if (preset !== null) {
-    next.set('view', preset)
+  if (presetForSelection(selection) === 'chat') {
     next.delete('select')
   } else {
     next.set('select', [...selection].join(','))
-    next.delete('view')
   }
   return next
 }

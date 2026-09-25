@@ -4,6 +4,13 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.16.0 — 2026-09-25
+- The reader's category filter is one compact `View:` control: the trigger reads the active preset (`View: chat`) or `View: x / y` for a custom mix, at a constant width; inside its dropdown, the chat / chat+harness / all presets sit above the five checkboxes and light up only while the selection exactly matches (click-away or Escape closes, preset clicks keep the panel open for further adjusting); the View and actions triggers now share one quiet button treatment.
+- One API for filtering: `select=` is the only mechanism (absent means the chat set); the `view=` parameter is deleted, filter URLs are `?select=` only (no parameter on the default), and old `?view=` links open at the default.
+- Records with no content blocks (bare system furniture) now belong to Harness/system: chat+harness shows them where the old view hid them, and every-box-checked remains guaranteed to contain every record.
+- During a migrate-then-reparse window, rows not yet authorship-classified appear under Harness/system rather than chat (the old type-based fallback is gone); they return to their true category once reparse completes.
+- The recall skill's messages guidance now speaks `select=` with the three preset sets spelled out.
+
 ## 1.15.1 — 2026-09-24
 - A project is now always named after the folder its root sessions ran in — a subagent that worked in another directory can no longer lend the project its name (this showed as two sidebar projects with the same name); existing archives are corrected automatically when you update.
 

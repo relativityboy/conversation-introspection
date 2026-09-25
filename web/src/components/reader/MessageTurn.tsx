@@ -247,11 +247,12 @@ export function MessageTurn({ message, selection = ALL_CATEGORIES_SET, onInspect
   }
 
   // A filtered selection hides a row when NONE of its blocks' categories are selected (Task T10
-  // FROZEN contract, resolved-dispatch routing added Task T12) — including EVERY zero-block row
-  // (the ~800 deferred_tools_delta / skill_listing / task_reminder attachment stubs, and any
-  // bare `system`-type record), which is always invisible under any selection including
-  // all-five (server-confirmed divergence from the retired `all` view — see
-  // `isVisibleInSelection`'s doc in viewMode.ts). A RESOLVED dispatch row with no other content
+  // FROZEN contract, resolved-dispatch routing added Task T12). A zero-block row (the ~800
+  // deferred_tools_delta / skill_listing / task_reminder attachment stubs, and any bare
+  // `system`-type record) categorizes as `harness-system` at the MESSAGE level (T17 follow-up,
+  // 2026-09-25) — visible once `harness-system` is selected, matching the retired `all` view's
+  // own behavior again (see `isVisibleInSelection`'s doc in viewMode.ts). A RESOLVED dispatch row
+  // with no other content
   // is now visible once `claude-chat` is selected (owner ruling 2026-09-23: a resolved-dispatch
   // `tool_use` block IS claude-chat, a doorway into a Claude-voiced conversation, not mechanical
   // traffic) — an UNRESOLVED tool_use row still needs `tool-traffic` selected, unchanged.

@@ -9,6 +9,11 @@ import { SubagentChip } from '../src/components/reader/SubagentChip'
 import { ThinkingGlyph } from '../src/components/reader/ThinkingGlyph'
 import { ToolBlock } from '../src/components/reader/ToolBlock'
 import { TranscriptsProvider } from '../src/components/reader/transcripts-context'
+import { ALL_CATEGORIES_SET } from '../src/lib/viewMode'
+
+// Task T17: `select=` is the only wire shape now (no `view=`), and the URL omits the param
+// entirely at the chat default (clean URLs) — see writeSelection (viewMode.ts).
+const ALL_SELECT = [...ALL_CATEGORIES_SET].join(',')
 
 // Block renderers are tested un-virtualized (plain render): class names, DOM order, aria, and
 // expand/collapse interactions are all real in jsdom; nothing here depends on measured layout.
@@ -215,15 +220,15 @@ describe('SubagentChip', () => {
     )
   }
 
-  // Task T10: the drill-in also carries the reader's current category selection (readSelection
-  // defaults to the `chat` preset when the URL has neither `?select=` nor `?view=`), so a bare
-  // '/' entry now writes the pretty `?view=chat` rather than no param at all — writeSelection
-  // never omits it (see viewMode.ts).
+  // Task T10 (URL shape updated Task T17): the drill-in also carries the reader's current
+  // category selection (readSelection defaults to the `chat` preset when `?select=` is absent —
+  // a legacy `?view=` is never read). A bare '/' entry stays a bare path: writeSelection omits
+  // `?select=` entirely at the chat default (clean URLs).
   it('renders a subagent pill and links to the transcript when matched', () => {
     renderChip(toolUse({ tool_use_id: 'tu-1' }), [transcript()])
     expect(screen.getByText('⑂ subagent · Explore')).not.toBeNull()
     const link = screen.getByRole('link', { name: /view transcript/ })
-    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?view=chat')
+    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3')
   })
 
   // Task 9: the "view transcript →" drill-in is a deep link — it must carry the current project
@@ -233,16 +238,21 @@ describe('SubagentChip', () => {
     const link = screen.getByRole('link', { name: /view transcript/ })
     // %2C: URLSearchParams.toString() percent-encodes commas on serialization (same as every
     // other writeProjects-built link in this app — see Sidebar.test.tsx for the full note).
-    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?projects=alpha%2Cmid&view=chat')
+    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?projects=alpha%2Cmid')
   })
 
-  // Task T10: the selection half of the same carry-through — a custom (non-preset) combination
-  // writes `?select=` instead, and a preset writes the pretty `?view=` even when it's the only
-  // param present.
+  // Task T10 (URL shape updated Task T17): the selection half of the same carry-through — ANY
+  // selection other than the chat default writes `?select=`, including the `all` preset (there's
+  // no more pretty `?view=` shorthand for it).
   it('carries the current category selection onto the "view transcript" link', () => {
-    renderChip(toolUse({ tool_use_id: 'tu-1' }), [transcript()], '/s/sess-uuid?view=all')
+    renderChip(toolUse({ tool_use_id: 'tu-1' }), [transcript()], `/s/sess-uuid?select=${ALL_SELECT}`)
     const link = screen.getByRole('link', { name: /view transcript/ })
-    expect(link.getAttribute('href')).toBe('/s/sess-uuid/a/a1b2c3?view=all')
+    const href = link.getAttribute('href') ?? ''
+    const [path, qs] = href.split('?')
+    expect(path).toBe('/s/sess-uuid/a/a1b2c3')
+    expect(new Set(new URLSearchParams(qs).get('select')?.split(','))).toEqual(
+      ALL_CATEGORIES_SET,
+    )
   })
 
   it('writes ?select= for a custom (non-preset) category combination', () => {

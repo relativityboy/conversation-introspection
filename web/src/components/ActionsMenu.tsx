@@ -28,19 +28,17 @@ function statusText(r: ResumeResult): string {
   }
 }
 
-// Mirrors ViewToggle's inactive pill: mono 11px, 1px solid var(--shore), radius 999, mist on
-// transparent.
+// Task T17 item-3 revision (2026-09-25 owner spec via coordinator): the border/radius/background/
+// color/cursor/hover treatment moved to the shared `.sw-trigger` class (theme.css) -- the
+// reader's View trigger (CategoryFilter.tsx) carries the SAME class now, one definition, so the
+// two triggers can't drift apart. Only this component's own LAYOUT stays inline (font sizing,
+// padding) -- mirrors `.sw-input`'s own shared-contrast/per-consumer-layout split (theme.css).
 const TRIGGER_STYLE: CSSProperties = {
   fontFamily: 'var(--mono)',
   fontSize: 11,
   letterSpacing: '.04em',
   lineHeight: 1.2,
-  border: '1px solid var(--shore)',
-  borderRadius: 999,
   padding: '3px 10px',
-  background: 'transparent',
-  cursor: 'pointer',
-  color: 'var(--mist)',
 }
 
 // The ProjectFilterBar listbox surface (same floating-panel vocabulary as the project filter's
@@ -148,7 +146,7 @@ export function ActionsMenu({ session, backSearch }: ActionsMenuProps) {
       <button
         ref={triggerRef}
         type="button"
-        className="actions-trigger mono"
+        className="actions-trigger mono sw-trigger"
         aria-expanded={open}
         aria-controls="session-actions"
         onClick={() => (open ? close() : setOpen(true))}

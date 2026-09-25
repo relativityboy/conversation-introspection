@@ -61,6 +61,25 @@ a:focus-visible,button:focus-visible,input:focus-visible{
 }
 .sw-input::placeholder{color:var(--mist);opacity:1;}
 
+/* Shared quiet button-trigger treatment (Task T17 item-3 revision, 2026-09-25 owner spec): a
+   dropdown's header trigger -- the actions ▾ menu (ActionsMenu.tsx) and the reader's View
+   trigger (CategoryFilter.tsx) both opt into this ONE rule, so their appearance can't drift
+   apart. Existing tokens only: a --shore hairline border, the app's pill radius idiom (999px,
+   matching every chip/pill in the room), and a --shore hover/focus fill -- --shore's own doc
+   comment above names "hover fills" as one of its three purposes, so this isn't a new color, just
+   that purpose finally used. Same split as `.sw-input` above: this class owns the shared
+   contrast/interaction treatment, each consumer keeps its own layout (font-size, padding, width)
+   inline. */
+.sw-trigger{
+  border:1px solid var(--shore);
+  border-radius:999px;
+  background:transparent;
+  color:var(--mist);
+  cursor:pointer;
+  transition:background-color .12s ease-in-out;
+}
+.sw-trigger:hover,.sw-trigger:focus-visible{background:var(--shore);}
+
 /* serif reading prose (message bodies, conversation text) */
 .prose{
   font-family:var(--serif);

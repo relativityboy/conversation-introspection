@@ -173,15 +173,17 @@ describe('query-string building', () => {
     expect(url.searchParams.get('subagent_sessions')).toBe('true')
   })
 
-  it('serializes view verbatim when provided (fetchMessages)', async () => {
-    await fetchMessages(42, { view: 'chat-harness' })
+  // Task T17: `view=` is retired entirely (both client and server); `select=` is the only wire
+  // shape for this filter.
+  it('serializes select verbatim when provided (fetchMessages)', async () => {
+    await fetchMessages(42, { select: 'you-chat,claude-chat,claude-thinking' })
 
     const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
     const url = new URL(calledUrl, 'http://localhost')
-    expect(url.searchParams.get('view')).toBe('chat-harness')
+    expect(url.searchParams.get('select')).toBe('you-chat,claude-chat,claude-thinking')
   })
 
-  it('omits view entirely when not provided (fetchMessages)', async () => {
+  it('omits select entirely when not provided (fetchMessages)', async () => {
     await fetchMessages(42)
 
     const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
@@ -355,17 +357,25 @@ describe('useArchiveSession', () => {
   })
 })
 
-describe('useMessages view key', () => {
-  it('gives different view values distinct query keys (each fetches independently)', async () => {
+describe('useMessages select key', () => {
+  it('gives different select values distinct query keys (each fetches independently)', async () => {
     mockFetchJson(200, { items: [], total: 0, offset: 0 })
-    // ONE shared client: if view weren't part of the key, react-query would dedup these two
+    // ONE shared client: if select weren't part of the key, react-query would dedup these two
     // renders into a single in-flight fetch instead of firing both -- the assertion below on
     // call count (2) and on both distinct URLs is what actually proves key distinctness.
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const sharedWrapper = wrapperWithClient(queryClient)
 
-    renderHook(() => useMessages(1, { view: 'chat' }), { wrapper: sharedWrapper })
-    renderHook(() => useMessages(1, { view: 'all' }), { wrapper: sharedWrapper })
+    renderHook(() => useMessages(1, { select: 'you-chat,claude-chat,claude-thinking' }), {
+      wrapper: sharedWrapper,
+    })
+    renderHook(
+      () =>
+        useMessages(1, {
+          select: 'you-chat,claude-chat,claude-thinking,tool-traffic,harness-system',
+        }),
+      { wrapper: sharedWrapper },
+    )
 
     await vi.waitFor(() =>
       expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2),
@@ -374,7 +384,11 @@ describe('useMessages view key', () => {
     const urls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
       (call) => call[0] as string,
     )
-    expect(urls).toContain('/api/v1/transcripts/1/messages?view=chat')
-    expect(urls).toContain('/api/v1/transcripts/1/messages?view=all')
+    expect(urls).toContain(
+      '/api/v1/transcripts/1/messages?select=you-chat%2Cclaude-chat%2Cclaude-thinking',
+    )
+    expect(urls).toContain(
+      '/api/v1/transcripts/1/messages?select=you-chat%2Cclaude-chat%2Cclaude-thinking%2Ctool-traffic%2Charness-system',
+    )
   })
 })

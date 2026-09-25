@@ -5,12 +5,7 @@ import { ApiError, fetchMessages } from '../../api/client'
 import { useMessages } from '../../api/hooks'
 import type { MessageList, MessageOut } from '../../api/types'
 import { applyGlow } from '../../lib/glow'
-import {
-  ALL_CATEGORIES_SET,
-  presetForSelection,
-  type CategorySlug,
-  type ViewMode,
-} from '../../lib/viewMode'
+import { ALL_CATEGORIES_SET, presetForSelection, type CategorySlug } from '../../lib/viewMode'
 import { MessageTurn } from './MessageTurn'
 import { RawRecordInspector } from './RawRecordInspector'
 
@@ -45,16 +40,17 @@ export interface ConversationViewProps {
 // `selection` must ride EVERY fetch site (seed + both edge loaders): a differently-filtered edge
 // page spliced into a filtered window would corrupt the offset math (§14.4). ALWAYS explicit
 // (never omitted) — the server's own default ('all') differs from the client's ('chat' preset),
-// so omitting it would silently change what a bare fetch returns. Sends the pretty `view=<preset>`
-// when `selection` equals a preset exactly (stable/pretty URLs and request shapes, matching the
-// retired `view` mechanism byte-for-byte for the common case) and `select=<csv>` only for a
-// genuinely custom combination — see urlState.ts's `writeSelection`, the same rule.
+// so omitting it would silently change what a bare fetch returns. Task T17 (owner ruling
+// 2026-09-25): one API path only -- always `select=<csv>` built straight from `selection`, never
+// `view=` (that param is deleted server-side too, per the parallel task's frozen contract). This
+// intentionally diverges from `writeSelection` (viewMode.ts), which omits `?select=` from the URL
+// at the chat default for a clean address bar -- the FETCH must still say what it means
+// explicitly every time, never relying on the server's own (different) default.
 function withSelection<T extends object>(
   opts: T,
   selection: ReadonlySet<CategorySlug>,
-): T & { view?: ViewMode; select?: string } {
-  const preset = presetForSelection(selection)
-  return preset !== null ? { ...opts, view: preset } : { ...opts, select: [...selection].join(',') }
+): T & { select: string } {
+  return { ...opts, select: [...selection].join(',') }
 }
 
 // NOTE(claude): fetch strategy — the INITIAL page goes through the useMessages react-query

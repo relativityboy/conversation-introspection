@@ -79,6 +79,18 @@ describe('ActionsMenu', () => {
     expect(document.querySelector('.actions-panel')).toBeNull()
   })
 
+  // Task T17 item-3 revision (2026-09-25 owner spec, after a live-room look): this trigger and the
+  // reader's View trigger (CategoryFilter.tsx) now share ONE quiet button treatment via the
+  // `sw-trigger` class (theme.css) so they can't drift apart -- see
+  // tests/CategoryFilter.test.tsx's own half of this pin (which also asserts the actual CSS rule
+  // exists, since jsdom applies no real stylesheet here). Behavior (open/close/Escape/click-away)
+  // is untouched -- only the trigger's presentation changed.
+  it('carries the shared sw-trigger class (the same mechanism the reader\'s View trigger uses)', () => {
+    renderMenu()
+    const trigger = screen.getByRole('button', { name: 'actions ▾' })
+    expect(trigger.className.split(' ')).toContain('sw-trigger')
+  })
+
   it('opens on trigger click: resume/.jsonl/archive items, aria-expanded="true"', async () => {
     renderMenu()
 

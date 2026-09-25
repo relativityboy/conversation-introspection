@@ -8,6 +8,7 @@ import { ApiError } from '../src/api/client'
 import type { MessageList, MessageOut, SessionDetail, TranscriptInfo } from '../src/api/types'
 import { SessionPage } from '../src/routes/SessionPage'
 import { SubagentPage } from '../src/routes/SubagentPage'
+import { ALL_CATEGORIES_SET, PRESET_SETS } from '../src/lib/viewMode'
 
 // Same convention as ConversationView.test.tsx / search.test.tsx / Sidebar.test.tsx: mock the api
 // client module (hooks.ts imports these functions directly) rather than global fetch.
@@ -121,6 +122,11 @@ function makeMessage(uuid: string): MessageOut {
 function pageOf(offset: number, uuids: string[], total: number): MessageList {
   return { items: uuids.map(makeMessage), total, offset }
 }
+
+// Task T17: `select=` is the only wire shape now (no `view=`) -- built from the same PRESET_SETS/
+// ALL_CATEGORIES_SET the source uses.
+const SELECT_CHAT = [...PRESET_SETS.chat].join(',')
+const SELECT_ALL = [...ALL_CATEGORIES_SET].join(',')
 
 /** A main-transcript message whose tool_use block IS the subagent dispatch: its tool_use_id
  * matches the subagent transcript's parent_tool_use_id, so the REAL SubagentChip join resolves
@@ -269,8 +275,9 @@ describe('lazy fetch contract', () => {
     // parent_tool_use_id, so this row is a RESOLVED dispatch -- it renders (chip included) in
     // every view, `chat` included (final review C1), not just `all` as an older reading of
     // spec §5 had it. Still seed the URL to 'all' (Task T10: category selection is URL-persisted,
-    // not localStorage-sticky): this test isolates fetch laziness (not the view filter) and pins
-    // the later fetchMessages(42, {..., view: 'all'}) assertion to a known view, independent of
+    // not localStorage-sticky; Task T17: the wire shape is `?select=`, no `?view=` sibling): this
+    // test isolates fetch laziness (not the selection filter) and pins the later
+    // fetchMessages(42, {..., select: SELECT_ALL}) assertion to a known selection, independent of
     // useCategorySelection's own default (the `chat` preset). SubagentChip's drill-in link now
     // carries the current selection through (same as `?projects=`), so `all` survives the
     // navigation onto the subagent route unaided.
@@ -286,7 +293,7 @@ describe('lazy fetch contract', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/s/uuid-1?view=all']}>
+        <MemoryRouter initialEntries={[`/s/uuid-1?select=${SELECT_ALL}`]}>
           <Routes>
             <Route path="/s/:uuid" element={<SessionPage />} />
             <Route path="/s/:uuid/a/:agentHex" element={<SubagentPage />} />
@@ -308,7 +315,7 @@ describe('lazy fetch contract', () => {
     await user.click(drillIn)
 
     await waitFor(() =>
-      expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100, view: 'all' }),
+      expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100, select: SELECT_ALL }),
     )
   })
 })
@@ -337,7 +344,7 @@ describe('SessionPage with whitespace-only ?q=', () => {
     expect(fetchMessages).toHaveBeenCalledWith(MAIN_TRANSCRIPT.id, {
       offset: 0,
       limit: 100,
-      view: 'chat',
+      select: SELECT_CHAT,
     })
     expect(screen.queryByRole('button', { name: '← back to conversation' })).toBeNull()
   })
@@ -352,7 +359,11 @@ describe('deep link', () => {
     renderAt('/s/uuid-1/a/deadbeef/m/msg-5')
 
     await waitFor(() =>
-      expect(fetchMessages).toHaveBeenCalledWith(42, { around: 'msg-5', limit: 100, view: 'chat' }),
+      expect(fetchMessages).toHaveBeenCalledWith(42, {
+        around: 'msg-5',
+        limit: 100,
+        select: SELECT_CHAT,
+      }),
     )
   })
 })
@@ -360,27 +371,29 @@ describe('deep link', () => {
 // --- category filter parity (ledger #6, Task T10) -----------------------------------------------
 // SubagentPage owns its own useCategorySelection (one owner per reader page) exactly like
 // SessionPage; switching the selection from its header must re-seed the subagent transcript body.
-// The "all" preset chip is still a <button aria-pressed> named "all" (CategoryFilter's chip
-// mirrors the retired ViewToggle's segment exactly for this case), so this test's assertions carry
-// over unchanged from the retired toggle.
+// Task T17 item-2 revision: the preset buttons now live INSIDE the dropdown panel (opened via the
+// trigger, whose label is "View: chat" at the default), not spread across the header.
 
 describe('SubagentPage category filter parity', () => {
   it('renders the filter in the header and threads the current selection into the transcript fetch', async () => {
     fetchSession.mockResolvedValue(makeSession())
-    fetchMessages.mockImplementation((_id: number, opts?: { view?: string }) =>
-      Promise.resolve(pageOf(0, [opts?.view === 'all' ? 'sub-full' : 'sub-filtered'], 1)),
+    fetchMessages.mockImplementation((_id: number, opts?: { select?: string }) =>
+      Promise.resolve(pageOf(0, [opts?.select === SELECT_ALL ? 'sub-full' : 'sub-filtered'], 1)),
     )
     renderAt('/s/uuid-1/a/deadbeef')
 
     // Body seeds filtered first — useCategorySelection's default is the `chat` preset.
     expect(await screen.findByText('text for sub-filtered')).toBeDefined()
-    const allSegment = screen.getByRole('button', { name: 'all' })
-    expect(allSegment.getAttribute('aria-pressed')).toBe('false')
+    await userEvent.click(screen.getByRole('button', { name: 'View: chat' }))
+    const allItem = screen.getByRole('button', { name: 'all' })
+    expect(allItem.getAttribute('aria-pressed')).toBe('false')
 
-    await userEvent.click(allSegment)
+    await userEvent.click(allItem)
 
+    // The panel stays OPEN on a preset click (owner spec) — the item is still reachable here.
     expect(await screen.findByText('text for sub-full')).toBeDefined()
-    expect(allSegment.getAttribute('aria-pressed')).toBe('true')
-    expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100, view: 'all' })
+    expect(allItem.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'View: all' })).not.toBeNull()
+    expect(fetchMessages).toHaveBeenCalledWith(42, { offset: 0, limit: 100, select: SELECT_ALL })
   })
 })

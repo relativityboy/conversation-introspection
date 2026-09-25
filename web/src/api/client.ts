@@ -7,7 +7,6 @@
  * 204 with no body.
  */
 
-import type { ViewMode } from '../lib/viewMode'
 import type {
   GlobalSearchResult,
   ImportRun,
@@ -146,10 +145,12 @@ export interface MessagesOptions {
   offset?: number
   limit?: number
   around?: string
-  view?: ViewMode
-  /** Task T10: a CSV of category slugs, precedence over `view` server-side. Reader call sites
-   * (ConversationView's `withSelection`) send exactly one of `view`/`select`, never both — see
-   * urlState.ts's `writeSelection` for the same preset-vs-custom rule applied to the URL. */
+  /** Task T10 (server contract; `view=` retired client-side Task T17): a CSV of category slugs.
+   * Reader call sites (ConversationView's `withSelection`) always send this explicitly -- the
+   * server's own default ('all') differs from the client's ('chat'), so omitting it would
+   * silently change what a bare fetch returns. There is no `view=` sibling any more: the server
+   * deletes that param too (parallel task, frozen contract), so `select=` is the only wire shape
+   * for this filter. */
   select?: string
 }
 
@@ -161,11 +162,6 @@ export function fetchMessages(
     offset: opts.offset,
     limit: opts.limit,
     around: opts.around,
-    // Sent verbatim when present -- unlike the retired boolean flag this replaces, `view`'s three
-    // states have no "absent means off" reading, and the server's own default ('all') differs
-    // from the client's ('chat'), so every reader call site passes it explicitly (see
-    // ConversationView's `withSelection`).
-    view: opts.view,
     select: opts.select,
   })
   return apiFetch<MessageList>(`/transcripts/${transcriptId}/messages${qs}`)

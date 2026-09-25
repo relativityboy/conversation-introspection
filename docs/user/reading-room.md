@@ -139,10 +139,13 @@ The **actions menu** contains three controls, each with status feedback:
 
 ## Choosing what you see
 
-The reader's header has a **category filter**: five checkboxes deciding how much of the transcript
-you see, plus three preset chips — **`chat`** · **`chat+harness`** · **`all`** — that set the boxes
-with one click. The five categories partition everything the archive stored — every block of every
-message belongs to exactly one, so no combination can silently lose a record:
+The reader's header has a single compact **View** control — a dropdown whose trigger reads
+`View: chat` (or `View: 2 / 5` for a custom mix) at a constant width. Inside the panel, three
+preset items — **`chat`** · **`chat+harness`** · **`all`** — sit above five checkboxes; a preset
+lights up exactly while the boxes match its set and dims the moment you customize, and picking one
+keeps the panel open so you can keep adjusting. Click away or press Escape to close. The five
+categories partition everything the archive stored — every block of every message belongs to
+exactly one, so no combination can silently lose a record:
 
 - **You — chat**: what you typed or queued (including queued prompts the harness delivered for you)
   and interruption markers — the moments that are yours even when the words arrive harness-delivered.
@@ -159,14 +162,15 @@ message belongs to exactly one, so no combination can silently lose a record:
 
 Presets: **`chat`** (the default) is You — chat + Claude — chat + Claude — thinking. **`chat+harness`**
 adds Harness/system. **`all`** checks every box. A message row disappears entirely when none of its
-blocks is selected; at least one box is always checked. One honest nuance: a record with no content
-blocks at all (bare system furniture) has nothing to select, so it only appears via the `all`
-preset — which is why "show all message types" in the deep-link recovery flow switches to `all` and
-is the one state guaranteed to contain every record.
+blocks is selected; at least one box is always checked. A record with no content blocks at all
+(bare system furniture) belongs to Harness/system, so it appears under any selection that includes
+that box — and `all`, every box checked, is guaranteed to contain every record, which is exactly
+what "show all message types" in the deep-link recovery flow selects.
 
-Your choice rides the URL — presets as `?view=`, custom combinations as `?select=` — so a link
-carries its filter with it. (The old local-storage stickiness is retired; the URL is the state.)
-The raw-record inspector keeps its own independent in-modal filter.
+Your choice rides the URL as `?select=` — no parameter while you're on the default chat set — so a
+link carries its filter with it. Old `?view=` links simply open at the default. (The old
+local-storage stickiness is retired; the URL is the state.) The raw-record inspector keeps its own
+independent in-modal filter.
 
 ## Message labels
 

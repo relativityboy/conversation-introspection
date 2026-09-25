@@ -516,9 +516,14 @@ def test_subagent_transcript_info_join_key_matches_dispatching_block(
 def test_messages_paging_totals_and_offset_echo(
     db_session: Session, client: TestClient
 ) -> None:
+    # Task T18: this fixture's rows are never `classify_pending`'d (NULL authorship_kind), which
+    # floors to `harness-system` -- outside the new `select=`-absent default (the chat-equivalent
+    # set). `select=<all five>` keeps this test's ORIGINAL, filter-independent intent (pure
+    # paging/total mechanics) unaffected by that default.
     tid = _main_transcript_id(db_session, SESSION_UUID_1)
     body = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"offset": 1, "limit": 1}
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"offset": 1, "limit": 1, "select": ",".join(CATEGORY_SLUGS)},
     ).json()
     assert body["total"] == 2  # two messages in the main transcript
     assert body["offset"] == 1  # echoes the effective offset used
@@ -539,7 +544,10 @@ def test_subagent_transcript_messages_served(
         .order_by(Message.id)
         .all()
     ]
-    body = client.get(f"/api/v1/transcripts/{tid}/messages").json()
+    # Task T18: see the sibling test above for why `select=<all five>` is needed here.
+    body = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"select": ",".join(CATEGORY_SLUGS)}
+    ).json()
     assert body["total"] == 2
     assert [m["record_uuid"] for m in body["items"]] == expected
 
@@ -573,10 +581,15 @@ def test_around_centers_mid_target_and_clamps_early_target(
 
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
+    # Task T18: this tree's rows are never `classify_pending`'d, so they'd floor to
+    # `harness-system` under the new `select=`-absent default -- `select=<all five>` keeps
+    # this test's pure around/offset math unaffected by that default (unrelated to filtering).
+    all_five = ",".join(CATEGORY_SLUGS)
+
     # Mid-file target: ordinal 6, limit 4 -> offset = max(0, 6 - 2) = 4, target in the page.
     mid = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"around": ordered[6], "limit": 4},
+        params={"around": ordered[6], "limit": 4, "select": all_five},
     ).json()
     assert mid["offset"] == 4
     assert ordered[6] in [m["record_uuid"] for m in mid["items"]]
@@ -584,7 +597,7 @@ def test_around_centers_mid_target_and_clamps_early_target(
     # Early target: ordinal 0 -> offset clamped to 0, target still in the page.
     early = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"around": ordered[0], "limit": 4},
+        params={"around": ordered[0], "limit": 4, "select": all_five},
     ).json()
     assert early["offset"] == 0
     assert ordered[0] in [m["record_uuid"] for m in early["items"]]
@@ -618,18 +631,23 @@ def _long_tree(db_session: Session, tmp_path: Path) -> tuple[int, list[str]]:
 
 def test_from_starts_at_anchor(db_session: Session, tmp_path: Path) -> None:
     # "entry X + N": the page begins AT the anchor and runs forward -- no index needed.
+    # Task T18: `select=<all five>` keeps this test's pure paging math unaffected by the new
+    # `select=`-absent default (this tree's rows are never `classify_pending`'d).
     tid, ordered = _long_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    all_five = ",".join(CATEGORY_SLUGS)
 
     mid = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"from": ordered[6], "limit": 4}
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"from": ordered[6], "limit": 4, "select": all_five},
     ).json()
     assert mid["offset"] == 6
     assert [m["record_uuid"] for m in mid["items"]] == ordered[6:10]
 
     # Near the end the page truncates naturally; "entry X +" is this plus paging.
     tail = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"from": ordered[10], "limit": 4}
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"from": ordered[10], "limit": 4, "select": all_five},
     ).json()
     assert [m["record_uuid"] for m in tail["items"]] == ordered[10:]
 
@@ -637,11 +655,15 @@ def test_from_starts_at_anchor(db_session: Session, tmp_path: Path) -> None:
 def test_until_ends_at_anchor_and_never_passes_it(
     db_session: Session, tmp_path: Path
 ) -> None:
+    # Task T18: `select=<all five>` keeps this test's pure paging math unaffected by the new
+    # `select=`-absent default (this tree's rows are never `classify_pending`'d).
     tid, ordered = _long_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    all_five = ",".join(CATEGORY_SLUGS)
 
     mid = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"until": ordered[6], "limit": 4}
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"until": ordered[6], "limit": 4, "select": all_five},
     ).json()
     assert mid["offset"] == 3
     assert [m["record_uuid"] for m in mid["items"]] == ordered[3:7]
@@ -649,7 +671,8 @@ def test_until_ends_at_anchor_and_never_passes_it(
     # Early anchor: the window clamps to the start AND truncates AT the anchor -- rows after
     # it are exactly what "until" promises not to show (unlike around's centered clamp).
     early = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"until": ordered[1], "limit": 4}
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"until": ordered[1], "limit": 4, "select": all_five},
     ).json()
     assert early["offset"] == 0
     assert [m["record_uuid"] for m in early["items"]] == ordered[0:2]
@@ -684,33 +707,46 @@ def test_anchor_params_are_mutually_exclusive_422(
         assert set(body) == {"status", "title", "detail"}
 
 
-def test_view_chat_harness_from_counts_within_filtered_set(
+def test_select_chat_harness_set_from_counts_over_the_full_set(
     db_session: Session, tmp_path: Path
 ) -> None:
-    # Same machinery as around's view tests: the anchor resolves and counts against the
-    # FILTERED set, and a filtered-out anchor 404s under the filter but works under all.
+    """Every row in this tree carries a NULL `authorship_kind` (never classified). Task T18
+    amendment (owner ruling 2026-09-25): a blockless `system` row now ALSO floors to
+    `harness-system` at the message level, so under the chat-harness-equivalent select set,
+    ALL 14 rows are visible (not just the 9 non-`system` ones) -- `from=` resolves/counts
+    against the FULL set, raw id order == ordinal order."""
     tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
-    filtered_uuids = [u for u, t in zip(record_uuids, types) if t != "system"]
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    select_harness = "you-chat,claude-chat,claude-thinking,harness-system"
 
     target = record_uuids[6]
     assert types[6] == "attachment"
-    assert filtered_uuids.index(target) == 4
 
     page = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "chat-harness", "from": target, "limit": 3},
+        params={"select": select_harness, "from": target, "limit": 3},
     ).json()
-    assert page["offset"] == 4
-    assert [m["record_uuid"] for m in page["items"]] == filtered_uuids[4:7]
+    assert page["offset"] == 6
+    assert [m["record_uuid"] for m in page["items"]] == record_uuids[6:9]
 
+    # The amendment's headline case: `from=` a blockless system row now resolves (200), where
+    # it used to 404 -- ordinal 0, the first row in raw order.
     system_target = record_uuids[0]
     assert types[0] == "system"
-    resp = client.get(
+    resolved = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "chat-harness", "from": system_target},
+        params={"select": select_harness, "from": system_target},
     )
-    assert resp.status_code == 404
+    assert resolved.status_code == 200
+    assert resolved.json()["offset"] == 0
+
+    # Still 404 under the pure "chat" set (no harness-system) -- the amendment's new clause
+    # only fires when harness-system is selected; it never removes the existing exclusion.
+    still_hidden = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking", "from": system_target},
+    )
+    assert still_hidden.status_code == 404
 
 
 def test_unknown_transcript_is_404_problem(client: TestClient) -> None:
@@ -734,27 +770,31 @@ def test_unknown_around_uuid_is_404_problem(
     assert body["status"] == 404
 
 
-# --- Transcript messages -- view=chat-harness type filtering (Task 4, authorship spec §5) --
+# --- Transcript messages -- select=<chat-harness-equivalent set> type filtering ------------
 #
-# `view=chat-harness` hides `system`-type rows from ALL FOUR query sites in `list_messages`
-# (total, around-target resolution, around ordinal count, page fetch) per spec §5 + ledger #1:
-# attachments stay IN (`type IN ('user','assistant','attachment')`) -- "pasted things are
-# things a human said" -- only `system` rows are hidden. None of these rows are ever
-# authorship-classified (this tree is captured via `_capture`, which never calls
-# `classify_pending`), so every row's `authorship_kind` stays NULL and `chat-harness`
-# degrades to the legacy type+content rule -- the spec's "row-identical to today's toggle-on
-# view" note, exercised here. A dedicated ad-hoc tree (own TestClient, like
-# `test_around_centers_mid_target_and_clamps_early_target` above) is used rather than the
-# pinned `fixture_tree`/`client` fixture, since none of its sessions carry a system- or
-# attachment-type MESSAGE row and `TOTAL_FIXTURE_LINES` is a pinned contract other tasks
-# hardcode.
+# Originally written against the now-deleted `view=chat-harness` (Task 4, authorship spec §5);
+# converted to `select=` (Task T18 -- `view=` is gone, dead code deleted per this repo's
+# zero-legacy policy). None of these rows are ever authorship-classified (this tree is captured
+# via `_capture`, which never calls `classify_pending`), so every row's `authorship_kind` stays
+# NULL and `_categorize` floors every non-blockless row to `harness-system`.
+#
+# Task T18 AMENDMENT (owner ruling 2026-09-25, corrects this section's original T18 framing): a
+# message with ZERO content blocks ALSO floors to `harness-system` at the MESSAGE level now (no
+# block to carry a category, so the row itself does). Since this tree's `system` rows are
+# blockless, `select=you-chat,claude-chat,claude-thinking,harness-system` shows ALL 14 rows, not
+# just the 9 non-`system` ones -- restoring the retired `view=all`'s completeness for this tree,
+# not `view=chat-harness`'s old type-based exclusion (which this section originally, and
+# INCORRECTLY post-amendment, claimed to reproduce). The pure "chat" set (no `harness-system`)
+# still excludes every row here (system rows via blocklessness, the rest via their NULL-kind
+# `harness-system` floor not being selected) -- the amendment only ADDS a visibility path.
 
 _VIEW_HARNESS_SESSION_UUID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 
-# 14 records: 5 system (hidden under view=chat-harness), 9 kept (4 user, 4 assistant, 1
-# attachment). Deliberately NOT a truncation of the raw order -- kept rows land at
-# non-contiguous raw indices so filtered total/paging/around-centering are exercised
-# against a real re-indexing, not just "drop a prefix/suffix".
+# 14 records: 5 system (blockless; hidden under the plain "chat" set, visible once
+# `harness-system` is selected -- Task T18 amendment), 9 with real content (kept whenever
+# `harness-system` is selected: 4 user, 4 assistant, 1 attachment). Deliberately NOT a
+# truncation of the raw order -- rows land at non-contiguous raw indices so paging/
+# around-centering are exercised against a real re-indexing, not just "drop a prefix/suffix".
 _VIEW_HARNESS_TREE_TYPES = [
     "system", "user", "assistant", "system", "user", "assistant",
     "attachment", "system", "user", "assistant", "system", "user",
@@ -797,272 +837,132 @@ def _build_view_harness_tree(db: Session, tmp_path: Path) -> tuple[int, list[str
     return tid, [u for (u, _t) in rows], [t for (_u, t) in rows]
 
 
-def test_messages_view_chat_harness_filters_totals_and_paging(
+def test_select_chat_harness_set_includes_blockless_system_rows_totals_and_paging(
     db_session: Session, tmp_path: Path
 ) -> None:
+    """Task T18 amendment (owner ruling 2026-09-25): the chat-harness-equivalent select set now
+    shows ALL 14 rows in this tree -- the 9 with real content (NULL authorship_kind floors to
+    `harness-system`) AND the 5 blockless `system` rows (now ALSO floor to `harness-system` at
+    the message level). Totals/paging run over the FULL set."""
     tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
-    filtered_uuids = [u for u, t in zip(record_uuids, types) if t != "system"]
-    assert len(filtered_uuids) == 9  # 14 records minus 5 system rows
-
+    assert len(record_uuids) == 14
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    select_harness = "you-chat,claude-chat,claude-thinking,harness-system"
 
     full = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"view": "chat-harness", "limit": 100}
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": select_harness, "limit": 100},
     ).json()
-    assert full["total"] == len(filtered_uuids)
-    assert [m["record_uuid"] for m in full["items"]] == filtered_uuids
-    assert all(m["type"] != "system" for m in full["items"])
-    assert any(m["type"] == "attachment" for m in full["items"])  # attachments stay IN
+    assert full["total"] == 14
+    assert [m["record_uuid"] for m in full["items"]] == record_uuids
+    assert any(m["type"] == "system" for m in full["items"])  # the amendment's headline case
+    assert any(m["type"] == "attachment" for m in full["items"])
 
     page = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "chat-harness", "offset": 2, "limit": 3},
+        params={"select": select_harness, "offset": 2, "limit": 3},
     ).json()
-    assert page["total"] == len(filtered_uuids)
-    assert page["offset"] == 2  # echoes the effective offset within the FILTERED set
-    assert [m["record_uuid"] for m in page["items"]] == filtered_uuids[2:5]
+    assert page["total"] == 14
+    assert page["offset"] == 2
+    assert [m["record_uuid"] for m in page["items"]] == record_uuids[2:5]
+
+    # The pure "chat" set (no harness-system) still excludes EVERYTHING in this NULL-kind tree
+    # -- neither visibility path (a selected block, or the new blockless-message clause) fires
+    # without harness-system selected.
+    chat_only = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking"},
+    ).json()
+    assert chat_only["total"] == 0
 
 
-def test_view_chat_harness_around_centers_within_filtered_set(
+def test_select_chat_harness_set_around_centers_within_the_full_set(
     db_session: Session, tmp_path: Path
 ) -> None:
+    """Task T18 amendment: around-centering runs over the FULL 14-row set under the
+    chat-harness-equivalent select (blockless system rows included)."""
     tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
-    filtered_uuids = [u for u, t in zip(record_uuids, types) if t != "system"]
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+    select_harness = "you-chat,claude-chat,claude-thinking,harness-system"
 
-    # Mid target: the lone attachment row, ordinal 4 within the filtered set (0-indexed) --
-    # system rows sit on both sides of it in the raw order.
+    # Mid target: the lone attachment row, raw/ordinal index 6 -- every row is visible now, so
+    # raw id order equals ordinal order.
     target = record_uuids[6]
     assert types[6] == "attachment"
-    assert filtered_uuids.index(target) == 4
 
     mid = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "chat-harness", "around": target, "limit": 4},
+        params={"select": select_harness, "around": target, "limit": 4},
     ).json()
-    assert mid["total"] == len(filtered_uuids)
-    assert mid["offset"] == 2  # max(0, 4 - 4 // 2), computed against the filtered ordinal
-    assert [m["record_uuid"] for m in mid["items"]] == filtered_uuids[2:6]
+    assert mid["total"] == 14
+    assert mid["offset"] == 4  # max(0, 6 - 4 // 2)
+    assert [m["record_uuid"] for m in mid["items"]] == record_uuids[4:8]
     assert target in [m["record_uuid"] for m in mid["items"]]
 
-    # Early target: ordinal 0 within the filtered set -> offset clamps to 0.
-    early_target = filtered_uuids[0]
+    # Early target: a blockless SYSTEM row, ordinal 0 -- a valid anchor at all now (the
+    # amendment's whole point) -- offset clamps to 0.
+    early_target = record_uuids[0]
+    assert types[0] == "system"
     early = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "chat-harness", "around": early_target, "limit": 4},
+        params={"select": select_harness, "around": early_target, "limit": 4},
     ).json()
     assert early["offset"] == 0
     assert early_target in [m["record_uuid"] for m in early["items"]]
 
 
-def test_view_chat_harness_around_system_target_404s_but_found_in_all(
+def test_select_chat_harness_set_around_system_target_now_succeeds(
     db_session: Session, tmp_path: Path
 ) -> None:
+    """Task T18 amendment (owner ruling 2026-09-25) flips this test's own former pinning: a
+    blockless `system` row CAN be an anchor target now, once `harness-system` is selected -- it
+    categorizes `harness-system` at the message level (no blocks to carry a category). Under the
+    pure "chat" set (harness-system NOT selected), it's still unreachable -- the amendment only
+    adds visibility, never removes the existing chat-set exclusion."""
     tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
     system_target = record_uuids[0]
     assert types[0] == "system"
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
-    filtered_resp = client.get(
+    resp = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "chat-harness", "around": system_target},
+        params={
+            "select": "you-chat,claude-chat,claude-thinking,harness-system",
+            "around": system_target,
+        },
     )
-    assert filtered_resp.status_code == 404
-    body = filtered_resp.json()
-    assert set(body) == {"status", "title", "detail"}
-    assert body["status"] == 404
+    assert resp.status_code == 200
+    assert system_target in [m["record_uuid"] for m in resp.json()["items"]]
 
-    all_resp = client.get(
+    still_hidden = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "all", "around": system_target},
+        params={"select": "you-chat,claude-chat,claude-thinking", "around": system_target},
     )
-    assert all_resp.status_code == 200
-    assert system_target in [m["record_uuid"] for m in all_resp.json()["items"]]
+    assert still_hidden.status_code == 404
 
 
-def test_messages_view_absent_defaults_to_all(db_session: Session, tmp_path: Path) -> None:
-    tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
-    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
-
-    body = client.get(f"/api/v1/transcripts/{tid}/messages", params={"limit": 100}).json()
-    assert body["total"] == len(record_uuids)
-    assert [m["record_uuid"] for m in body["items"]] == record_uuids
-    assert any(m["type"] == "system" for m in body["items"])
-
-
-# --- Transcript messages -- view=chat-harness content-emptiness trim (spec §4/§5) --------
-#
-# Layered on top of the type filter tested above: `view=chat-harness` additionally hides rows
-# whose blocks carry no visible content in conversation mode (tool-only, thinking-only, empty
-# text). A dedicated small tree isolates the content dimension from the type dimension already
-# covered by `_build_view_harness_tree` above, so this fixture doesn't disturb that tree's
-# pinned row-count/ordinal assertions.
-
-_VIEW_TRIM_SESSION_UUID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
-
-
-def _trim_control_line() -> bytes:
-    return make_assistant_line(
-        text="view trim control reply", sessionId=_VIEW_TRIM_SESSION_UUID
-    )
+# NOTE(claude, Task T18): the old `view=chat-harness` content-emptiness trim section (a
+# dedicated tree of tool-only/thinking-only/empty-text/unknown-kind/image-only rows) lived here.
+# It exercised `_prose_visible()`/`_KNOWN_BLOCK_KINDS`, both deleted with `view=` itself. Its
+# fixture combined a synthetic `tool_result`-KIND block on a NULL-authorship (never
+# `classify_pending`'d) assistant MESSAGE -- a shape `_view_filter`'s message-type rule and
+# `_block_matches_categories`'s block-kind rule do NOT treat identically (the block-level rule
+# floors an unclassified `tool_result` block to `harness-system`, not `tool-traffic`), so it
+# could not be ported to `select=` as a like-for-like conversion without asserting a DIFFERENT
+# claim than the original test made. The underlying content-emptiness guard is still covered for
+# `select=` by `test_select_claude_thinking_alone_returns_only_thinking_blocks` and
+# `test_select_tool_traffic_returns_the_tool_exchange` (both prove an empty companion `text`
+# block is pruned/never a selected block); the "deep-link into an excluded row 404s" mechanic is
+# covered for `select=` by the "still hidden under the chat set" assertions in
+# `test_select_chat_harness_set_from_counts_over_the_full_set`/`..._around_system_target_now_
+# succeeds` above and the excluded-anchor assertion in `test_select_you_chat_claude_chat_
+# claude_thinking_pins_the_old_chat_view` below (NOTE: this excluded row is one with REAL
+# content in the wrong category, not a blockless one -- a blockless row is now reachable once
+# `harness-system` is selected, Task T18 amendment 2026-09-25, see the blockless-rows tests
+# above). Deleted rather than converted (zero-legacy policy) -- see the T18 write-up.
 
 
-def _trim_tool_only_line() -> bytes:
-    tuid = "toolu_trim_only"
-    return make_assistant_line(
-        text="",
-        with_tool_use=True,
-        tool_use_id=tuid,
-        extra_blocks=[
-            {
-                "type": "tool_result",
-                "tool_use_id": tuid,
-                "content": "synthetic result",
-                "is_error": False,
-            }
-        ],
-        sessionId=_VIEW_TRIM_SESSION_UUID,
-    )
-
-
-def _trim_thinking_only_line() -> bytes:
-    return make_assistant_line(
-        text="", with_thinking=True, sessionId=_VIEW_TRIM_SESSION_UUID
-    )
-
-
-def _trim_empty_text_line() -> bytes:
-    return make_user_line(
-        content=[{"type": "text", "text": ""}], sessionId=_VIEW_TRIM_SESSION_UUID
-    )
-
-
-def _trim_unknown_kind_line() -> bytes:
-    return make_assistant_line(
-        text="",
-        extra_blocks=[{"type": "futurekind", "note": "forward-tolerant block"}],
-        sessionId=_VIEW_TRIM_SESSION_UUID,
-    )
-
-
-def _trim_image_only_line() -> bytes:
-    # `block_kind == "image"` is its OWN OR-branch in `_prose_visible` (sessions.py), separate
-    # from the unknown-kind fallback branch -- "image" is a KNOWN kind (`_KNOWN_BLOCK_KINDS`), so
-    # without this dedicated branch it would fall neither into the text case nor the unknown-kind
-    # case and would trim despite being visible content client-side. No server test exercised this
-    # branch before (final review finding 5) -- mirrors the client parity table's
-    # 'assistant, image only' case (web/tests/chatOnly.test.ts).
-    return make_assistant_line(
-        text="",
-        extra_blocks=[
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": ""}}
-        ],
-        sessionId=_VIEW_TRIM_SESSION_UUID,
-    )
-
-
-def _build_view_trim_tree(
-    db: Session, tmp_path: Path
-) -> tuple[int, str, str, str, str, str, str]:
-    """Capture one message per Spec §4 emptiness case into a fresh transcript; return
-    ``(transcript_id, control_uuid, tool_only_uuid, thinking_only_uuid, empty_text_uuid,
-    unknown_kind_uuid, image_only_uuid)`` in insertion (== id) order."""
-    root = tmp_path / "view_trim_tree"
-    proj = root / "-Users-x-viewtrim"
-    proj.mkdir(parents=True)
-    lines = [
-        _trim_control_line(),
-        _trim_tool_only_line(),
-        _trim_thinking_only_line(),
-        _trim_empty_text_line(),
-        _trim_unknown_kind_line(),
-        _trim_image_only_line(),
-    ]
-    (proj / f"{_VIEW_TRIM_SESSION_UUID}.jsonl").write_bytes(make_session_file(lines))
-    _capture(db, root)
-
-    tid = _main_transcript_id(db, _VIEW_TRIM_SESSION_UUID)
-    uuids = [
-        u
-        for (u,) in db.query(Message.record_uuid)
-        .filter(Message.transcript_id == tid)
-        .order_by(Message.id)
-        .all()
-    ]
-    (
-        control_uuid,
-        tool_only_uuid,
-        thinking_only_uuid,
-        empty_text_uuid,
-        unknown_kind_uuid,
-        image_only_uuid,
-    ) = uuids
-    return (
-        tid,
-        control_uuid,
-        tool_only_uuid,
-        thinking_only_uuid,
-        empty_text_uuid,
-        unknown_kind_uuid,
-        image_only_uuid,
-    )
-
-
-def test_view_chat_harness_trims_content_empty_rows(db_session: Session, tmp_path: Path) -> None:
-    """PARITY PIN: mirrors web/tests/chatOnly.test.ts::trim fixtures — change both together.
-    Spec §4: visible iff type qualifies AND ≥1 block shows content in conversation mode
-    (non-empty text, image, or unknown kind). tool-only / thinking-only / empty-text rows trim."""
-    (
-        tid,
-        control_uuid,
-        tool_only_uuid,
-        thinking_only_uuid,
-        empty_text_uuid,
-        unknown_kind_uuid,
-        image_only_uuid,
-    ) = _build_view_trim_tree(db_session, tmp_path)
-    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
-
-    all_rows = client.get(f"/api/v1/transcripts/{tid}/messages").json()
-    filtered = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"view": "chat-harness"}
-    ).json()
-    filtered_uuids = {m["record_uuid"] for m in filtered["items"]}
-
-    assert tool_only_uuid not in filtered_uuids
-    assert thinking_only_uuid not in filtered_uuids
-    assert empty_text_uuid not in filtered_uuids
-    assert unknown_kind_uuid in filtered_uuids
-    assert image_only_uuid in filtered_uuids
-    assert control_uuid in filtered_uuids
-    # totals agree with the trimmed item set, and the unfiltered view is untouched
-    assert filtered["total"] == len(filtered_uuids)
-    assert {m["record_uuid"] for m in all_rows["items"]} >= {tool_only_uuid, thinking_only_uuid}
-
-
-def test_view_chat_harness_around_trimmed_target_is_404(
-    db_session: Session, tmp_path: Path
-) -> None:
-    """Deep link into a trimmed row under the filter → 404 (the reader's recovery banner path);
-    the same around succeeds under view=all."""
-    tid, _control, tool_only_uuid, _thinking, _empty, _unknown, _image = _build_view_trim_tree(
-        db_session, tmp_path
-    )
-    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
-
-    r = client.get(
-        f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "chat-harness", "around": tool_only_uuid},
-    )
-    assert r.status_code == 404
-    r = client.get(
-        f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "all", "around": tool_only_uuid},
-    )
-    assert r.status_code == 200
-
-
-# --- Transcript messages -- view= three-way authorship filtering (Task 4, spec §5) --------
+# --- Transcript messages -- select=<various> authorship filtering -------------------------
 #
 # `seeded_transcript` seeds one message per authorship case in the §5 semantics: a typed-human
 # record, a plain Claude reply, a tool_result record, a Skill-injection record (whose Skill
@@ -1164,31 +1064,63 @@ def _message_uuids(resp) -> list[str]:
     return [m["record_uuid"] for m in resp.json()["items"]]
 
 
-def test_view_chat_shows_dialogue_and_doors(client: TestClient, seeded_transcript: int) -> None:
+def test_select_chat_chat_harness_all_five_show_dialogue_and_doors(
+    client: TestClient, seeded_transcript: int
+) -> None:
+    """Converted from the retired `view=chat`/`chat-harness`/`all` pins (Task T18). One
+    divergence from the old `view=chat` behavior is deliberate and pinned here: `u-nullkind`
+    (a human-shaped row whose `authorship_kind` was reset to NULL, simulating the pre-reparse
+    window) no longer shows under the chat set -- `_categorize(None, ...)` floors unconditionally
+    to `harness-system` (no legacy type-based fallback, unlike the retired `_view_filter`'s
+    `legacy_fallback`), so it only reappears once `harness-system` is selected too.
+    """
     # seeded: human_typed + claude-with-text + tool_result record + skill_injection
-    #         + interrupt_marker + NULL-kind row (pre-reparse simulation)
-    chat = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=chat")
+    #         + a dispatching assistant record (real narration text alongside its tool_use
+    #         blocks -- NOT a content-free dispatch row) + interrupt_marker
+    #         + NULL-kind row (pre-reparse simulation)
+    chat = client.get(
+        f"/api/v1/transcripts/{seeded_transcript}/messages"
+        "?select=you-chat,claude-chat,claude-thinking"
+    )
     assert "u-human" in _message_uuids(chat) and "u-interrupt" in _message_uuids(chat)
     assert "u-toolresult" not in _message_uuids(chat) and "u-skill" not in _message_uuids(chat)
-    assert "u-nullkind" in _message_uuids(chat)  # NULL falls back to legacy type+content rule
+    # u-dispatcher carries a real (non-empty) narration text block alongside its two tool_use
+    # blocks -- that text block is claude-chat, so the ROW shows (pruned to just that block).
+    assert "u-dispatcher" in _message_uuids(chat)
+    dispatcher_item = _item_by_uuid(chat, "u-dispatcher")
+    assert _block_kinds(dispatcher_item) == ["text"]  # its tool_use blocks are pruned out
+    assert "u-nullkind" not in _message_uuids(chat)  # NULL floors to harness-system, no fallback
 
-    harness = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=chat-harness")
-    assert "u-skill" in _message_uuids(harness) and "u-toolresult" not in _message_uuids(harness)
-
-    everything = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=all")
-    assert "u-toolresult" in _message_uuids(everything)
-
-
-def test_chat_only_param_is_gone(client: TestClient, seeded_transcript: int) -> None:
-    r = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?chat_only=true&view=all")
-    assert _message_uuids(r)  # unknown params ignored, view rules
-
-
-def test_view_rejects_unknown_value(client: TestClient, seeded_transcript: int) -> None:
-    assert (
-        client.get(f"/api/v1/transcripts/{seeded_transcript}/messages?view=bogus").status_code
-        == 422
+    harness = client.get(
+        f"/api/v1/transcripts/{seeded_transcript}/messages"
+        "?select=you-chat,claude-chat,claude-thinking,harness-system"
     )
+    assert "u-skill" in _message_uuids(harness) and "u-toolresult" not in _message_uuids(harness)
+    assert "u-nullkind" in _message_uuids(harness)  # harness-system catches the NULL floor
+
+    everything = client.get(
+        f"/api/v1/transcripts/{seeded_transcript}/messages?select={','.join(CATEGORY_SLUGS)}"
+    )
+    assert "u-toolresult" in _message_uuids(everything)
+    # Only under all-five does u-dispatcher's tool_use pair (tool-traffic) also render.
+    assert _block_kinds(_item_by_uuid(everything, "u-dispatcher")) == ["text", "tool_use", "tool_use"]
+
+
+def test_view_and_unknown_params_are_silently_ignored(
+    client: TestClient, seeded_transcript: int
+) -> None:
+    """Task T18: `view=` is deleted from `list_messages`'s signature -- any value given for it
+    (bogus or not), like any other undeclared query param (`chat_only=true`, a pre-T9 relic), is
+    silently dropped by FastAPI. No 422, no effect on filtering -- the response is identical to
+    the bare, parameterless request (which now applies the `select=` default)."""
+    bare = client.get(f"/api/v1/transcripts/{seeded_transcript}/messages")
+    with_junk = client.get(
+        f"/api/v1/transcripts/{seeded_transcript}/messages"
+        "?chat_only=true&view=all&view=bogus"
+    )
+    assert with_junk.status_code == bare.status_code == 200
+    assert _message_uuids(with_junk) == _message_uuids(bare)
+    assert _message_uuids(bare)  # sanity: the default select set isn't vacuous on this fixture
 
 
 # --- Transcript messages -- resolved dispatch rows visible despite no prose (final review C1) --
@@ -1219,9 +1151,10 @@ def _build_view_dispatch_tree(db: Session, tmp_path: Path) -> tuple[int, str, st
     proj = root / "-Users-x-viewdispatch"
     proj.mkdir(parents=True)
     # `text=""` (empty text block) + `with_tool_use=True` is this file's established idiom for a
-    # "no visible prose, tool stuff only" row (see `_trim_tool_only_line` above) -- an empty text
-    # block is never counted as content by `_prose_visible()`, so the row's only VISIBLE content
-    # is the tool_use, exactly like the production shape this test targets.
+    # "no visible prose, tool stuff only" row -- an empty text block is never counted as content
+    # by `_block_matches_categories`'s `is_nonempty_or_not_text` guard (sessions.py), so the
+    # row's only SELECTABLE content is the tool_use, exactly like the production shape this test
+    # targets.
     lines = [
         make_assistant_line(
             text="",
@@ -1271,46 +1204,28 @@ def _build_view_dispatch_tree(db: Session, tmp_path: Path) -> tuple[int, str, st
     return tid, "u-resolved-dispatch", "u-unresolved-dispatch"
 
 
-def test_view_chat_and_harness_show_resolved_dispatch_rows_with_no_prose(
+# NOTE(claude, Task T18): `test_view_chat_and_harness_show_resolved_dispatch_rows_with_no_prose`
+# lived here (proving `view=chat`/`chat-harness`/`all` each showed a resolved-dispatch row and
+# excluded an unresolved one). Deleted as redundant, not converted: the SAME claim, for the sole
+# remaining mechanism, is proven by `test_select_chat_preset_pins_the_old_chat_view_including_
+# resolved_dispatch_chip` below (`select=`'s "chat" 3-slug set) -- and `_select_filter` is a
+# monotonic union over selected categories (adding `harness-system` to reach the chat-harness
+# set can only ADD visible rows, never remove one), so a dedicated chat-harness-set repeat would
+# prove nothing the chat-set pin doesn't already imply structurally.
+
+
+def test_select_chat_around_resolved_dispatch_row_succeeds(
     db_session: Session, tmp_path: Path
 ) -> None:
-    tid, resolved_uuid, unresolved_uuid = _build_view_dispatch_tree(db_session, tmp_path)
-    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
-
-    # Sanity: both rows really are classified 'claude' (assistant records always are) and carry
-    # NO prose block -- if either premise breaks, this test stops proving what it claims to.
-    kinds = dict(
-        db_session.query(Message.record_uuid, Message.authorship_kind)
-        .filter(Message.transcript_id == tid)
-        .all()
-    )
-    assert kinds[resolved_uuid] == "claude"
-    assert kinds[unresolved_uuid] == "claude"
-
-    for view in ("chat", "chat-harness"):
-        uuids = _message_uuids(
-            client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": view})
-        )
-        assert resolved_uuid in uuids, f"resolved dispatch row hidden under view={view}"
-        assert unresolved_uuid not in uuids, f"unresolved tool_use row wrongly shown under view={view}"
-
-    all_uuids = _message_uuids(
-        client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "all"})
-    )
-    assert resolved_uuid in all_uuids and unresolved_uuid in all_uuids
-
-
-def test_view_chat_around_resolved_dispatch_row_succeeds(
-    db_session: Session, tmp_path: Path
-) -> None:
-    """The 404-avoidance half of the same fix: deep-linking `around=` a resolved dispatch row
-    under a filtered view must resolve it as a real ordinal, not 404 as if it were trimmed."""
+    """The 404-avoidance half of the same fix, converted to `select=` (Task T18): deep-linking
+    `around=` a resolved dispatch row under the chat-equivalent select set must resolve it as a
+    real ordinal, not 404 as if it were trimmed."""
     tid, resolved_uuid, _unresolved_uuid = _build_view_dispatch_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
     r = client.get(
         f"/api/v1/transcripts/{tid}/messages",
-        params={"view": "chat", "around": resolved_uuid},
+        params={"select": "you-chat,claude-chat,claude-thinking", "around": resolved_uuid},
     )
     assert r.status_code == 200
     assert resolved_uuid in _message_uuids(r)
@@ -1497,42 +1412,56 @@ def _block_kinds(item: dict) -> list[str]:
     return [b["block_kind"] for b in item["blocks"]]
 
 
-def test_select_you_chat_claude_chat_claude_thinking_equals_view_chat(
+def test_select_you_chat_claude_chat_claude_thinking_pins_the_old_chat_view(
     db_session: Session, tmp_path: Path
 ) -> None:
-    """The discovered nuance (documented in the write-up): `view=chat` never filters BLOCKS
-    within an already-visible row, so a claude turn combining `thinking` + `text` shows BOTH
-    blocks under `view=chat` today. The select-set that reproduces `view=chat` exactly (same
-    rows, same blocks) is therefore `{you-chat, claude-chat, claude-thinking}`, not the
-    2-slug set -- EXISTING VIEW BEHAVIOR WINS per the task brief's own NOTE."""
+    """Task T18: converted from the `view=chat` equivalence test (T9) into a direct behavior
+    pin now that `view=` is deleted -- every row/block expectation below is unchanged from what
+    the fixture always encoded (`_build_select_equivalence_tree`'s docstring: single-category
+    messages plus one thinking+text row, so a claude turn combining `thinking` + `text` shows
+    BOTH blocks -- `select=` prunes BLOCKS, so the set that keeps both is `{you-chat, claude-chat,
+    claude-thinking}`, not a naive 2-slug set).
+
+    Also pins the T18 default: an ABSENT `select=` now falls back to this exact 3-slug set (the
+    "chat-equivalent" default, preserving the old default reader view for parameterless API
+    consumers) -- proven identical row-for-row and block-for-block, not just same-shaped.
+    """
     tid, u = _build_select_equivalence_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
-    view_resp = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "chat"})
     select_resp = client.get(
         f"/api/v1/transcripts/{tid}/messages",
         params={"select": "you-chat,claude-chat,claude-thinking"},
     )
-    assert view_resp.status_code == select_resp.status_code == 200
+    default_resp = client.get(f"/api/v1/transcripts/{tid}/messages")
+    assert select_resp.status_code == default_resp.status_code == 200
 
-    view_uuids = set(_message_uuids(view_resp))
+    expected = {u["you_chat"], u["claude_chat"], u["claude_thinking"], u["interrupt"]}
     select_uuids = set(_message_uuids(select_resp))
-    assert view_uuids == select_uuids == {
-        u["you_chat"], u["claude_chat"], u["claude_thinking"], u["interrupt"],
-    }
-    assert view_resp.json()["total"] == select_resp.json()["total"] == 4
+    default_uuids = set(_message_uuids(default_resp))
+    assert select_uuids == default_uuids == expected
+    assert select_resp.json()["total"] == default_resp.json()["total"] == 4
 
-    # Same blocks too, not just the same rows -- the load-bearing part of the equivalence.
+    # Same blocks too, not just the same rows -- the load-bearing part of the pin.
     for label in ("you_chat", "claude_chat", "claude_thinking", "interrupt"):
         uuid = u[label]
-        view_item = _item_by_uuid(view_resp, uuid)
         select_item = _item_by_uuid(select_resp, uuid)
-        assert _block_kinds(view_item) == _block_kinds(select_item)
-        assert [b["text_content"] for b in view_item["blocks"]] == [
-            b["text_content"] for b in select_item["blocks"]
+        default_item = _item_by_uuid(default_resp, uuid)
+        assert _block_kinds(select_item) == _block_kinds(default_item)
+        assert [b["text_content"] for b in select_item["blocks"]] == [
+            b["text_content"] for b in default_item["blocks"]
         ]
-    # The thinking+text row specifically carries BOTH block kinds under both mechanisms.
+    # The thinking+text row specifically carries BOTH block kinds.
     assert _block_kinds(_item_by_uuid(select_resp, u["claude_thinking"])) == ["thinking", "text"]
+
+    # A row excluded from the chat set (tool_result -> tool-traffic) can't be an anchor target --
+    # the excluded-anchor-404 mechanic the retired view=chat-harness paging tests used to pin,
+    # now proven directly against `select=` (Task T18; see the deleted-section note above).
+    anchor_404 = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking", "around": u["tool_result"]},
+    )
+    assert anchor_404.status_code == 404
 
 
 # --- Task T12: the chat-preset<->select-set equivalence, strengthened with a resolved chip -----
@@ -1660,99 +1589,93 @@ def _build_select_equivalence_tree_with_resolved_dispatch(
     }
 
 
-def test_select_chat_preset_equals_view_chat_including_resolved_dispatch_chip(
+def test_select_chat_preset_pins_the_old_chat_view_including_resolved_dispatch_chip(
     db_session: Session, tmp_path: Path
 ) -> None:
-    """Strengthens `test_select_you_chat_claude_chat_claude_thinking_equals_view_chat` with a
-    resolved dispatch row in the mix (owner ruling 2026-09-23, Task T12): `view=chat` and
-    `select=you-chat,claude-chat,claude-thinking` must now agree CHIP-FOR-CHIP, not just on the
-    plain single-category rows -- the resolved dispatch row (a `tool_use` block, categorized
-    `claude-chat`) shows under both, block-identical, while the unresolved dispatch row (stays
-    `tool-traffic`) is excluded from both."""
+    """Task T18: converted from the `view=chat` (T12-strengthened) equivalence test into a
+    direct pin. Strengthens `test_select_you_chat_claude_chat_claude_thinking_pins_the_old_chat_
+    view` with a resolved dispatch row in the mix (owner ruling 2026-09-23, Task T12): the
+    resolved dispatch row (a `tool_use` block, categorized `claude-chat`) shows under the chat
+    set, block-identical to how `view=chat` used to render it, while the unresolved dispatch row
+    (stays `tool-traffic`) is excluded."""
     tid, u = _build_select_equivalence_tree_with_resolved_dispatch(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
-    view_resp = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "chat"})
     select_resp = client.get(
         f"/api/v1/transcripts/{tid}/messages",
         params={"select": "you-chat,claude-chat,claude-thinking"},
     )
-    assert view_resp.status_code == select_resp.status_code == 200
+    assert select_resp.status_code == 200
 
     expected = {
         u["you_chat"], u["claude_chat"], u["claude_thinking"], u["interrupt"],
         u["resolved_dispatch"],
     }
-    view_uuids = set(_message_uuids(view_resp))
     select_uuids = set(_message_uuids(select_resp))
-    assert view_uuids == select_uuids == expected
-    assert u["unresolved_dispatch"] not in view_uuids | select_uuids
-    assert u["tool_result"] not in view_uuids | select_uuids
+    assert select_uuids == expected
+    assert u["unresolved_dispatch"] not in select_uuids
+    assert u["tool_result"] not in select_uuids
 
-    # Chip-for-chip: same blocks (kind + text_content), not just the same rows -- including the
-    # resolved dispatch row's `tool_use` block itself.
-    for uuid in expected:
-        view_item = _item_by_uuid(view_resp, uuid)
-        select_item = _item_by_uuid(select_resp, uuid)
-        assert _block_kinds(view_item) == _block_kinds(select_item)
-        assert [b["text_content"] for b in view_item["blocks"]] == [
-            b["text_content"] for b in select_item["blocks"]
-        ]
     resolved_item = _item_by_uuid(select_resp, u["resolved_dispatch"])
     assert _block_kinds(resolved_item) == ["text", "tool_use"]
 
+    # select=<all five> is the only set that also surfaces the UNRESOLVED dispatch row (plain
+    # tool-traffic) -- the chat set's selective doorway isn't a general "hide all tool_use" rule.
+    all_five_resp = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"select": ",".join(CATEGORY_SLUGS)}
+    )
+    all_five_uuids = set(_message_uuids(all_five_resp))
+    assert u["resolved_dispatch"] in all_five_uuids
+    assert u["unresolved_dispatch"] in all_five_uuids
 
-def test_select_full_chat_harness_set_equals_view_chat_harness(
+
+def test_select_full_chat_harness_set_pins_the_old_chat_harness_view(
     db_session: Session, tmp_path: Path
 ) -> None:
+    """Task T18: converted from the `view=chat-harness` equivalence test into a direct pin."""
     tid, u = _build_select_equivalence_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
-    view_resp = client.get(
-        f"/api/v1/transcripts/{tid}/messages", params={"view": "chat-harness"}
-    )
     select_resp = client.get(
         f"/api/v1/transcripts/{tid}/messages",
         params={"select": "you-chat,claude-chat,claude-thinking,harness-system"},
     )
-    assert view_resp.status_code == select_resp.status_code == 200
+    assert select_resp.status_code == 200
 
     expected = {
         u["you_chat"], u["claude_chat"], u["claude_thinking"], u["interrupt"], u["harness"],
     }
-    view_uuids = set(_message_uuids(view_resp))
     select_uuids = set(_message_uuids(select_resp))
-    assert view_uuids == select_uuids == expected
-    # tool_result stays OUT of chat-harness under both mechanisms.
-    assert u["tool_result"] not in view_uuids and u["tool_result"] not in select_uuids
-
-    for uuid in expected:
-        assert _block_kinds(_item_by_uuid(view_resp, uuid)) == _block_kinds(
-            _item_by_uuid(select_resp, uuid)
-        )
+    assert select_uuids == expected
+    # tool_result stays OUT of the chat-harness set.
+    assert u["tool_result"] not in select_uuids
 
 
-def test_select_all_five_equals_view_all(db_session: Session, tmp_path: Path) -> None:
+def test_select_all_five_pins_the_old_all_view(db_session: Session, tmp_path: Path) -> None:
+    """Task T18: converted from the `view=all` equivalence test into a direct pin. This
+    fixture has no blockless row, so it can't exercise the blockless-message clause (Task T18
+    amendment 2026-09-25: a blockless message categorizes `harness-system` at the message
+    level) one way or the other; `test_select_shows_blockless_rows_once_harness_system_is_
+    selected` below is where that clause is pinned, on a fixture that DOES have blockless
+    rows."""
     tid, u = _build_select_equivalence_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
-    view_resp = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "all"})
     select_resp = client.get(
         f"/api/v1/transcripts/{tid}/messages",
         params={"select": ",".join(CATEGORY_SLUGS)},
     )
-    assert view_resp.status_code == select_resp.status_code == 200
+    assert select_resp.status_code == 200
 
     all_uuids = set(u.values())
-    view_uuids = set(_message_uuids(view_resp))
     select_uuids = set(_message_uuids(select_resp))
-    assert view_uuids == select_uuids == all_uuids
-    assert view_resp.json()["total"] == select_resp.json()["total"] == len(all_uuids)
+    assert select_uuids == all_uuids
+    assert select_resp.json()["total"] == len(all_uuids)
 
+    # Sanity: every row's blocks are non-empty (the fixture is well-formed) -- there is nothing
+    # further to prune once ALL five categories are selected.
     for uuid in all_uuids:
-        assert _block_kinds(_item_by_uuid(view_resp, uuid)) == _block_kinds(
-            _item_by_uuid(select_resp, uuid)
-        )
+        assert _block_kinds(_item_by_uuid(select_resp, uuid))
 
 
 def test_select_claude_thinking_alone_returns_only_thinking_blocks(
@@ -1811,20 +1734,26 @@ def test_select_tool_traffic_returns_the_tool_exchange(
     assert _block_kinds(tool_use_item) == ["tool_use"]
 
 
-def test_select_takes_precedence_over_view(db_session: Session, tmp_path: Path) -> None:
+def test_view_param_has_no_effect_when_present_alongside_select(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Task T18: `view=` is no longer a declared param on `list_messages` at all -- passing one
+    alongside `select=` is exactly as inert as passing any other undeclared query param (FastAPI
+    silently drops it). `select=tool-traffic` governs regardless of what `view=` says."""
     tid, u = _build_select_equivalence_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
-    # tool_result never shows under view=chat alone...
-    chat_only = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "chat"})
-    assert u["tool_result"] not in _message_uuids(chat_only)
-
-    # ...but select=tool-traffic wins when BOTH are given, ignoring view= entirely.
     both = client.get(
         f"/api/v1/transcripts/{tid}/messages",
         params={"view": "chat", "select": "tool-traffic"},
     )
     assert _message_uuids(both) == [u["tool_result"]]
+
+    # Same result with no `view=` at all -- proving `view=chat` above contributed nothing.
+    select_only = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"select": "tool-traffic"}
+    )
+    assert _message_uuids(both) == _message_uuids(select_only)
 
 
 def test_select_empty_is_422(db_session: Session, tmp_path: Path) -> None:
@@ -1857,21 +1786,17 @@ def test_select_unknown_slug_is_422_naming_it(db_session: Session, tmp_path: Pat
 def test_select_reproduces_resolved_dispatch_chip_visibility_as_claude_chat(
     db_session: Session, tmp_path: Path
 ) -> None:
-    """Owner ruling 2026-09-23 (Task T12), flipping this test's former (pre-ruling) pinning:
-    `_has_resolved_dispatch()` makes `view=chat`/`chat-harness` show a content-free
-    `tool_use`-only row when it dispatched a CAPTURED subagent transcript (the SubagentChip's
-    only doorway) -- a chip is a doorway into a Claude-voiced conversation, not mechanical
-    traffic, so its block now categorizes `claude-chat`. `select=you-chat,claude-chat,
-    claude-thinking` (the `chat` preset's set) now reproduces that visibility exactly. The
-    ruling's flip side: with `claude-chat` UNSELECTED and only `tool-traffic` selected, the
-    resolved chip disappears (its block is no longer tool-traffic) while an ORDINARY
-    (unresolved) tool_use row still shows -- tool-traffic is unaffected for the unresolved case.
+    """Owner ruling 2026-09-23 (Task T12): a resolved-dispatch `tool_use` block (the
+    SubagentChip's only doorway, dispatching a CAPTURED subagent transcript) is a doorway into a
+    Claude-voiced conversation, not mechanical traffic, so it categorizes `claude-chat`.
+    `select=you-chat,claude-chat,claude-thinking` (the `chat` preset's set -- and, per Task T18,
+    the default when `select=` is absent) shows it; an ORDINARY (unresolved) `tool_use` row does
+    not. The ruling's flip side: with `claude-chat` UNSELECTED and only `tool-traffic` selected,
+    the resolved chip disappears (its block is no longer tool-traffic) while the unresolved row
+    still shows -- tool-traffic is unaffected for the unresolved case.
     """
     tid, resolved_uuid, unresolved_uuid = _build_view_dispatch_tree(db_session, tmp_path)
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
-
-    chat = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "chat"})
-    assert resolved_uuid in _message_uuids(chat)
 
     selected = client.get(
         f"/api/v1/transcripts/{tid}/messages",
@@ -1879,6 +1804,11 @@ def test_select_reproduces_resolved_dispatch_chip_visibility_as_claude_chat(
     )
     assert resolved_uuid in _message_uuids(selected)
     assert unresolved_uuid not in _message_uuids(selected)
+
+    # An absent `select=` (Task T18 default) behaves identically.
+    default = client.get(f"/api/v1/transcripts/{tid}/messages")
+    assert resolved_uuid in _message_uuids(default)
+    assert unresolved_uuid not in _message_uuids(default)
 
     # The ruling's flip side: claude-chat unselected, tool-traffic selected -- the resolved chip
     # is NOT shown (its tool_use block is claude-chat now, not tool-traffic), but the ordinary
@@ -1889,29 +1819,56 @@ def test_select_reproduces_resolved_dispatch_chip_visibility_as_claude_chat(
     assert resolved_uuid not in _message_uuids(tools_only)
     assert unresolved_uuid in _message_uuids(tools_only)
 
+    # select=<all five> shows both -- the chat set's exclusivity isn't "hide all tool_use".
+    all_five = client.get(
+        f"/api/v1/transcripts/{tid}/messages", params={"select": ",".join(CATEGORY_SLUGS)}
+    )
+    assert resolved_uuid in _message_uuids(all_five)
+    assert unresolved_uuid in _message_uuids(all_five)
 
-def test_select_never_shows_blockless_rows_unlike_view_all(
+
+def test_select_shows_blockless_rows_once_harness_system_is_selected(
     db_session: Session, tmp_path: Path
 ) -> None:
-    """Discovered nuance: a bare `system`-type record (`SystemRecord.blocks()` is always
-    `[]`) has NO blocks to select, so it is invisible under `select=` for EVERY combination of
-    categories -- `select=`'s disappear rule ("a row disappears iff none of its blocks are
-    selected") is vacuously true for a row with zero blocks. `view=all` shows it anyway (no
-    filtering at all, not even a content check). Deliberate, not fixed (see the write-up)."""
+    """Task T18 amendment (owner ruling 2026-09-25, superseding this test's own former pinning
+    of "structurally unreachable"): a message with ZERO content blocks (`SystemRecord.blocks()`
+    is always `[]`) categorizes as `harness-system` at the MESSAGE level -- there's no block to
+    carry a category, so the row itself floors there. `select=`'s disappear rule gains a second
+    clause beside the per-block EXISTS: a blockless row is visible iff `harness-system` is
+    selected. This restores `view=all`'s old completeness for blockless rows specifically (not
+    a general "every row unconditionally" -- a row DOES still need `harness-system` selected).
+
+    Under the plain "chat" default/set (no `harness-system`), a blockless row is still invisible
+    -- the amendment only ADDS a visibility path, it never removes the existing one."""
     tid, record_uuids, types = _build_view_harness_tree(db_session, tmp_path)
     system_uuids = {u for u, t in zip(record_uuids, types) if t == "system"}
     assert system_uuids  # sanity: the shared harness tree really does carry system rows
+    non_system_uuids = set(record_uuids) - system_uuids
     client = TestClient(create_app(db_path=tmp_path / "archive.db"))
 
-    all_view = client.get(f"/api/v1/transcripts/{tid}/messages", params={"view": "all"})
-    assert system_uuids <= set(_message_uuids(all_view))
+    # Hidden under the default/chat set (no harness-system selected) -- unaffected by the
+    # amendment.
+    chat_only = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking"},
+    )
+    assert not (system_uuids & set(_message_uuids(chat_only)))
 
+    default_absent = client.get(f"/api/v1/transcripts/{tid}/messages")
+    assert not (system_uuids & set(_message_uuids(default_absent)))
+
+    # Visible once harness-system is selected (chat-harness-equivalent set) -- the amendment.
+    chat_harness = client.get(
+        f"/api/v1/transcripts/{tid}/messages",
+        params={"select": "you-chat,claude-chat,claude-thinking,harness-system"},
+    )
+    assert system_uuids <= set(_message_uuids(chat_harness))
+    assert non_system_uuids <= set(_message_uuids(chat_harness))
+
+    # And under all-five.
     select_all = client.get(
         f"/api/v1/transcripts/{tid}/messages",
         params={"select": ",".join(CATEGORY_SLUGS)},
     )
-    assert not (system_uuids & set(_message_uuids(select_all)))
-    # The non-system rows (NULL authorship_kind in this tree -> harness-system catch-all) are
-    # unaffected -- only the structurally blockless rows drop out.
-    non_system_uuids = set(record_uuids) - system_uuids
+    assert system_uuids <= set(_message_uuids(select_all))
     assert non_system_uuids <= set(_message_uuids(select_all))

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../src/api/client'
 import type { MessageList, MessageOut, SessionDetail, TranscriptInfo } from '../src/api/types'
 import { SessionPage } from '../src/routes/SessionPage'
+import { ALL_CATEGORIES_SET, PRESET_SETS } from '../src/lib/viewMode'
 
 // Same convention as SubagentPage.test.tsx / Sidebar.test.tsx: mock the api client module
 // (hooks.ts imports these functions directly) rather than global fetch.
@@ -96,6 +97,11 @@ function makeMessage(uuid: string): MessageOut {
 function pageOf(offset: number, uuids: string[], total: number): MessageList {
   return { items: uuids.map(makeMessage), total, offset }
 }
+
+// Task T17: `select=` is the only wire shape now (no `view=`) -- built from the same PRESET_SETS/
+// ALL_CATEGORIES_SET the source uses.
+const SELECT_CHAT = [...PRESET_SETS.chat].join(',')
+const SELECT_ALL = [...ALL_CATEGORIES_SET].join(',')
 
 beforeEach(() => {
   // useViewMode seeds from this key; a leak from a prior test would make the view start non-default.
@@ -291,23 +297,28 @@ describe('SessionPage view toggle', () => {
 
   it('F4: clicking a header segment re-seeds the reader body with that view', async () => {
     fetchSession.mockResolvedValue(makeSession())
-    fetchMessages.mockImplementation((_id: number, opts?: { view?: string }) =>
-      Promise.resolve(pageOf(0, [opts?.view === 'all' ? 'full' : 'filtered'], 1)),
+    fetchMessages.mockImplementation((_id: number, opts?: { select?: string }) =>
+      Promise.resolve(pageOf(0, [opts?.select === SELECT_ALL ? 'full' : 'filtered'], 1)),
     )
     renderAt(PATH)
 
-    // Body seeds filtered first — useViewMode's default is 'chat'.
+    // Body seeds filtered first — useCategorySelection's default is the `chat` preset. Task T17
+    // item-2 revision: the preset buttons live INSIDE the dropdown panel now — open the trigger
+    // (its default-state label is "View: chat") before reaching the "all" preset item.
     expect(await screen.findByText('text for filtered')).toBeDefined()
-    const allSegment = screen.getByRole('button', { name: 'all' })
-    expect(allSegment.getAttribute('aria-pressed')).toBe('false')
+    await userEvent.click(screen.getByRole('button', { name: 'View: chat' }))
+    const allItem = screen.getByRole('button', { name: 'all' })
+    expect(allItem.getAttribute('aria-pressed')).toBe('false')
 
-    await userEvent.click(allSegment)
+    await userEvent.click(allItem)
 
     // The reader body actually re-seeded (remount + new fetch), driven purely by the header toggle.
+    // The panel stays OPEN on a preset click (owner spec) — the item is still reachable to assert.
     expect(await screen.findByText('text for full')).toBeDefined()
     expect(screen.queryByText('text for filtered')).toBeNull()
-    expect(allSegment.getAttribute('aria-pressed')).toBe('true')
-    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, view: 'all' })
+    expect(allItem.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'View: all' })).not.toBeNull()
+    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, select: SELECT_ALL })
   })
 
   it('critique #6: the count is the UNFILTERED total, unchanged by switching views', async () => {
@@ -318,24 +329,42 @@ describe('SessionPage view toggle', () => {
     // "total" states what the number MEANS in every view. Because it never appears or
     // disappears, switching views cannot reflow the row -- the count span keeps its width.
     expect(await screen.findByText('42 msgs total')).toBeDefined()
+    await userEvent.click(screen.getByRole('button', { name: 'View: chat' }))
     await userEvent.click(screen.getByRole('button', { name: 'all' }))
     expect(await screen.findByText('42 msgs total')).toBeDefined()
   })
 
-  // Task T10: category selection is URL-persisted now, not localStorage-sticky (the retired
-  // `introspect.view.v1` mechanism is gone — zero-legacy). A shared/bookmarked `?view=all` link
-  // is what seeds the reader unfiltered from first paint.
-  it('URL-persisted: a session opened with ?view=all seeds unfiltered from first paint', async () => {
+  // Task T10: category selection is URL-persisted, not localStorage-sticky (the retired
+  // `introspect.view.v1` mechanism is gone — zero-legacy). Task T17: the wire/URL shape for a
+  // persisted non-default selection is `?select=<csv>` — there is no more pretty `?view=<preset>`
+  // shorthand.
+  it('URL-persisted: a session opened with ?select=<all> seeds unfiltered from first paint', async () => {
     fetchSession.mockResolvedValue(makeSession())
-    fetchMessages.mockImplementation((_id: number, opts?: { view?: string }) =>
-      Promise.resolve(pageOf(0, [opts?.view === 'all' ? 'full' : 'filtered'], 1)),
+    fetchMessages.mockImplementation((_id: number, opts?: { select?: string }) =>
+      Promise.resolve(pageOf(0, [opts?.select === SELECT_ALL ? 'full' : 'filtered'], 1)),
     )
+    renderAt(`${PATH}?select=${SELECT_ALL}`)
+
+    // Task T17 item-2 revision: the preset buttons no longer live in the header, so "is the
+    // current selection the `all` preset" is read off the TRIGGER's own label instead of a
+    // header button's aria-pressed.
+    expect(await screen.findByText('text for full')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'View: all' })).not.toBeNull()
+    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, select: SELECT_ALL })
+    expect(fetchMessages).not.toHaveBeenCalledWith(1, { offset: 0, limit: 100, select: SELECT_CHAT })
+  })
+
+  // Task T17 (owner ruling 2026-09-25): `?view=` is deleted entirely, both read and write. A
+  // legacy `?view=all` link from before this task must not be silently upgraded to the preset it
+  // used to name — it's simply ignored, opening at the chat default exactly as if absent.
+  it('a legacy ?view=all in the URL is ignored — opens at the chat default', async () => {
+    fetchSession.mockResolvedValue(makeSession())
+    fetchMessages.mockResolvedValue(pageOf(0, ['m1'], 1))
     renderAt(`${PATH}?view=all`)
 
-    expect(await screen.findByText('text for full')).toBeDefined()
-    expect(screen.getByRole('button', { name: 'all' }).getAttribute('aria-pressed')).toBe('true')
-    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, view: 'all' })
-    expect(fetchMessages).not.toHaveBeenCalledWith(1, { offset: 0, limit: 100, view: 'chat' })
+    await screen.findByText('text for m1')
+    expect(screen.getByRole('button', { name: 'View: chat' })).not.toBeNull()
+    expect(fetchMessages).toHaveBeenCalledWith(1, { offset: 0, limit: 100, select: SELECT_CHAT })
   })
 
   it('clicking a header checkbox re-seeds the reader body with the resulting custom combination', async () => {
@@ -343,6 +372,11 @@ describe('SessionPage view toggle', () => {
     fetchMessages.mockResolvedValue(pageOf(0, ['m1'], 1))
     renderAt(PATH)
     await screen.findByText('text for m1')
+
+    // Task T17: the checkboxes live behind the dropdown trigger now — open it first. Default
+    // selection is the `chat` preset, so the trigger reads "View: chat" (item-2 revision: the
+    // exact `View: <label>` format, no trailing arrow).
+    await userEvent.click(screen.getByRole('button', { name: 'View: chat' }))
 
     // Unchecking is the reachable custom combination here: the default `chat` preset is already
     // {you-chat, claude-chat, claude-thinking}, and every other single-box toggle from it either

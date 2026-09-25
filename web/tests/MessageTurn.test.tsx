@@ -475,7 +475,8 @@ describe('conversation-only block hiding (selection prop, Task T10)', () => {
 
 // Task P4-F1: a block-bearing attachment is a rescued human queued-command — labelled
 // SYSTEM (YOU), dawn (user) accent — while a zero-block attachment is harness furniture that
-// keeps the plain SYSTEM treatment in full mode and vanishes entirely under a filtered view.
+// keeps the plain SYSTEM treatment once harness-system is selected, and vanishes under a
+// selection that excludes it (Task T17 follow-up, 2026-09-25 — see the note below).
 describe('attachment voice (rescued queued commands)', () => {
   function accentOf(container: HTMLElement): string {
     const inner = container.querySelector<HTMLElement>('.message-turn > div')
@@ -492,23 +493,30 @@ describe('attachment voice (rescued queued commands)', () => {
     expect(container.textContent).toContain('queued human words')
   })
 
-  // Task T10 correction: a zero-block message is now ALWAYS invisible (server-confirmed,
-  // test_select_never_shows_blockless_rows_unlike_view_all) -- including the default
-  // (all-five-equivalent) selection, unlike the retired `all` view which showed it as a plain
-  // SYSTEM row. The label logic itself (`speakerFor`, unaffected by this task) is still proven
-  // separately below ("speakerFor — null-kind legacy fallback").
-  it('hides a zero-block attachment entirely, even under the default (every-category) selection', () => {
+  // Task T17 follow-up (2026-09-25, server contract update): a zero-block message categorizes as
+  // `harness-system` at the MESSAGE level, so it's visible once harness-system is selected --
+  // including the default (all-five) selection, matching the retired `all` view's own plain
+  // SYSTEM row again. This SUPERSEDES the T10-era "always invisible, even under all-five"
+  // contract (see viewMode.ts's `isVisibleInSelection` doc for the change record). The label
+  // logic itself (`speakerFor`, unaffected by this task) is still proven separately below
+  // ("speakerFor — null-kind legacy fallback").
+  it('shows a zero-block attachment as a plain SYSTEM row under the default (every-category) selection', () => {
     const msg = message({ type: 'attachment', blocks: [] })
     const { container } = renderTurn(<MessageTurn message={msg} />)
-    expect(container.querySelector('.message-turn')).toBeNull()
-    expect(container.textContent).toBe('')
+    expect(turnOf(container).classList.contains('turn-system')).toBe(true)
+    expect(container.querySelector('.turn-eyebrow')?.textContent).toMatch(/^SYSTEM/)
   })
 
-  it('hides a zero-block attachment under a narrower filtered selection too', () => {
+  it('shows a zero-block attachment once harness-system is selected (chat-harness), hides it under the bare chat preset', () => {
     const msg = message({ type: 'attachment', blocks: [] })
-    const { container } = renderTurn(<MessageTurn message={msg} selection={PRESET_SETS.chat} />)
-    expect(container.querySelector('.message-turn')).toBeNull()
-    expect(container.textContent).toBe('')
+    const hiddenUnderChat = renderTurn(<MessageTurn message={msg} selection={PRESET_SETS.chat} />)
+    expect(hiddenUnderChat.container.querySelector('.message-turn')).toBeNull()
+    expect(hiddenUnderChat.container.textContent).toBe('')
+
+    const shownUnderHarness = renderTurn(
+      <MessageTurn message={msg} selection={PRESET_SETS['chat-harness']} />,
+    )
+    expect(shownUnderHarness.container.querySelector('.message-turn')).not.toBeNull()
   })
 
   // Task T10 correction: `categoryOfBlock` has NO legacy type-based fallback for a NULL

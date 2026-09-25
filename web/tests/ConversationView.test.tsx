@@ -59,6 +59,12 @@ vi.mock('react-virtuoso', () => ({
   },
 }))
 
+// Task T17: `select=` is the only wire shape now (no `view=`) -- built from the SAME PRESET_SETS/
+// ALL_CATEGORIES_SET the source uses, so a preset-set reorder can never silently desync these
+// fixtures from `withSelection`'s own `[...selection].join(',')`.
+const SELECT_CHAT = [...PRESET_SETS.chat].join(',')
+const SELECT_ALL = [...ALL_CATEGORIES_SET].join(',')
+
 const TRANSCRIPT_ID = 7
 
 function makeMessage(ordinal: number): MessageOut {
@@ -126,7 +132,11 @@ describe('initial load without around', () => {
 
     expect(await screen.findAllByTestId('row')).toHaveLength(100)
     expect(fetchMessages).toHaveBeenCalledTimes(1)
-    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, { offset: 0, limit: 100, view: 'all' })
+    expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
+      offset: 0,
+      limit: 100,
+      select: SELECT_ALL,
+    })
     expect(virtuosoProps.current?.firstItemIndex).toBe(0)
     expect(virtuosoProps.current?.initialTopMostItemIndex).toBe(0)
   })
@@ -141,7 +151,7 @@ describe('around-seeded load', () => {
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
       around: 'uuid-90',
       limit: 100,
-      view: 'all',
+      select: SELECT_ALL,
     })
     expect(virtuosoProps.current?.firstItemIndex).toBe(40)
     // uuid-90 sits at array index 50 within the seeded page (items are uuid-40..uuid-139). The
@@ -189,7 +199,7 @@ describe('startReached', () => {
     expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
       offset: 0,
       limit: 40,
-      view: 'all',
+      select: SELECT_ALL,
     })
 
     const rows = screen.getAllByTestId('row')
@@ -224,7 +234,7 @@ describe('endReached', () => {
     expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
       offset: 100,
       limit: 100,
-      view: 'all',
+      select: SELECT_ALL,
     })
 
     const rows = screen.getAllByTestId('row')
@@ -272,7 +282,7 @@ describe('around-target not found (404)', () => {
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
       around: 'uuid-x',
       limit: 100,
-      view: 'all',
+      select: SELECT_ALL,
     })
 
     // Recovery: dropping the around-seed re-fetches offset 0 and renders the window.
@@ -283,7 +293,7 @@ describe('around-target not found (404)', () => {
     expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
       offset: 0,
       limit: 100,
-      view: 'all',
+      select: SELECT_ALL,
     })
     expect(virtuosoProps.current?.firstItemIndex).toBe(0)
   })
@@ -341,12 +351,12 @@ describe('persistent deep-link marker', () => {
   })
 })
 
-// §14.4: `view` must ride ALL THREE fetch sites — the seed, loadBefore, and loadAfter — so a
-// page fetched under a DIFFERENT view can never splice into the window and corrupt the offset
-// math. Unlike the retired boolean flag this replaces, `view` is never omitted from the opts
-// object — the server's own default ('all') differs from the client's ('chat'), so every call
-// site must say what it means.
-describe('view threads through every fetch site', () => {
+// §14.4: `select` must ride ALL THREE fetch sites — the seed, loadBefore, and loadAfter — so a
+// page fetched under a DIFFERENT selection can never splice into the window and corrupt the
+// offset math. `select` is never omitted from the opts object (Task T17: it's the ONLY wire
+// shape, no `view=` sibling any more) — the server's own default ('all') differs from the
+// client's ('chat'), so every call site must say what it means.
+describe('selection threads through every fetch site (select=)', () => {
   it('seeds offset 0 with the current view', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
     renderView(undefined, PRESET_SETS.chat)
@@ -355,7 +365,7 @@ describe('view threads through every fetch site', () => {
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
       offset: 0,
       limit: 100,
-      view: 'chat',
+      select: SELECT_CHAT,
     })
   })
 
@@ -367,7 +377,7 @@ describe('view threads through every fetch site', () => {
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
       around: 'uuid-90',
       limit: 100,
-      view: 'chat',
+      select: SELECT_CHAT,
     })
   })
 
@@ -382,7 +392,7 @@ describe('view threads through every fetch site', () => {
     expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
       offset: 0,
       limit: 40,
-      view: 'chat',
+      select: SELECT_CHAT,
     })
 
     fetchMessages.mockResolvedValueOnce(pageOf(140, 100, 250))
@@ -391,12 +401,12 @@ describe('view threads through every fetch site', () => {
       expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
         offset: 140,
         limit: 100,
-        view: 'chat',
+        select: SELECT_CHAT,
       }),
     )
   })
 
-  it('sends view explicitly even for the unfiltered default (all)', async () => {
+  it('sends select explicitly even for the unfiltered default (all)', async () => {
     fetchMessages.mockResolvedValueOnce(pageOf(0, 100, 250))
     renderView(undefined, ALL_CATEGORIES_SET)
 
@@ -404,7 +414,7 @@ describe('view threads through every fetch site', () => {
     expect(fetchMessages).toHaveBeenCalledWith(TRANSCRIPT_ID, {
       offset: 0,
       limit: 100,
-      view: 'all',
+      select: SELECT_ALL,
     })
   })
 })
@@ -435,7 +445,7 @@ describe('top / end reader controls', () => {
     expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
       offset: 0,
       limit: 100,
-      view: 'all',
+      select: SELECT_ALL,
     })
     // No target to align to on the Top-reseeded (remounted) window — plain number 0, not the
     // object form.
@@ -454,7 +464,7 @@ describe('top / end reader controls', () => {
       expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
         offset: 150,
         limit: 100,
-        view: 'all',
+        select: SELECT_ALL,
       }),
     )
     // Window seeded at the last page (firstItemIndex 150); array-local index of the last loaded
@@ -479,7 +489,7 @@ describe('top / end reader controls', () => {
       expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
         offset: 150,
         limit: 100,
-        view: 'chat',
+        select: SELECT_CHAT,
       }),
     )
   })
@@ -557,7 +567,7 @@ describe('around-404 recovery under a filtered view (critique #12)', () => {
     // The trap-proof sequence: 404 under a filtered view, 200 under 'all' — and the around seed
     // is KEPT.
     fetchMessages.mockImplementation((_id: number, opts: MessagesOptions) =>
-      opts.view !== 'all'
+      opts.select !== SELECT_ALL
         ? Promise.reject(new ApiError(404, 'Not Found', 'filtered out'))
         : Promise.resolve(pageOf(40, 100, 250)),
     )
@@ -588,7 +598,7 @@ describe('around-404 recovery under a filtered view (critique #12)', () => {
     expect(fetchMessages).toHaveBeenLastCalledWith(TRANSCRIPT_ID, {
       around: 'uuid-90',
       limit: 100,
-      view: 'all',
+      select: SELECT_ALL,
     })
   })
 })

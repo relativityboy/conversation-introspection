@@ -456,15 +456,19 @@ describe('isVisibleInSelection', () => {
     expect(isVisibleInSelection(withRealText, new Set(['claude-chat']))).toBe(true)
   })
 
-  // Server-confirmed divergence from the retired `all` view (test_select_never_shows_
-  // blockless_rows_unlike_view_all): a blockless row is invisible under EVERY selection,
-  // including all-five -- the disappear rule is vacuously true when there are no blocks to
-  // select from.
-  it('a zero-block message is always invisible, even under the all-five selection', () => {
+  // Server contract update (T17 follow-up, 2026-09-25): a message with ZERO content blocks
+  // categorizes as `harness-system` at the MESSAGE level (there's no block to categorize, so this
+  // is a message-level rule, not a `categoryOfBlock` case) -- visible iff `harness-system` is in
+  // the selection. This restores "select=<all five> ≡ old view=all shows everything", including
+  // blockless furniture (bare `system` records, non-rescued zero-block `attachment` stubs), and
+  // means "show all message types" (ALL_CATEGORIES_SET) is now truly complete again.
+  it('a zero-block message is hidden under the chat set, visible under any set containing harness-system', () => {
     const msg = message({ type: 'attachment', authorship_kind: null, blocks: [] })
     expect(isVisibleInSelection(msg, PRESET_SETS.chat)).toBe(false)
-    expect(isVisibleInSelection(msg, PRESET_SETS['chat-harness'])).toBe(false)
-    expect(isVisibleInSelection(msg, ALL_CATEGORIES_SET)).toBe(false)
+    expect(isVisibleInSelection(msg, new Set(['you-chat', 'claude-chat']))).toBe(false)
+    expect(isVisibleInSelection(msg, PRESET_SETS['chat-harness'])).toBe(true)
+    expect(isVisibleInSelection(msg, new Set(['harness-system']))).toBe(true)
+    expect(isVisibleInSelection(msg, ALL_CATEGORIES_SET)).toBe(true)
   })
 
   // Owner ruling 2026-09-23 (Task T12; server test flipped to
@@ -516,19 +520,18 @@ describe('isBlockCategorySelected', () => {
   })
 })
 
+// Task T17 (owner ruling 2026-09-25): `?view=` is deleted entirely -- `select=` is the only wire
+// param, absent defaults to the chat preset, and a legacy `?view=` in an arriving URL is simply
+// ignored (opens at default) rather than consulted. Server contract (parallel task, frozen): same
+// rule -- `view=` is deleted server-side too.
 describe('readSelection', () => {
-  it('defaults to the chat preset when neither param is present', () => {
+  it('defaults to the chat preset when ?select= is absent', () => {
     expect(readSelection(new URLSearchParams())).toEqual(PRESET_SETS.chat)
   })
 
-  it('reads a preset from ?view=', () => {
-    expect(readSelection(new URLSearchParams('view=chat-harness'))).toEqual(
-      PRESET_SETS['chat-harness'],
-    )
-    expect(readSelection(new URLSearchParams('view=all'))).toEqual(ALL_CATEGORIES_SET)
-  })
-
-  it('falls back to the chat default on an unrecognized ?view=', () => {
+  it('ignores a legacy ?view= entirely -- opens at the chat default, not the named preset', () => {
+    expect(readSelection(new URLSearchParams('view=chat-harness'))).toEqual(PRESET_SETS.chat)
+    expect(readSelection(new URLSearchParams('view=all'))).toEqual(PRESET_SETS.chat)
     expect(readSelection(new URLSearchParams('view=bogus'))).toEqual(PRESET_SETS.chat)
   })
 
@@ -537,7 +540,7 @@ describe('readSelection', () => {
     expect(readSelection(params)).toEqual(new Set(['you-chat', 'claude-thinking']))
   })
 
-  it('select wins when both ?select= and ?view= are present', () => {
+  it('select= wins over an accompanying legacy ?view=', () => {
     const params = new URLSearchParams('view=all&select=you-chat')
     expect(readSelection(params)).toEqual(new Set(['you-chat']))
   })
@@ -554,17 +557,32 @@ describe('readSelection', () => {
 })
 
 describe('writeSelection', () => {
-  it('writes the pretty ?view= for a preset-equivalent selection and clears ?select=', () => {
+  it('writes no param at all when the selection equals the chat default (clean URLs)', () => {
     const prev = new URLSearchParams('select=you-chat')
-    const next = writeSelection(prev, PRESET_SETS['chat-harness'])
-    expect(next.get('view')).toBe('chat-harness')
+    const next = writeSelection(prev, PRESET_SETS.chat)
     expect(next.has('select')).toBe(false)
+    expect(next.has('view')).toBe(false)
   })
 
-  it('writes ?select= for a custom combination and clears ?view=', () => {
-    const prev = new URLSearchParams('view=chat')
+  it('writes ?select= for chat-harness and all too -- only the chat default is ever omitted', () => {
+    const harness = writeSelection(new URLSearchParams(), PRESET_SETS['chat-harness'])
+    expect(new Set(harness.get('select')?.split(','))).toEqual(PRESET_SETS['chat-harness'])
+    expect(harness.has('view')).toBe(false)
+
+    const all = writeSelection(new URLSearchParams(), PRESET_SETS.all)
+    expect(new Set(all.get('select')?.split(','))).toEqual(ALL_CATEGORIES_SET)
+    expect(all.has('view')).toBe(false)
+  })
+
+  it('writes ?select= for a custom combination', () => {
+    const prev = new URLSearchParams()
     const next = writeSelection(prev, new Set<CategorySlug>(['you-chat', 'tool-traffic']))
     expect(new Set(next.get('select')?.split(','))).toEqual(new Set(['you-chat', 'tool-traffic']))
+    expect(next.has('view')).toBe(false)
+  })
+
+  it('never writes ?view= -- that param is dead code on the write side', () => {
+    const next = writeSelection(new URLSearchParams(), new Set<CategorySlug>(['you-chat']))
     expect(next.has('view')).toBe(false)
   })
 
@@ -572,7 +590,7 @@ describe('writeSelection', () => {
     const prev = new URLSearchParams('q=other')
     const next = writeSelection(prev, PRESET_SETS.all)
     expect(next.get('q')).toBe('other')
-    expect(prev.has('view')).toBe(false)
+    expect(prev.has('select')).toBe(false)
   })
 })
 
@@ -587,11 +605,18 @@ describe('useCategorySelection', () => {
     expect(result.current.selection).toEqual(PRESET_SETS.chat)
   })
 
-  it('seeds from ?view= / ?select= already in the URL', () => {
+  it('seeds from ?select= already in the URL', () => {
+    const { result } = renderHook(() => useCategorySelection(), {
+      wrapper: wrapper(`/s/x?select=${[...ALL_CATEGORIES_SET].join(',')}`),
+    })
+    expect(result.current.selection).toEqual(ALL_CATEGORIES_SET)
+  })
+
+  it('ignores a legacy ?view= in the URL -- seeds the chat default', () => {
     const { result } = renderHook(() => useCategorySelection(), {
       wrapper: wrapper('/s/x?view=all'),
     })
-    expect(result.current.selection).toEqual(ALL_CATEGORIES_SET)
+    expect(result.current.selection).toEqual(PRESET_SETS.chat)
   })
 
   it('setSelection updates the read-back selection', () => {
