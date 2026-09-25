@@ -48,17 +48,19 @@ _INDEXED_PREDICATE = (
     "block_kind IN ('text', 'thinking') AND text_content IS NOT NULL AND text_content<>''"
 )
 
-# The sources axis (spec 2026-08-15): additive buckets that partition the index exactly.
-# "chat" = the human<->Claude dialogue on main transcripts; "agents" = everything in subagent
-# transcripts; "system" = harness-authored main-transcript records (NULL authorship -- a
-# not-yet-classified mid-import row -- buckets as system: the honest floor, not known to be
-# dialogue). Tool payloads are not indexed at all, so there is deliberately no "tools" bucket.
-SOURCES_ALL = frozenset({"chat", "agents", "system"})
+# The sources axis (spec 2026-08-15; "agents" renamed "subagents" Task T13, zero-legacy --
+# no alias, the old value 422s like any other unrecognized token): additive buckets that
+# partition the index exactly. "chat" = the human<->Claude dialogue on main transcripts;
+# "subagents" = everything in subagent transcripts; "system" = harness-authored
+# main-transcript records (NULL authorship -- a not-yet-classified mid-import row -- buckets
+# as system: the honest floor, not known to be dialogue). Tool payloads are not indexed at
+# all, so there is deliberately no "tools" bucket.
+SOURCES_ALL = frozenset({"chat", "subagents", "system"})
 # Static identifier list from the frozen taxonomy -- never user input, safe to inline.
 _DIALOGUE_IN = "(" + ", ".join(f"'{kind}'" for kind in sorted(DIALOGUE_KINDS)) + ")"
 _SOURCE_CLAUSES = {
     "chat": f"(t.kind = 'main' AND m.authorship_kind IN {_DIALOGUE_IN})",
-    "agents": "(t.kind = 'subagent')",
+    "subagents": "(t.kind = 'subagent')",
     "system": (
         "(t.kind = 'main' AND (m.authorship_kind IS NULL"
         f" OR m.authorship_kind NOT IN {_DIALOGUE_IN}))"

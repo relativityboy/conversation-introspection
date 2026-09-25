@@ -58,6 +58,7 @@ function makeSession(over: Partial<SessionDetail> = {}): SessionDetail {
     match_snippet: null,
     match_record_uuid: null,
     match_agent_hex_id: null,
+    origin: 'root',
     transcripts: [MAIN_TRANSCRIPT],
     on_disk: true,
     ...over,
@@ -142,6 +143,33 @@ describe('SessionPage header title precedence', () => {
     renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
 
     expect(await screen.findByRole('heading', { name: 'aaaaaaaa' })).toBeDefined()
+  })
+})
+
+// --- origin badge (Task T14): orientation for a deep link landing on a subagent-origin session --
+
+describe('SessionPage origin badge', () => {
+  it('shows a muted "SUBAGENT SESSION" badge when the session origin is subagent', async () => {
+    fetchSession.mockResolvedValue(makeSession({ origin: 'subagent' }))
+    renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+    expect(await screen.findByText('SUBAGENT SESSION')).toBeDefined()
+  })
+
+  it('shows no badge for a root-origin session', async () => {
+    fetchSession.mockResolvedValue(makeSession({ origin: 'root' }))
+    renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+    await screen.findByRole('heading', { name: 'AI Title' })
+    expect(screen.queryByText('SUBAGENT SESSION')).toBeNull()
+  })
+
+  it('shows no badge for an empty-origin session', async () => {
+    fetchSession.mockResolvedValue(makeSession({ origin: 'empty' }))
+    renderAt('/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+    await screen.findByRole('heading', { name: 'AI Title' })
+    expect(screen.queryByText('SUBAGENT SESSION')).toBeNull()
   })
 })
 

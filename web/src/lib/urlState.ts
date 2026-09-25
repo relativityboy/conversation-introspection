@@ -113,3 +113,57 @@ export function writeRestrict(prev: URLSearchParams, value: boolean): URLSearchP
   }
   return next
 }
+
+// --- sidebar subagent-session reveal toggle (Task T14) -------------------------------------
+//
+// `?subagents=1` — the sidebar's session list defaults to hiding subagent-origin sessions
+// (`origin=root,empty` sent to `GET /sessions`); this toggle reveals them (the request drops
+// `origin=` entirely, per the API contract's "absent = all"). Named distinctly from the global
+// search toggle below (`subagent_sessions`) on purpose — the two surfaces are independently
+// stateful even though both are mounted on the SAME URL (Sidebar renders on every route): a
+// reader revealing subagent sessions in the sidebar should not silently widen an unrelated
+// global-search request, and vice versa.
+
+/** Reads the sidebar's subagent-reveal toggle. Anything other than the literal `subagents=1`
+ * reads as off (hidden) — same falsy-tolerant convention as `readRestrict`. */
+export function readShowSubagents(searchParams: URLSearchParams): boolean {
+  return searchParams.get('subagents') === '1'
+}
+
+/** Returns a NEW `URLSearchParams` with `subagents` set — `prev` is never mutated. `false`
+ * deletes the param (falsy-deletes idiom) so the default (hidden) state leaves a clean URL. */
+export function writeShowSubagents(prev: URLSearchParams, value: boolean): URLSearchParams {
+  const next = new URLSearchParams(prev)
+  if (value) {
+    next.set('subagents', '1')
+  } else {
+    next.delete('subagents')
+  }
+  return next
+}
+
+// --- global search subagent-session toggle (Task T14) --------------------------------------
+//
+// `?subagent_sessions=1` — mirrors the `/search` endpoint's own `subagent_sessions=` boolean
+// (global scope only; see fetchSearch/useSearch) the same way `?select=`/`?view=` mirror the
+// reader's wire params (viewMode.ts) — a direct 1:1 name reuse for a param whose ONLY consumer
+// is that one request. Off by default (subagent-origin groups excluded), matching the server's
+// own default.
+
+/** Reads the global search page's subagent-inclusion toggle. Anything other than the literal
+ * `subagent_sessions=1` reads as off — same falsy-tolerant convention as `readRestrict`. */
+export function readSubagentSessions(searchParams: URLSearchParams): boolean {
+  return searchParams.get('subagent_sessions') === '1'
+}
+
+/** Returns a NEW `URLSearchParams` with `subagent_sessions` set — `prev` is never mutated.
+ * `false` deletes the param (falsy-deletes idiom) so the default (off) state leaves a clean URL. */
+export function writeSubagentSessions(prev: URLSearchParams, value: boolean): URLSearchParams {
+  const next = new URLSearchParams(prev)
+  if (value) {
+    next.set('subagent_sessions', '1')
+  } else {
+    next.delete('subagent_sessions')
+  }
+  return next
+}

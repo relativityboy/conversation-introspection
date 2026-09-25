@@ -45,6 +45,7 @@ function makeSession(over: Partial<SessionSummary> = {}): SessionSummary {
     match_snippet: null,
     match_record_uuid: null,
     match_agent_hex_id: null,
+    origin: 'root',
     ...over,
   }
 }
@@ -230,6 +231,77 @@ describe('SearchPage', () => {
 
     const more = await screen.findByRole('link', { name: 'more in this conversation →' })
     expect(more.getAttribute('href')).toBe('/s/uuid-1?q=foo&projects=alpha%2Cmid')
+  })
+
+  // --- Task T14: "include subagent sessions" toggle ------------------------------------------
+
+  describe('subagent-sessions toggle', () => {
+    it('renders off by default and sends no subagent_sessions flag', async () => {
+      fetchSearch.mockResolvedValue(globalResult())
+      setup(<SearchPage />, '/search?q=foo')
+
+      const toggle = screen.getByRole('checkbox', { name: 'include subagent sessions' })
+      expect((toggle as HTMLInputElement).checked).toBe(false)
+      await waitFor(() =>
+        expect(fetchSearch).toHaveBeenCalledWith(
+          'foo',
+          'global',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ),
+      )
+    })
+
+    it('reads its checked state from ?subagent_sessions=1 and sends the flag', async () => {
+      fetchSearch.mockResolvedValue(globalResult())
+      setup(<SearchPage />, '/search?q=foo&subagent_sessions=1')
+
+      const toggle = screen.getByRole('checkbox', { name: 'include subagent sessions' })
+      expect((toggle as HTMLInputElement).checked).toBe(true)
+      await waitFor(() =>
+        expect(fetchSearch).toHaveBeenCalledWith(
+          'foo',
+          'global',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          true,
+        ),
+      )
+    })
+
+    it('checking it writes ?subagent_sessions=1, preserving other params', async () => {
+      fetchSearch.mockResolvedValue(globalResult())
+      const user = userEvent.setup()
+      const { locationRef } = setup(<SearchPage />, '/search?q=foo&projects=alpha')
+
+      await user.click(screen.getByRole('checkbox', { name: 'include subagent sessions' }))
+
+      await waitFor(() => {
+        const params = new URLSearchParams(locationRef.current?.search)
+        expect(params.get('subagent_sessions')).toBe('1')
+        expect(params.get('q')).toBe('foo')
+        expect(params.get('projects')).toBe('alpha')
+      })
+    })
+
+    it('unchecking it clears ?subagent_sessions=', async () => {
+      fetchSearch.mockResolvedValue(globalResult())
+      const user = userEvent.setup()
+      const { locationRef } = setup(<SearchPage />, '/search?q=foo&subagent_sessions=1')
+
+      await user.click(screen.getByRole('checkbox', { name: 'include subagent sessions' }))
+
+      await waitFor(() => {
+        expect(new URLSearchParams(locationRef.current?.search).has('subagent_sessions')).toBe(
+          false,
+        )
+      })
+    })
   })
 })
 
@@ -479,6 +551,28 @@ describe('ConversationSearchResults', () => {
         new Set(['you-chat', 'claude-chat', 'claude-thinking']),
       )
     })
+  })
+
+  // Task T14: the global search page's toggle is GLOBAL-SCOPE only (per contract). Session-scope
+  // search never reads ?subagent_sessions= at all — this pins that even a URL that happens to
+  // carry it (e.g. carried over from a prior /search visit) never reaches fetchSearch here.
+  it('never passes subagentSessions to fetchSearch, even with ?subagent_sessions=1 in the URL', async () => {
+    fetchSearch.mockResolvedValue({ items: [makeHit()], total: 1 } satisfies SessionSearchResult)
+    setup(
+      <ConversationSearchResults sessionUuid="uuid-1" q="foo" />,
+      '/s/uuid-1?q=foo&subagent_sessions=1',
+    )
+
+    await waitFor(() =>
+      expect(fetchSearch).toHaveBeenCalledWith(
+        'foo',
+        'session',
+        'uuid-1',
+        undefined,
+        undefined,
+        undefined,
+      ),
+    )
   })
 
   // Distinct from the query above: ?projects= is still a deep-link concern even in session scope

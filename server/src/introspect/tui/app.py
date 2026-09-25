@@ -292,7 +292,7 @@ class IntrospectApp(App):
         widened = sources != frozenset({"chat"})
         label = f' [sources: {"+".join(sorted(sources))}]' if widened else ""
         if not self._results:
-            hint = "" if widened else " (chat only -- widen with --agents / --system / --all)"
+            hint = "" if widened else " (chat only -- widen with --subagents / --system / --all)"
             self._append_log(f'no results for "{clean}"{label}{hint}')
             return
         results_list.add_options(

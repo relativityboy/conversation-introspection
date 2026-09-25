@@ -23,7 +23,7 @@ facts, decisions, exact wording.
 curl -s --max-time 1 http://127.0.0.1:8765/api/v1/status   # {"version":...,"sessions":...}
 ```
 
-**Check the `version` in that response: this skill needs >= 1.9.0.** Older servers
+**Check the `version` in that response: this skill needs >= 1.15.0.** Older servers
 silently IGNORE query params they don't know (`sources=` scoping needs 1.5.0, the
 `from=`/`until=` anchors and the record reverse lookup need 1.9.0) — never claim a scope
 or an anchored window against one. If the version is older, say so and either treat those
@@ -40,8 +40,15 @@ curl -s "http://127.0.0.1:8765/api/v1/search?q=resume+shell+env&limit=10" \
 ```
 
 **Sources — search defaults to the chat** (what the user and Claude said to each other).
-Widen deliberately: `&sources=all` (everything), `&sources=chat,agents` (add subagent
+Widen deliberately: `&sources=all` (everything), `&sources=chat,subagents` (add subagent
 transcripts), `system` (harness records). Unknown tokens 422.
+
+**Subagent SESSIONS are excluded from global search by default** (whole sessions that were
+standalone agent runs — dispatched reviews, minion builds — as opposed to subagent
+transcripts riding inside a root session). If you're hunting minion work and results come
+up empty, add `&subagent_sessions=true`. The sessions list has the same axis:
+`&origin=root` / `subagent` / `empty` on `GET /api/v1/sessions`, with `origin` on every
+summary — root = a human typed in it. Don't mistake default-excluded for absent.
 
 **Scope to the relevant project first.** For questions about the current (or a known)
 project, add `&projects=<dir_slug>` — the archive spans every project, and an unscoped

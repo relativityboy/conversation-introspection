@@ -68,7 +68,7 @@ def test_search_surfaces_subagent_content_under_parent_session(
     # "cormorant" lives only in a subagent transcript whose parent is session 1 -- outside
     # the default chat sources (spec 2026-08-15), so finding it requires widening.
     rows = search_sessions(
-        indexed_fixture, "cormorant", sources=frozenset({"chat", "agents"})
+        indexed_fixture, "cormorant", sources=frozenset({"chat", "subagents"})
     )
     assert len(rows) == 1
     assert rows[0].session_uuid == SESSION_UUID_1
@@ -92,7 +92,7 @@ def test_search_subagent_hit_carries_agent_hex(indexed_fixture: Session) -> None
     # Right-arrow link becomes /s/{uuid}/a/{hex}/m/{record} (never the main-transcript /m/ that
     # would 404 -- the cross-layer bug the Phase 3 walk caught in the web sidebar).
     rows = search_sessions(
-        indexed_fixture, "cormorant", sources=frozenset({"chat", "agents"})
+        indexed_fixture, "cormorant", sources=frozenset({"chat", "subagents"})
     )
     assert rows[0].agent_hex_id == AGENT_HEX_ID
 
@@ -105,20 +105,28 @@ def test_parse_source_flags_default_is_chat() -> None:
 
 
 def test_parse_source_flags_widen_additively() -> None:
-    assert parse_source_flags("horizon --agents") == (
-        "horizon", frozenset({"chat", "agents"})
+    assert parse_source_flags("horizon --subagents") == (
+        "horizon", frozenset({"chat", "subagents"})
     )
     assert parse_source_flags("--system horizon") == (
         "horizon", frozenset({"chat", "system"})
     )
-    assert parse_source_flags("horizon --agents --system") == (
-        "horizon", frozenset({"chat", "agents", "system"})
+    assert parse_source_flags("horizon --subagents --system") == (
+        "horizon", frozenset({"chat", "subagents", "system"})
     )
 
 
 def test_parse_source_flags_all() -> None:
     assert parse_source_flags("cormorant --all") == (
-        "cormorant", frozenset({"chat", "agents", "system"})
+        "cormorant", frozenset({"chat", "subagents", "system"})
+    )
+
+
+def test_parse_source_flags_legacy_agents_flag_stays_literal() -> None:
+    # Zero-legacy rename (Task T13): the OLD '--agents' flag text is no longer recognized --
+    # it is not aliased, just literal search text like any other unknown '--token'.
+    assert parse_source_flags("horizon --agents") == (
+        "horizon --agents", frozenset({"chat"})
     )
 
 

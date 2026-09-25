@@ -16,6 +16,7 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
     match_snippet: null,
     match_record_uuid: null,
     match_agent_hex_id: null,
+    origin: 'root',
     ...over,
   }
 }

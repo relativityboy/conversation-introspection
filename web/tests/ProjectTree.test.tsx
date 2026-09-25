@@ -48,6 +48,7 @@ function session(
     match_snippet: null,
     match_record_uuid: null,
     match_agent_hex_id: null,
+    origin: 'root',
     ...over,
   }
 }
@@ -59,7 +60,14 @@ function renderTree(overrides: Partial<ProjectTreeProps> = {}) {
     // the test harness's QueryClient must carry the same staleTime the app actually runs with.
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   })
-  const props: ProjectTreeProps = { q: '', fav: false, chips: [], search: '', ...overrides }
+  const props: ProjectTreeProps = {
+    q: '',
+    fav: false,
+    chips: [],
+    search: '',
+    showSubagents: false,
+    ...overrides,
+  }
   const utils = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
@@ -175,7 +183,12 @@ it('expand fetches exactly that project once and renders children inTree', async
 
   await screen.findByText('Alpha convo one')
   expect(fetchSessions).toHaveBeenCalledTimes(1)
-  expect(fetchSessions).toHaveBeenCalledWith({ projects: ['-Users-x-alpha'] })
+  // Task T16: default (showSubagents not passed -> false) hides subagent-origin sessions here
+  // the same way Sidebar's own flat-list query does.
+  expect(fetchSessions).toHaveBeenCalledWith({
+    projects: ['-Users-x-alpha'],
+    origin: ['root', 'empty'],
+  })
   expect(toggle.getAttribute('aria-expanded')).toBe('true')
 
   // inTree: the child's own project eyebrow is suppressed, so the display name appears
@@ -270,7 +283,8 @@ it('q or fav switches to ONE flat query grouped by project, auto-expanded, rows 
   expect(fetchProjects).toHaveBeenCalledTimes(1)
   // ONE flat query, not one per matched project.
   expect(fetchSessions).toHaveBeenCalledTimes(1)
-  expect(fetchSessions).toHaveBeenCalledWith({ q: 'horizon' })
+  // Task T16: default hides subagent-origin sessions in filtered mode too.
+  expect(fetchSessions).toHaveBeenCalledWith({ q: 'horizon', origin: ['root', 'empty'] })
 
   // both groups present and auto-expanded (children visible without any click).
   expect(screen.getByText(/x-alpha/)).toBeDefined()
@@ -343,7 +357,11 @@ it('chips and fav thread into the query', async () => {
 
   await screen.findByText('No conversations match')
   expect(fetchSessions).toHaveBeenCalledTimes(1)
-  expect(fetchSessions).toHaveBeenCalledWith({ favorite: true, projects: ['-Users-x-alpha'] })
+  expect(fetchSessions).toHaveBeenCalledWith({
+    favorite: true,
+    projects: ['-Users-x-alpha'],
+    origin: ['root', 'empty'],
+  })
 })
 
 it('truncation line renders when total > items', async () => {
@@ -374,7 +392,7 @@ it('clearing the filter restores browse mode with manual expand state intact, no
   rerender(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <ProjectTree q="x" fav={false} chips={[]} search="" />
+        <ProjectTree q="x" fav={false} chips={[]} search="" showSubagents={false} />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -385,7 +403,7 @@ it('clearing the filter restores browse mode with manual expand state intact, no
   rerender(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <ProjectTree q="" fav={false} chips={[]} search="" />
+        <ProjectTree q="" fav={false} chips={[]} search="" showSubagents={false} />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -419,4 +437,62 @@ it('FilteredTree group headers are sticky', async () => {
   expect(header.style.top).toBe('0px')
   expect(header.style.zIndex).toBe('1')
   expect(header.style.background).toBe('var(--depth)')
+})
+
+// --- origin filtering, shared with Sidebar's own reveal toggle (Task T16) ---------------------
+
+it('BrowseTree/ProjectChildren omits origin entirely when showSubagents is true', async () => {
+  fetchProjects.mockResolvedValue(PROJECTS)
+  fetchSessions.mockResolvedValue({ items: [], total: 0 })
+
+  renderTree({ showSubagents: true })
+  await screen.findByText('x-alpha')
+  fireEvent.click(screen.getByRole('button', { name: /x-alpha/ }))
+
+  await vi.waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
+  const call = fetchSessions.mock.calls[0][0]
+  expect(Object.prototype.hasOwnProperty.call(call, 'origin')).toBe(false)
+})
+
+it('FilteredTree omits origin entirely when showSubagents is true', async () => {
+  fetchSessions.mockResolvedValue({ items: [], total: 0 })
+
+  renderTree({ q: 'horizon', showSubagents: true })
+
+  await vi.waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
+  expect(fetchSessions).toHaveBeenCalledWith({ q: 'horizon' })
+})
+
+// --- muted treatment for subagent-origin rows carries into tree mode "for free" (Task T16) -----
+// SessionListItem's own opacity treatment (Task T14) reads `session.origin` unconditionally, so
+// once ProjectTree passes real session objects through (which it always has), a revealed
+// subagent-origin row is muted with NO ProjectTree-specific styling code — these tests pin that
+// claim rather than assume it.
+
+it('a subagent-origin row is muted when revealed via BrowseTree/ProjectChildren', async () => {
+  fetchProjects.mockResolvedValue(PROJECTS)
+  const subagentSession = session('s-alpha-1', '-Users-x-alpha', { origin: 'subagent' })
+  fetchSessions.mockResolvedValue({ items: [subagentSession], total: 1 })
+
+  const { container } = renderTree({ showSubagents: true })
+  await screen.findByText('x-alpha')
+  fireEvent.click(screen.getByRole('button', { name: /x-alpha/ }))
+
+  const wrap = await vi.waitFor(() => {
+    const el = container.querySelector('.convo-item-wrap') as HTMLElement | null
+    if (!el) throw new Error('not rendered yet')
+    return el
+  })
+  expect(wrap.style.opacity).toBe('0.55')
+})
+
+it('a subagent-origin row is muted when revealed via FilteredTree', async () => {
+  const subagentSession = session('s-alpha-1', '-Users-x-alpha', { origin: 'subagent' })
+  fetchSessions.mockResolvedValue({ items: [subagentSession], total: 1 })
+
+  const { container } = renderTree({ q: 'horizon', showSubagents: true })
+
+  await screen.findByText(subagentSession.ai_title as string)
+  const wrap = container.querySelector('.convo-item-wrap') as HTMLElement
+  expect(wrap.style.opacity).toBe('0.55')
 })

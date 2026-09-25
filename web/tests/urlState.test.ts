@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   readProjects,
   readRestrict,
+  readShowSubagents,
   readSidebarParams,
+  readSubagentSessions,
   writeProjects,
   writeRestrict,
+  writeShowSubagents,
   writeSidebarParams,
+  writeSubagentSessions,
 } from '../src/lib/urlState'
 
 describe('readSidebarParams', () => {
@@ -159,5 +163,74 @@ describe('readRestrict / writeRestrict', () => {
     const prev = new URLSearchParams('restrict=1')
     writeRestrict(prev, false)
     expect(prev.get('restrict')).toBe('1')
+  })
+})
+
+describe('readShowSubagents / writeShowSubagents (Task T14, sidebar reveal toggle)', () => {
+  it('defaults to false when absent', () => {
+    expect(readShowSubagents(new URLSearchParams())).toBe(false)
+  })
+
+  it('reads subagents=1 as true, anything else as false', () => {
+    expect(readShowSubagents(new URLSearchParams('subagents=1'))).toBe(true)
+    expect(readShowSubagents(new URLSearchParams('subagents=true'))).toBe(false)
+  })
+
+  it('writes subagents=1 when true and deletes it when false, preserving other params', () => {
+    const prev = new URLSearchParams('q=other')
+    const on = writeShowSubagents(prev, true)
+    expect(on.get('subagents')).toBe('1')
+    expect(on.get('q')).toBe('other')
+
+    const off = writeShowSubagents(new URLSearchParams('subagents=1&q=other'), false)
+    expect(off.has('subagents')).toBe(false)
+    expect(off.get('q')).toBe('other')
+  })
+
+  it('does not mutate the input URLSearchParams', () => {
+    const prev = new URLSearchParams('subagents=1')
+    writeShowSubagents(prev, false)
+    expect(prev.get('subagents')).toBe('1')
+  })
+
+  // Distinct params (§ urlState.ts binding comment): the sidebar's own toggle never collides
+  // with the global search page's independent `subagent_sessions` toggle below, even though
+  // both can be present on the SAME URL (Sidebar is mounted on every route).
+  it('is independent of the search page toggle', () => {
+    const params = new URLSearchParams('subagent_sessions=1')
+    expect(readShowSubagents(params)).toBe(false)
+  })
+})
+
+describe('readSubagentSessions / writeSubagentSessions (Task T14, global search toggle)', () => {
+  it('defaults to false when absent', () => {
+    expect(readSubagentSessions(new URLSearchParams())).toBe(false)
+  })
+
+  it('reads subagent_sessions=1 as true, anything else as false', () => {
+    expect(readSubagentSessions(new URLSearchParams('subagent_sessions=1'))).toBe(true)
+    expect(readSubagentSessions(new URLSearchParams('subagent_sessions=true'))).toBe(false)
+  })
+
+  it('writes subagent_sessions=1 when true and deletes it when false, preserving other params', () => {
+    const prev = new URLSearchParams('q=other')
+    const on = writeSubagentSessions(prev, true)
+    expect(on.get('subagent_sessions')).toBe('1')
+    expect(on.get('q')).toBe('other')
+
+    const off = writeSubagentSessions(new URLSearchParams('subagent_sessions=1&q=other'), false)
+    expect(off.has('subagent_sessions')).toBe(false)
+    expect(off.get('q')).toBe('other')
+  })
+
+  it('does not mutate the input URLSearchParams', () => {
+    const prev = new URLSearchParams('subagent_sessions=1')
+    writeSubagentSessions(prev, false)
+    expect(prev.get('subagent_sessions')).toBe('1')
+  })
+
+  it('is independent of the sidebar reveal toggle', () => {
+    const params = new URLSearchParams('subagents=1')
+    expect(readSubagentSessions(params)).toBe(false)
   })
 })

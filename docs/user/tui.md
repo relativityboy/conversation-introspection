@@ -18,7 +18,7 @@ non-default archive or transcript tree.
 
 Type any text **with no leading `/`** and the TUI searches your archived conversations as a
 full-text query. By default the search covers **the chat only** — what you and Claude said to
-each other in main conversations. Widen it with flags anywhere in the search text: `--agents`
+each other in main conversations. Widen it with flags anywhere in the search text: `--subagents`
 (subagent transcripts: minion work, dispatch briefings), `--system` (harness records: task
 notifications, skill payloads), or `--all` (everything). The result line names the active
 sources whenever the search is widened. In the results list:

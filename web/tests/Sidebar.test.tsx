@@ -42,6 +42,7 @@ const SESSION_A: SessionSummary = {
   match_snippet: null,
   match_record_uuid: null,
   match_agent_hex_id: null,
+  origin: 'root',
 }
 
 const SESSION_B: SessionSummary = {
@@ -57,6 +58,7 @@ const SESSION_B: SessionSummary = {
   match_snippet: 'a <mark>tidal</mark> wave of changes',
   match_record_uuid: 'rec-tidal',
   match_agent_hex_id: null,
+  origin: 'root',
 }
 
 function renderSidebar(initialEntries: string[] = ['/']) {
@@ -387,5 +389,155 @@ describe('by-project toggle', () => {
     expect(container.querySelector('.convo-snippet-hint')?.textContent).toBe(
       'a tidal wave of changes',
     )
+  })
+})
+
+// --- subagent-session reveal toggle (Task T14) -------------------------------------------------
+
+describe('subagent reveal toggle', () => {
+  it('defaults to requesting origin=root,empty (hiding subagent sessions)', async () => {
+    fetchSessions.mockResolvedValue({
+      items: [],
+      total: 0,
+      origin_counts: { root: 0, subagent: 0, empty: 0 },
+    })
+    renderSidebar()
+
+    await vi.waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
+    expect(fetchSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: ['root', 'empty'] }),
+    )
+  })
+
+  it('shows no reveal control when origin_counts.subagent is 0', async () => {
+    fetchSessions.mockResolvedValue({
+      items: [SESSION_A],
+      total: 1,
+      origin_counts: { root: 1, subagent: 0, empty: 0 },
+    })
+    renderSidebar()
+    await screen.findByText(SESSION_A.ai_title as string)
+
+    expect(screen.queryByText(/subagent sessions hidden/)).toBeNull()
+  })
+
+  it('shows the reveal control with the hidden count when origin_counts.subagent > 0', async () => {
+    fetchSessions.mockResolvedValue({
+      items: [SESSION_A],
+      total: 1,
+      origin_counts: { root: 1, subagent: 3, empty: 0 },
+    })
+    renderSidebar()
+
+    expect(await screen.findByText('3 subagent sessions hidden — show')).toBeDefined()
+  })
+
+  it('clicking the reveal control sets ?subagents=1 and re-queries with origin omitted', async () => {
+    fetchSessions.mockResolvedValue({
+      items: [SESSION_A],
+      total: 1,
+      origin_counts: { root: 1, subagent: 3, empty: 0 },
+    })
+    const { locationRef } = renderSidebar()
+    const reveal = await screen.findByText('3 subagent sessions hidden — show')
+    fetchSessions.mockClear()
+
+    fireEvent.click(reveal)
+
+    await vi.waitFor(() => expect(locationRef.current?.search).toBe('?subagents=1'))
+    const call = fetchSessions.mock.calls.at(-1)?.[0]
+    expect(Object.prototype.hasOwnProperty.call(call, 'origin')).toBe(false)
+  })
+
+  it('flips the label to "hide subagent sessions" once revealed, and back when clicked again', async () => {
+    fetchSessions.mockResolvedValue({
+      items: [SESSION_A],
+      total: 1,
+      origin_counts: { root: 1, subagent: 3, empty: 0 },
+    })
+    const { locationRef } = renderSidebar(['/?subagents=1'])
+
+    const hide = await screen.findByText('hide subagent sessions')
+    expect(screen.queryByText(/subagent sessions hidden — show/)).toBeNull()
+
+    fireEvent.click(hide)
+
+    await vi.waitFor(() => expect(locationRef.current?.search).toBe(''))
+    expect(await screen.findByText('3 subagent sessions hidden — show')).toBeDefined()
+  })
+
+  it('reads ?subagents=1 on mount and omits origin from the request', async () => {
+    fetchSessions.mockResolvedValue({
+      items: [],
+      total: 0,
+      origin_counts: { root: 0, subagent: 0, empty: 0 },
+    })
+    renderSidebar(['/?subagents=1'])
+
+    await vi.waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
+    const call = fetchSessions.mock.calls[0][0]
+    expect(Object.prototype.hasOwnProperty.call(call, 'origin')).toBe(false)
+  })
+})
+
+// --- T16: the reveal toggle is SHARED between flat and tree mode ("the sidebar IS the main list
+// in both modes") -------------------------------------------------------------------------------
+
+describe('subagent reveal toggle — tree mode (Task T16)', () => {
+  afterEach(() => window.localStorage.removeItem(SIDEBAR_TREE_KEY))
+
+  it('the reveal control renders in tree mode too, from the same unconditional origin_counts', async () => {
+    window.localStorage.setItem(SIDEBAR_TREE_KEY, '1')
+    fetchProjects.mockResolvedValue([])
+    fetchSessions.mockResolvedValue({
+      items: [],
+      total: 0,
+      origin_counts: { root: 1, subagent: 4, empty: 0 },
+    })
+
+    renderSidebar()
+
+    expect(await screen.findByText('4 subagent sessions hidden — show')).toBeDefined()
+  })
+
+  it('clicking reveal in tree mode sets ?subagents=1 — the SAME param the flat list uses', async () => {
+    window.localStorage.setItem(SIDEBAR_TREE_KEY, '1')
+    fetchProjects.mockResolvedValue([])
+    fetchSessions.mockResolvedValue({
+      items: [],
+      total: 0,
+      origin_counts: { root: 1, subagent: 4, empty: 0 },
+    })
+
+    const { locationRef } = renderSidebar()
+    const reveal = await screen.findByText('4 subagent sessions hidden — show')
+
+    fireEvent.click(reveal)
+
+    await vi.waitFor(() => expect(locationRef.current?.search).toBe('?subagents=1'))
+    expect(await screen.findByText('hide subagent sessions')).toBeDefined()
+  })
+
+  // Closes the loop end-to-end: Sidebar -> ProjectTree -> BrowseTree -> ProjectChildren all
+  // honor the SAME toggle state, not just Sidebar's own (separate) flat-list query.
+  it('revealing threads showSubagents through to ProjectTree — an expanded row drops the origin filter', async () => {
+    const PROJECT = { id: 1, dir_slug: '-Users-x-proj', resolved_cwd: null, session_count: 1 }
+    fetchProjects.mockResolvedValue([PROJECT])
+    fetchSessions.mockResolvedValue({
+      items: [],
+      total: 0,
+      origin_counts: { root: 1, subagent: 1, empty: 0 },
+    })
+
+    renderSidebar(['/?subagents=1'])
+    fireEvent.click(screen.getByRole('button', { name: 'by project' }))
+    await screen.findByText('x-proj')
+    fetchSessions.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: /x-proj/ }))
+
+    await vi.waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
+    const call = fetchSessions.mock.calls[0][0]
+    expect(Object.prototype.hasOwnProperty.call(call, 'origin')).toBe(false)
   })
 })

@@ -4,6 +4,14 @@ The top entry is the current version. Entries are written for users: what change
 in what you can see and do. Format: `## MAJOR.MINOR.PATCH — YYYY-MM-DD` followed
 by `- ` bullets.
 
+## 1.15.0 — 2026-09-24
+- The session list now knows which sessions are yours: root conversations (a human typed in them) show by default, and standalone subagent runs — dispatched reviews, minion builds — sit one reveal away ("N subagent sessions hidden — show"), count always visible so nothing is ever silently missing; revealed subagent rows render quieter so root sessions stay the anchor.
+- Global search excludes subagent sessions by default; an "include subagent sessions" toggle (and `subagent_sessions=true` on the API) brings them in — in-conversation search is unchanged.
+- Deep links stay oriented: a subagent-origin session shows a muted SUBAGENT SESSION badge in its reader header.
+- Sessions API: `origin=` filter (`root` / `subagent` / `empty`), `origin` on every session summary, and `origin_counts` for the current query.
+- One concept, one word: search's `sources=` bucket `agents` is now `subagents` (the TUI flag `--agents` is now `--subagents`); the old value is refused with a clear error, and nothing stored the old string so no data migration is needed.
+- The recall skill documents the new defaults — including "don't mistake default-excluded for absent" — and now requires server 1.15.0; re-run `/skill install` to update.
+
 ## 1.14.0 — 2026-09-23
 - The reader's view toggle grew into a category filter: five checkboxes — You chat, Claude chat, Claude thinking, Tool traffic, Harness/system — with the old views as one-click presets (chat, chat+harness, all); every block belongs to exactly one category, so no combination silently loses a record.
 - Claude's thinking is now checkable alongside chat: preserved thinking is readable in ordinary reading, not only the everything-view.

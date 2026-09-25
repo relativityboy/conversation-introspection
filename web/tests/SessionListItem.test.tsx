@@ -18,6 +18,7 @@ const BASE: SessionSummary = {
   match_snippet: null,
   match_record_uuid: null,
   match_agent_hex_id: null,
+  origin: 'root',
 }
 
 function withMatch(overrides: Partial<SessionSummary>): SessionSummary {
@@ -102,6 +103,28 @@ describe('SessionListItem — inTree', () => {
   it('inTree suppresses the project eyebrow line', () => {
     renderItem(withMatch({ project_slug: '-Users-x-proj' }), '', true)
     expect(screen.queryByText('x-proj')).toBeNull()
+  })
+})
+
+// --- muted treatment for subagent-origin rows (Task T14) --------------------------------------
+
+describe('SessionListItem — subagent-origin muting', () => {
+  it('applies the quiet opacity treatment to a subagent-origin row', () => {
+    const { container } = renderItem(withMatch({ origin: 'subagent' }))
+    const wrap = container.querySelector('.convo-item-wrap') as HTMLElement
+    expect(wrap.style.opacity).toBe('0.55')
+  })
+
+  it('does not mute a root-origin row', () => {
+    const { container } = renderItem(withMatch({ origin: 'root' }))
+    const wrap = container.querySelector('.convo-item-wrap') as HTMLElement
+    expect(wrap.style.opacity).toBe('')
+  })
+
+  it('does not mute an empty-origin row', () => {
+    const { container } = renderItem(withMatch({ origin: 'empty' }))
+    const wrap = container.querySelector('.convo-item-wrap') as HTMLElement
+    expect(wrap.style.opacity).toBe('')
   })
 })
 

@@ -614,7 +614,7 @@ def test_search_project_slugs_never_raises(db_session, indexed_fixture, evil):
     assert isinstance(hits, list) and isinstance(total, int)
 
 
-# --- Source filtering (spec 2026-08-15: sources axis over chat/agents/system) --------------
+# --- Source filtering (spec 2026-08-15: sources axis over chat/subagents/system) -----------
 
 
 def test_dialogue_kinds_is_the_you_and_me_set():
@@ -651,7 +651,7 @@ def _seed_sourced_block(db, transcript_kind: str, authorship: str | None, marker
 
 
 def _seed_source_buckets(db):
-    """One 'srcmark' block per bucket: chat (main+dialogue), agents (subagent), system
+    """One 'srcmark' block per bucket: chat (main+dialogue), subagents (subagent), system
     (main+harness), plus a NULL-authorship main block (mid-import state)."""
     _seed_sourced_block(db, "main", "human_typed", "srcchat", 0)
     _seed_sourced_block(db, "subagent", "claude", "srcagent", 0)
@@ -668,10 +668,12 @@ def test_sources_chat_returns_only_dialogue_main(db_session, indexed_fixture):
 
 def test_sources_are_additive_and_partition_the_index(db_session, indexed_fixture):
     _seed_source_buckets(db_session)
-    hits, total = idx.search(db_session, "srcmark", sources=frozenset({"chat", "agents"}))
+    hits, total = idx.search(db_session, "srcmark", sources=frozenset({"chat", "subagents"}))
     markers = {_strip_marks(h.snippet).split()[1] for h in hits}
     assert total == 2 and markers == {"srcchat", "srcagent"}
-    _, all_total = idx.search(db_session, "srcmark", sources=frozenset({"chat", "agents", "system"}))
+    _, all_total = idx.search(
+        db_session, "srcmark", sources=frozenset({"chat", "subagents", "system"})
+    )
     _, none_total = idx.search(db_session, "srcmark", sources=None)
     assert all_total == none_total == 4  # the three buckets partition the index exactly
 
@@ -692,6 +694,13 @@ def test_sources_empty_set_matches_nothing(db_session, indexed_fixture):
 def test_sources_unknown_token_raises(db_session, indexed_fixture):
     with pytest.raises(ValueError):
         idx.search(db_session, "srcmark", sources=frozenset({"chat", "tools"}))
+
+
+def test_sources_legacy_agents_token_now_raises(db_session, indexed_fixture):
+    # Zero-legacy rename (Task T13): 'agents' -> 'subagents'. The OLD value is now just
+    # another unrecognized token -- no alias.
+    with pytest.raises(ValueError):
+        idx.search(db_session, "srcmark", sources=frozenset({"agents"}))
 
 
 def test_sources_thread_through_session_listing_and_best_snippets(db_session, indexed_fixture):

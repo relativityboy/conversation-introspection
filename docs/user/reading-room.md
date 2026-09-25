@@ -84,6 +84,25 @@ back.
 The All / ★ Favorites toggle and the project chip bar work identically either way — they decide
 *what* is shown; `by project` only decides *how* it's arranged.
 
+## Root sessions and subagent sessions
+
+The sidebar shows **root sessions** by default — conversations a human actually typed in. Sessions
+that were standalone agent runs (dispatched security reviews, minion implementation jobs, other
+automation) are **subagent sessions**: fully archived, searchable, and openable, but filtered from
+the ambient list so the sessions that ground you stay the anchor. When any exist, a quiet line
+below the list says **"N subagent sessions hidden — show"** — the count is always visible, so
+nothing is ever silently missing. Revealed subagent rows render quieter than root rows, and this
+works the same in the flat list and `by project` mode; the choice rides the URL. A deep link into
+a subagent session shows a muted **SUBAGENT SESSION** badge in the reader header so you always
+know what kind of session you've landed in. (A session with no interpreted messages at all —
+a rare title-only stub — counts as neither and stays visible rather than being mislabeled.)
+
+Global search treats subagent sessions the same way: excluded by default, with an
+**"include subagent sessions"** toggle when you're deliberately hunting minion work.
+(Subagent *transcripts* — agent runs attached inside a root session, reached through the
+subagent chips — are a different, finer-grained thing: they're governed by the `sources=`
+search axis and the drill-in links, exactly as before.)
+
 ## Editable titles
 
 Click a conversation's title in the reader to rename it inline (it's a real button, so Enter or

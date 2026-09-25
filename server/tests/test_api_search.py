@@ -310,7 +310,7 @@ def test_search_sources_all_widens_to_subagents(client: TestClient) -> None:
 
 def test_search_sources_additive_tokens(client: TestClient) -> None:
     body = client.get(
-        "/api/v1/search", params={"q": "cormorant", "sources": "chat,agents"}
+        "/api/v1/search", params={"q": "cormorant", "sources": "chat,subagents"}
     ).json()
     assert body["total"] >= 1
 
@@ -319,6 +319,15 @@ def test_search_sources_unknown_token_is_422(client: TestClient) -> None:
     res = client.get("/api/v1/search", params={"q": "horizon", "sources": "chat,bogus"})
     assert res.status_code == 422
     assert "bogus" in res.json()["detail"]
+
+
+def test_search_sources_legacy_agents_token_is_422(client: TestClient) -> None:
+    # Zero-legacy rename (Task T13): the OLD bucket value 'agents' is now just another
+    # unrecognized token -- no alias, no silent acceptance.
+    res = client.get("/api/v1/search", params={"q": "cormorant", "sources": "agents"})
+    assert res.status_code == 422
+    assert "agents" in res.json()["detail"]
+    assert "subagents" in res.json()["detail"]
 
 
 # --- Id-shaped `q` (Task T3): exact-match lookup on Message.api_message_id, bypassing FTS ---
@@ -699,3 +708,66 @@ def test_search_select_unknown_slug_is_422_naming_it(
     assert "not-a-real-category" in body["detail"]
     for slug in ("you-chat", "claude-chat", "claude-thinking", "tool-traffic", "harness-system"):
         assert slug in body["detail"]
+
+
+# --- subagent_sessions= (Task T13): global scope excludes subagent-origin sessions by default --
+
+SUBAGENT_ORIGIN_SESSION = "b1b1b1b1-1111-4111-8111-111111111111"
+
+
+def _write_subagent_origin_session(root: Path, project_slug: str, text: str) -> None:
+    """One session whose only record is an assistant reply -- no human turn ever, so it
+    classifies `subagent`-origin (Task T13's exemplar: "a session with only claude-authored
+    messages"). The lone assistant record still lands in the default `chat` sources bucket
+    ('claude' is in DIALOGUE_KINDS), so no `sources=` widening is needed to find it."""
+    proj = root / project_slug
+    proj.mkdir(parents=True, exist_ok=True)
+    lines = [make_assistant_line(text=text, sessionId=SUBAGENT_ORIGIN_SESSION)]
+    (proj / f"{SUBAGENT_ORIGIN_SESSION}.jsonl").write_bytes(make_session_file(lines))
+
+
+def test_global_search_excludes_subagent_origin_sessions_by_default(
+    tmp_path: Path, db_session: Session
+) -> None:
+    root = tmp_path / "search_tree"
+    _write_subagent_origin_session(root, "-Users-x-suborigin", "dispatched result: a lone wombat")
+    _capture_and_index(db_session, root)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    default = client.get("/api/v1/search", params={"q": "wombat"}).json()
+    assert default["groups"] == []
+    assert default["total"] == 1  # pre-filter total, same accepted-cost precedent as archived
+
+    widened = client.get(
+        "/api/v1/search", params={"q": "wombat", "subagent_sessions": 1}
+    ).json()
+    assert len(widened["groups"]) == 1
+    group = widened["groups"][0]
+    assert group["session"]["session_uuid"] == SUBAGENT_ORIGIN_SESSION
+    assert group["session"]["origin"] == "subagent"
+
+
+def test_global_search_always_includes_root_origin_sessions(client: TestClient) -> None:
+    # Sanity: the default exclusion only ever removes subagent-origin groups -- "horizon"
+    # (SESSION_UUID_1, root-origin) is unaffected regardless of the flag.
+    body = client.get("/api/v1/search", params={"q": "horizon"}).json()
+    assert body["total"] == 1
+    assert body["groups"][0]["session"]["origin"] == "root"
+
+
+def test_session_scope_search_ignores_subagent_sessions_param(
+    tmp_path: Path, db_session: Session
+) -> None:
+    root = tmp_path / "search_tree"
+    _write_subagent_origin_session(root, "-Users-x-suborigin2", "dispatched note: a lone narwhal")
+    _capture_and_index(db_session, root)
+    client = TestClient(create_app(db_path=tmp_path / "archive.db"))
+
+    # scope=session already pins the session; subagent_sessions=False (the default) must NOT
+    # filter it out -- mirrors projects=' documented accept-and-ignore precedent in session scope.
+    body = client.get(
+        "/api/v1/search",
+        params={"q": "narwhal", "scope": "session", "session": SUBAGENT_ORIGIN_SESSION},
+    ).json()
+    assert body["total"] == 1
+    assert len(body["items"]) == 1

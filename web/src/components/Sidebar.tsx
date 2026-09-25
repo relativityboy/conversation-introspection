@@ -2,7 +2,14 @@ import type { CSSProperties } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useSessions } from '../api/hooks'
 import { useSidebarTree } from '../lib/sidebarTree'
-import { readProjects, readSidebarParams, writeProjects, writeSidebarParams } from '../lib/urlState'
+import {
+  readProjects,
+  readShowSubagents,
+  readSidebarParams,
+  writeProjects,
+  writeShowSubagents,
+  writeSidebarParams,
+} from '../lib/urlState'
 import { ProjectTree } from './ProjectTree'
 import { SessionListItem } from './SessionListItem'
 
@@ -12,15 +19,38 @@ const SKELETON_ROWS = 3
 // convention as HorizonBand (Task 3) and SessionListItem: no new sidebar stylesheet.
 const MIST_TEXT: CSSProperties = { color: 'var(--mist)', padding: '10px 6px', fontSize: 13 }
 
+// Task T14: the reveal control — a plain text-button, quiet by design (mist, no border/fill),
+// mirroring MIST_TEXT's padding so it reads as a caption on the list rather than a new chip.
+const REVEAL_STYLE: CSSProperties = {
+  display: 'block',
+  width: '100%',
+  textAlign: 'left',
+  background: 'none',
+  border: 'none',
+  cursor: 'pointer',
+  color: 'var(--mist)',
+  fontFamily: 'var(--mono)',
+  fontSize: 11,
+  padding: '8px 6px',
+}
+
 export function Sidebar() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { filter, fav } = readSidebarParams(searchParams)
   // The ONE call site (sidebarTree.ts's binding doc comment) -- treeMode/setTreeMode flow down
   // as props/closures to whatever below needs them, never a second independent hook instance.
   const [treeMode, setTreeMode] = useSidebarTree()
+  // Task T14: the sidebar's subagent-session reveal toggle. Default (false) hides subagent-
+  // origin sessions from this ambient view; revealing widens the request to every origin. Tree
+  // mode (ProjectTree) is deliberately NOT threaded this filter -- see the T14 write-up.
+  const showSubagents = readShowSubagents(searchParams)
 
   function setFavorite(value: boolean) {
     setSearchParams((prev) => writeSidebarParams(prev, { fav: value }), { replace: true })
+  }
+
+  function setShowSubagents(value: boolean) {
+    setSearchParams((prev) => writeShowSubagents(prev, value), { replace: true })
   }
 
   // Read live (not memoized) so a chip add/remove — which only changes the URL, not this
@@ -36,10 +66,18 @@ export function Sidebar() {
     // omitting it, but omitting keeps the filters object (and the wire call) honest: "no filter"
     // reads as "no projects key" rather than "an empty list of projects".
     ...(projects.length > 0 ? { projects } : {}),
+    // Task T14: the default ambient view hides subagent-origin sessions (root conversations plus
+    // the rare title-only "empty" stubs); revealing omits `origin` entirely so the server returns
+    // every origin (absent = all, per the API contract).
+    ...(showSubagents ? {} : { origin: ['root', 'empty'] }),
   })
 
   const search = searchParams.toString()
   const hasFilter = filter.length > 0 || fav
+  // Computed over the CURRENT filters WITHOUT the origin filter (server contract) — safe to read
+  // regardless of `showSubagents`. Optional-chained: fixture-driven tests elsewhere in this repo
+  // that mock a bare `{ items, total }` (pre-T14 shape) must not crash the reveal control's guard.
+  const hiddenSubagentCount = data?.origin_counts?.subagent ?? 0
 
   return (
     <>
@@ -101,7 +139,13 @@ export function Sidebar() {
           archive"> (App.tsx) is already the landmark for this whole region; a second nested
           nav here would create an ambiguous/duplicate "navigation" landmark. */}
       {treeMode ? (
-        <ProjectTree q={filter} fav={fav} chips={projects} search={search ? `?${search}` : ''} />
+        <ProjectTree
+          q={filter}
+          fav={fav}
+          chips={projects}
+          search={search ? `?${search}` : ''}
+          showSubagents={showSubagents}
+        />
       ) : (
         <div className="convo-list" style={{ marginTop: 6 }}>
           {isLoading && <SkeletonRows />}
@@ -120,6 +164,21 @@ export function Sidebar() {
               />
             ))}
         </div>
+      )}
+      {/* Task T14/T16: the quiet reveal control — shown only when there's something to reveal
+          (guards both the hidden AND revealed states), and rendered OUTSIDE the treeMode branch
+          so it stays visible/functional in BOTH modes: one `?subagents=1` toggle governs
+          Sidebar's own flat-list query above AND ProjectTree's independent queries (threaded via
+          the `showSubagents` prop) — "the sidebar IS the main list in both modes" (owner ruling
+          2026-09-24). The count comes from THIS component's own unconditional useSessions call
+          (same one the by-project toggle's pre-existing tests already document as always
+          running), which shares the exact q/favorite/projects filter shape either body uses. */}
+      {isSuccess && hiddenSubagentCount > 0 && (
+        <button type="button" onClick={() => setShowSubagents(!showSubagents)} style={REVEAL_STYLE}>
+          {showSubagents
+            ? 'hide subagent sessions'
+            : `${hiddenSubagentCount} subagent sessions hidden — show`}
+        </button>
       )}
     </>
   )

@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useSearch } from '../api/hooks'
 import type { GlobalSearchResult } from '../api/types'
 import { GlobalSearchTab } from '../components/search/GlobalSearchTab'
-import { readProjects } from '../lib/urlState'
+import { readProjects, readSubagentSessions, writeSubagentSessions } from '../lib/urlState'
 
 const WRAP_STYLE: CSSProperties = { padding: '18px 24px 40px', maxWidth: 820 }
 
@@ -23,6 +23,19 @@ const CALM_STYLE: CSSProperties = {
   fontFamily: 'var(--serif)',
   fontSize: 16,
   marginTop: 22,
+}
+
+// Task T14: the "include subagent sessions" toggle — same quiet checkbox-label vocabulary as
+// ConversationSearch's restrict-search toggle (RESTRICT_LABEL_STYLE there).
+const SUBAGENT_TOGGLE_STYLE: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  marginTop: 10,
+  fontFamily: 'var(--mono)',
+  fontSize: 11,
+  color: 'var(--mist)',
+  cursor: 'pointer',
 }
 
 // The global search surface (/search?q=). The URL's `?q=` is the single source of truth for what
@@ -46,7 +59,18 @@ export function SearchPage() {
   // Read live, at fire time, same as `q` above — a chip add/remove changes the URL and this
   // re-renders, so the next search fires with the current filter (Task 9).
   const projects = readProjects(searchParams)
-  const query = useSearch(q, 'global', undefined, projects.length > 0 ? projects : undefined)
+  // Task T14: "include subagent sessions" — off by default (subagent-origin groups excluded,
+  // matching the server's own default). `|| undefined` so useSearch's call-shape stays exactly
+  // today's when off (see hooks.ts's conditional queryFn).
+  const includeSubagents = readSubagentSessions(searchParams)
+  const query = useSearch(
+    q,
+    'global',
+    undefined,
+    projects.length > 0 ? projects : undefined,
+    undefined,
+    includeSubagents || undefined,
+  )
 
   function commit(event: FormEvent) {
     event.preventDefault()
@@ -78,6 +102,19 @@ export function SearchPage() {
           style={INPUT_STYLE}
         />
       </form>
+
+      <label style={SUBAGENT_TOGGLE_STYLE}>
+        <input
+          type="checkbox"
+          checked={includeSubagents}
+          onChange={() =>
+            setSearchParams((prev) => writeSubagentSessions(prev, !includeSubagents), {
+              replace: true,
+            })
+          }
+        />
+        include subagent sessions
+      </label>
 
       {q.trim().length === 0 && <p style={CALM_STYLE}>Search every archived conversation</p>}
 

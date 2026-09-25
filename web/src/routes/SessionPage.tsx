@@ -20,6 +20,20 @@ const MIST_TEXT: CSSProperties = { color: 'var(--mist)', fontSize: 13, padding: 
 
 // Reset so the button reads as the surrounding mono metadata text, but clickable (the .turn-speaker
 // reset in eyebrow.css, inlined here to match this file's inline-style convention).
+// Task T14: orientation for a deep link landing on a subagent-origin session — a standalone
+// captured Task-tool dispatch with no root conversation of its own. Muted (mist/shore), matching
+// HitSnippet's BADGE_STYLE vocabulary for a small uppercase mono tag.
+const ORIGIN_BADGE_STYLE: CSSProperties = {
+  fontFamily: 'var(--mono)',
+  fontSize: 10,
+  letterSpacing: '.08em',
+  textTransform: 'uppercase',
+  color: 'var(--mist)',
+  border: '1px solid var(--shore)',
+  borderRadius: 4,
+  padding: '1px 6px',
+}
+
 const SESSION_ID_STYLE: CSSProperties = {
   font: 'inherit',
   letterSpacing: 'inherit',
@@ -158,6 +172,13 @@ export function SessionPage() {
             }}
           >
             <SessionIdChip uuid={session.session_uuid} />
+            {/* Task T14: SessionDetail extends SessionSummary, so `origin` rides along on the
+              same useSession(uuid) fetch this header already made -- no extra plumbing. */}
+            {session.origin === 'subagent' && (
+              <span className="mono" style={ORIGIN_BADGE_STYLE}>
+                SUBAGENT SESSION
+              </span>
+            )}
             {/* Always the UNFILTERED archive count — never a second server count for the filtered
               set (critique #6). "total" is what keeps that honest when conversation-only hides
               rows, and it is UNCONDITIONAL on purpose: a suffix that appears on toggle widened

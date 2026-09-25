@@ -30,15 +30,15 @@ _WS_RE = re.compile(r"\s+")
 #: The default sources for TUI search: the human<->Claude dialogue only (spec 2026-08-15).
 CHAT_SOURCES = frozenset({"chat"})
 _FLAG_TO_SOURCES = {
-    "--agents": frozenset({"agents"}),
+    "--subagents": frozenset({"subagents"}),
     "--system": frozenset({"system"}),
-    "--all": frozenset({"agents", "system"}),
+    "--all": frozenset({"subagents", "system"}),
 }
 
 
 def parse_source_flags(raw: str) -> tuple[str, frozenset[str]]:
-    """Split widen-flags out of a search line: ``("cormorant --agents", ...)`` ->
-    ``("cormorant", {"chat", "agents"})``.
+    """Split widen-flags out of a search line: ``("cormorant --subagents", ...)`` ->
+    ``("cormorant", {"chat", "subagents"})``.
 
     Flags are additive over the chat default (spec 2026-08-15: "other sources addable as
     flags"). An unrecognized ``--token`` stays in the query text — treated as literal search

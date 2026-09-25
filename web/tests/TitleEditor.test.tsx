@@ -29,6 +29,7 @@ const SESSION: SessionSummary = {
   match_snippet: null,
   match_record_uuid: null,
   match_agent_hex_id: null,
+  origin: 'root',
 }
 
 // A realistic-length uuid so the uuid-prefix fallback (first 8 chars) is distinct from the

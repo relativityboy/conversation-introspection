@@ -9,6 +9,13 @@
 
 // --- server/src/introspect/api/models.py -------------------------------------------------
 
+// Task T14: a session's ORIGIN — whether it's a root conversation (the user's own grounding
+// point), a standalone subagent-run session (no root conversation of its own — a Task-tool
+// dispatch that got captured as its own top-level session file), or "empty" (a title-only stub
+// with no captured content, present today but never previously classified). `GET /sessions`'s
+// `origin=` query param takes a CSV of these three literals.
+export type SessionOrigin = 'root' | 'subagent' | 'empty'
+
 export interface SessionSummary {
   session_uuid: string
   project_slug: string
@@ -29,6 +36,7 @@ export interface SessionSummary {
   // (routes the deep link through /a/{hex}/, mirroring HitOut.agent_hex_id).
   match_record_uuid: string | null
   match_agent_hex_id: string | null
+  origin: SessionOrigin
 }
 
 export interface TranscriptInfo {
@@ -105,9 +113,19 @@ export interface ProjectOut {
   session_count: number
 }
 
+// Task T14: counts by origin over the CURRENT query's filters (q/favorite/projects) but
+// WITHOUT the origin filter itself applied — so the sidebar can report "N subagent sessions
+// hidden" against the filtered set the reveal control is about to widen, not the whole archive.
+export interface SessionOriginCounts {
+  root: number
+  subagent: number
+  empty: number
+}
+
 export interface SessionList {
   items: SessionSummary[]
   total: number
+  origin_counts: SessionOriginCounts
 }
 
 export interface MessageList {

@@ -99,8 +99,21 @@ export function SessionListItem({ session, search, inTree = false }: SessionList
         : `/s/${session.session_uuid}/m/${session.match_record_uuid}`
       : null
 
+  // Task T14: subagent-origin sessions get the room's existing "quieted" opacity register (the
+  // same 0.55 HorizonBand's 'micro' variant and TabBar's disabled state use) so root sessions
+  // stay the visual anchor when a reader reveals them. Applied to the whole row wrap (title,
+  // snippet, meta, star) — no other per-item change (behavior spec item 2).
+  const isSubagentOrigin = session.origin === 'subagent'
+
   return (
-    <div className="convo-item-wrap" style={{ position: 'relative', marginBottom: 4 }}>
+    <div
+      className="convo-item-wrap"
+      style={{
+        position: 'relative',
+        marginBottom: 4,
+        ...(isSubagentOrigin ? { opacity: 0.55 } : null),
+      }}
+    >
       <div
         className={`convo-item${isActive ? ' active' : ''}`}
         style={{ ...LINK_STYLE, ...(isActive ? LINK_ACTIVE_STYLE : null) }}

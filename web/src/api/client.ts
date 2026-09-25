@@ -19,6 +19,7 @@ import type {
   SearchScope,
   SessionDetail,
   SessionList,
+  SessionOrigin,
   SessionSearchResult,
   StatusOut,
   TriggerImportOut,
@@ -102,12 +103,23 @@ function projectsParam(projects: string[] | undefined): string | undefined {
   return projects && projects.length > 0 ? projects.join(',') : undefined
 }
 
+// Task T14: comma-join the sidebar's `origin=` filter the same way `projectsParam` does for
+// `projects=` -- an absent or empty list means "no filter" server-side (absent = all origins),
+// so we send nothing rather than an empty `origin=` param, consistent with `buildQuery`'s
+// undefined-omits rule.
+function originParam(origin: SessionOrigin[] | undefined): string | undefined {
+  return origin && origin.length > 0 ? origin.join(',') : undefined
+}
+
 // --- sessions -----------------------------------------------------------------------------
 
 export interface SessionFilters {
   q?: string
   favorite?: boolean
   projects?: string[]
+  // Task T14: absent (the caller's default) means "no origin filter" -- the sidebar's default
+  // request sends `['root', 'empty']` explicitly; the reveal-all state omits this key entirely.
+  origin?: SessionOrigin[]
   limit?: number
   offset?: number
 }
@@ -117,6 +129,7 @@ export function fetchSessions(filters: SessionFilters = {}): Promise<SessionList
     q: filters.q,
     favorite: filters.favorite,
     projects: projectsParam(filters.projects),
+    origin: originParam(filters.origin),
     limit: filters.limit,
     offset: filters.offset,
   })
@@ -204,6 +217,12 @@ export function fetchSearch(
   // category slugs. The server 422s `select=` under `scope=global` — never pass this from a
   // global-search code path (SearchPage.tsx/GlobalSearchTab never do).
   select?: string,
+  // Task T14, global-scope callers only ("include subagent sessions" toggle on the /search
+  // page): when true, sends `subagent_sessions=true` so subagent-origin session groups are
+  // included. Session-scope callers (ConversationSearchResults) never pass this — the server
+  // param is documented global-scope-only, and threading it through session scope would have
+  // no meaning (a session search is already pinned to one session's own origin).
+  subagentSessions?: boolean,
 ): Promise<GlobalSearchResult | SessionSearchResult> {
   const qs = buildQuery({
     q,
@@ -217,6 +236,7 @@ export function fetchSearch(
     limit,
     offset,
     select,
+    subagent_sessions: subagentSessions,
   })
   return apiFetch<GlobalSearchResult | SessionSearchResult>(`/search${qs}`)
 }

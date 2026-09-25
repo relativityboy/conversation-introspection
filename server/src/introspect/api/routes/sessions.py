@@ -19,7 +19,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import ColumnElement, and_, exists, false, func, or_, select, true
+from sqlalchemy import ColumnElement, and_, case, exists, false, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from introspect.api.deps import get_db
@@ -104,9 +104,19 @@ class ProjectOut(BaseModel):
     session_count: int
 
 
+class OriginCounts(BaseModel):
+    """Session counts per `origin` value (Task T13), computed over the SAME `list_sessions`
+    filters as the page EXCEPT the `origin=` filter itself -- see `list_sessions`."""
+
+    root: int
+    subagent: int
+    empty: int
+
+
 class SessionList(BaseModel):
     items: list[SessionSummary]
     total: int
+    origin_counts: OriginCounts
 
 
 class MessageList(BaseModel):
@@ -151,6 +161,91 @@ def _user_title():
         .correlate(ChatSession)
         .scalar_subquery()
     )
+
+
+#: The three §T13 authorship kinds that make a message "human-authored" for origin purposes
+#: -- deliberately NARROWER than either CHAT_KINDS or DIALOGUE_KINDS in schema/authorship.py
+#: (both of which also count Claude's own turns as "chat"): origin asks who, if anyone, typed
+#: into this session, so only the human-stamped kinds count.
+_HUMAN_AUTHORED_KINDS = frozenset({"human_typed", "human_queued", "human_inferred"})
+
+#: The three `origin=` values the sessions list accepts (Task T13).
+ORIGIN_SLUGS = ("root", "subagent", "empty")
+
+
+def _session_has_human_message() -> ColumnElement:
+    """EXISTS: the session has >=1 message with a human-authored ``authorship_kind`` in ANY
+    of its transcripts (main or subagent) -- the ``root`` half of `_session_origin()` below.
+    Same session-correlated EXISTS shape as `_not_archived()` above (not the scalar-subquery
+    shape `_main_message_count`/`_is_favorited` use, since this needs no COUNT, just presence).
+    """
+    return (
+        select(1)
+        .select_from(Message)
+        .join(Transcript, Message.transcript_id == Transcript.id)
+        .where(
+            Transcript.session_id == ChatSession.session_uuid,
+            Message.authorship_kind.in_(_HUMAN_AUTHORED_KINDS),
+        )
+        .correlate(ChatSession)
+        .exists()
+    )
+
+
+def _session_has_any_message() -> ColumnElement:
+    """EXISTS: the session has >=1 message at all, in any transcript -- the ``empty`` half of
+    `_session_origin()` below."""
+    return (
+        select(1)
+        .select_from(Message)
+        .join(Transcript, Message.transcript_id == Transcript.id)
+        .where(Transcript.session_id == ChatSession.session_uuid)
+        .correlate(ChatSession)
+        .exists()
+    )
+
+
+def _session_origin() -> ColumnElement:
+    """Session origin (Task T13, owner ruling 2026-09-24), correlated to `ChatSession`, same
+    reuse shape as `_main_message_count`/`_is_favorited` above -- imported directly by
+    `routes/search.py` so the two routes can never define the rule twice.
+
+    ``root``: >=1 message anywhere in the session is human-authored (a human actually typed
+    or queued something). ``empty``: the session has zero messages at all. ``subagent``: the
+    floor -- messages exist, none human-authored, e.g. a standalone dispatched run's own
+    session recording (a security review, a minion implementation) that no human ever typed
+    into. Root is checked first so the (impossible in practice, since a human message implies
+    >=1 message) overlap with "no messages" always resolves to root, not empty.
+    """
+    return case(
+        (_session_has_human_message(), "root"),
+        (~_session_has_any_message(), "empty"),
+        else_="subagent",
+    )
+
+
+def _parse_origin_param(origin: str | None) -> frozenset[str] | None:
+    """CSV of `origin=` slugs -> a validated set, or `None` when the param was not given at
+    all (unfiltered). Task T13; error style matches `_parse_select_param` below (an empty
+    value and any unrecognized slug are both 422s naming the valid set) -- deliberately UNLIKE
+    `_parse_projects_param`, whose empty-list case means "no chips selected" == unfiltered;
+    `origin=` has no chip-list UI precedent to honor, so an explicit-but-empty value is a
+    caller bug, exactly like `select=`.
+    """
+    if origin is None:
+        return None
+    slugs = [s.strip() for s in origin.split(",") if s.strip()]
+    valid = ", ".join(ORIGIN_SLUGS)
+    if not slugs:
+        raise HTTPException(status_code=422, detail=f"origin must not be empty -- valid: {valid}")
+    unknown = [s for s in slugs if s not in ORIGIN_SLUGS]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown origin {'slug' if len(unknown) == 1 else 'slugs'} "
+            f"{', '.join(unknown)} -- valid: {valid}",
+        )
+    return frozenset(slugs)
 
 
 def _not_archived() -> ColumnElement:
@@ -198,6 +293,7 @@ def _summary(
     message_count: int,
     favorite: int,
     user_title: str | None,
+    origin: str,
 ) -> SessionSummary:
     return SessionSummary(
         session_uuid=session.session_uuid,
@@ -209,6 +305,7 @@ def _summary(
         last_activity_at=session.last_activity_at,
         message_count=message_count,
         favorite=bool(favorite),
+        origin=origin,
     )
 
 
@@ -246,19 +343,25 @@ def list_sessions(
     q: str | None = None,
     favorite: bool | None = None,
     projects: str | None = None,
+    origin: str | None = None,
     limit: int = _DEFAULT_LIMIT,
     offset: int = 0,
 ) -> SessionList:
     limit = min(max(limit, 1), _MAX_LIMIT)
     offset = max(offset, 0)
     project_slugs = _parse_projects_param(projects)
+    origin_slugs = _parse_origin_param(origin)  # may raise 422; parsed before any query runs
 
     message_count = _main_message_count()
     favorited = _is_favorited()
     user_title = _user_title()
+    origin_expr = _session_origin()
 
     stmt = (
-        select(ChatSession, Project.dir_slug, message_count, favorited, user_title)
+        select(
+            ChatSession, Project.dir_slug, message_count, favorited, user_title,
+            origin_expr.label("origin"),
+        )
         .join(Project, ChatSession.project_id == Project.id)
         # Archived sessions are hidden from the list (§15.1). Applied to the base statement so it
         # flows into both `total` (via stmt.subquery()) and the page, and stays OUTSIDE the `q=`
@@ -295,6 +398,20 @@ def list_sessions(
     if project_slugs is not None:
         stmt = stmt.where(Project.dir_slug.in_(project_slugs))
 
+    # `origin_counts` (Task T13): the SAME filters as `stmt` above EXCEPT `origin=` itself, so
+    # the UI can say "N subagent sessions hidden" while showing e.g. root only. `stmt` at this
+    # point already SELECTs `origin_expr` (labeled "origin") -- wrap it once and GROUP BY that
+    # column rather than re-embedding the correlated EXISTS pair a second time.
+    counts_subquery = stmt.subquery()
+    origin_counts = {slug: 0 for slug in ORIGIN_SLUGS}
+    for origin_value, count in db.execute(
+        select(counts_subquery.c.origin, func.count()).group_by(counts_subquery.c.origin)
+    ).all():
+        origin_counts[origin_value] = count
+
+    if origin_slugs is not None:
+        stmt = stmt.where(origin_expr.in_(origin_slugs))
+
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
 
     stmt = stmt.order_by(
@@ -304,8 +421,8 @@ def list_sessions(
     ).limit(limit).offset(offset)
 
     items = [
-        _summary(session, slug, count, fav, u_title)
-        for (session, slug, count, fav, u_title) in db.execute(stmt).all()
+        _summary(session, slug, count, fav, u_title, origin_value)
+        for (session, slug, count, fav, u_title, origin_value) in db.execute(stmt).all()
     ]
 
     if matcher is not None:
@@ -332,7 +449,9 @@ def list_sessions(
                 item.match_record_uuid = best.record_uuid
                 item.match_agent_hex_id = best.agent_hex_id
 
-    return SessionList(items=items, total=total or 0)
+    return SessionList(
+        items=items, total=total or 0, origin_counts=OriginCounts(**origin_counts)
+    )
 
 
 @router.get("/sessions/{session_uuid}", response_model=SessionDetail)
@@ -340,7 +459,10 @@ def get_session(
     session_uuid: str, request: Request, db: Session = Depends(get_db)
 ) -> SessionDetail:
     row = db.execute(
-        select(ChatSession, Project.dir_slug, _main_message_count(), _is_favorited(), _user_title())
+        select(
+            ChatSession, Project.dir_slug, _main_message_count(), _is_favorited(),
+            _user_title(), _session_origin(),
+        )
         .join(Project, ChatSession.project_id == Project.id)
         # `_not_archived()` folds "archived" into the same 404 as "unknown session" (§15.1) --
         # an archived session must be indistinguishable from a missing one on the read path.
@@ -349,7 +471,7 @@ def get_session(
     if row is None:
         raise LookupError(f"session {session_uuid} not found")
 
-    session, slug, count, fav, u_title = row
+    session, slug, count, fav, u_title, origin_value = row
     transcripts = db.execute(
         select(Transcript)
         .where(Transcript.session_id == session_uuid)
@@ -358,7 +480,7 @@ def get_session(
 
     live_path = request.app.state.source_root / slug / f"{session_uuid}.jsonl"
 
-    summary = _summary(session, slug, count, fav, u_title)
+    summary = _summary(session, slug, count, fav, u_title, origin_value)
     return SessionDetail(
         **summary.model_dump(),
         transcripts=[TranscriptInfo.model_validate(t) for t in transcripts],

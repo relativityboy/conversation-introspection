@@ -27,6 +27,12 @@ shared with ``routes/sessions.py`` so the two routes can never drift on comma-pa
 #7): threading a project filter into a search that is already pinned to one session risks
 filtering out the very session being read.
 
+``subagent_sessions=`` (Task T13, default ``False``) narrows ``scope=global`` to hide hits/
+groups whose owning session is subagent-origin (:func:`introspect.api.routes.sessions.
+_session_origin`) -- a standalone dispatched run nobody ever typed into; root and empty-origin
+sessions are always included. ``scope=session`` accepts-and-IGNORES it, the same
+already-pinned-session reasoning as ``projects=`` above.
+
 Empty/whitespace ``q`` and a missing ``session`` under ``scope=session`` are the only two
 request-shape errors this route rejects, both as inline 422 problem responses (see
 :func:`_problem`) rather than through ``RequestValidationError`` -- simpler than constructing
@@ -66,6 +72,7 @@ from introspect.api.routes.sessions import (
     _main_message_count,
     _parse_projects_param,
     _parse_select_param,
+    _session_origin,
     _summary,
     _user_title,
 )
@@ -90,10 +97,12 @@ _DEFAULT_SOURCES = frozenset({"chat"})
 
 
 def _parse_sources_param(raw: str | None) -> frozenset[str] | JSONResponse:
-    """Comma-separated tokens from {chat, agents, system, all} -> the index's sources set.
+    """Comma-separated tokens from {chat, subagents, system, all} -> the index's sources set.
 
     ``None`` -> the chat default. ``all`` expands to every bucket. An unknown token is a 422
-    problem, never silently ignored (spec §4: no silent filter surprises).
+    problem, never silently ignored (spec §4: no silent filter surprises). Task T13
+    zero-legacy rename: the OLD value 'agents' is gone, not aliased -- it 422s like any other
+    unrecognized token.
     """
     if raw is None:
         return _DEFAULT_SOURCES
@@ -105,7 +114,7 @@ def _parse_sources_param(raw: str | None) -> frozenset[str] | JSONResponse:
             selected.add(token)
         else:
             return _problem(
-                f"unknown source '{token}' -- valid: chat, agents, system, all"
+                f"unknown source '{token}' -- valid: chat, subagents, system, all"
             )
     return frozenset(selected) if selected else _DEFAULT_SOURCES
 
@@ -163,6 +172,33 @@ def _drop_archived_hits(db: Session, hits: list[SearchHit]) -> list[SearchHit]:
     if not archived:
         return hits
     return [hit for hit in hits if hit.session_uuid not in archived]
+
+
+def _drop_subagent_origin_hits(db: Session, hits: list[SearchHit]) -> list[SearchHit]:
+    """Filter out hits whose owning session is subagent-origin (Task T13; global scope only
+    -- root and empty-origin sessions are always kept, and scope=session accepts-and-ignores
+    the knob entirely, mirroring `projects=`'s ignore-in-session-scope precedent below).
+
+    Same route-level post-filter shape as `_drop_archived_hits` above, reusing the ONE origin
+    rule `routes.sessions._session_origin` defines (never a parallel rule): ONE ``IN`` query
+    resolves which of the page's distinct session uuids are subagent-origin, then those hits
+    are dropped. ``total`` is left as the index reported it, the same accepted-cost precedent
+    `_drop_archived_hits` documents -- subagent-origin sessions are the exception, not the
+    norm, for a global search.
+    """
+    if not hits:
+        return hits
+    session_uuids = {hit.session_uuid for hit in hits}
+    subagent_uuids = set(
+        db.execute(
+            select(ChatSession.session_uuid).where(
+                ChatSession.session_uuid.in_(session_uuids), _session_origin() == "subagent"
+            )
+        ).scalars()
+    )
+    if not subagent_uuids:
+        return hits
+    return [hit for hit in hits if hit.session_uuid not in subagent_uuids]
 
 
 # --- select= category filtering (Task T9), scope=session only --------------------------
@@ -388,14 +424,15 @@ def _hit_out(hit: SearchHit, agent_hex_by_transcript: dict[int, str | None]) -> 
 
 def _session_summary(db: Session, session_uuid: str) -> SessionSummary:
     """Build one SessionSummary via the same query shape ``sessions.get_session`` uses."""
-    session, slug, count, fav, u_title = db.execute(
+    session, slug, count, fav, u_title, origin_value = db.execute(
         select(
-            ChatSession, Project.dir_slug, _main_message_count(), _is_favorited(), _user_title()
+            ChatSession, Project.dir_slug, _main_message_count(), _is_favorited(),
+            _user_title(), _session_origin(),
         )
         .join(Project, ChatSession.project_id == Project.id)
         .where(ChatSession.session_uuid == session_uuid)
     ).one()
-    return _summary(session, slug, count, fav, u_title)
+    return _summary(session, slug, count, fav, u_title, origin_value)
 
 
 def _group_hits(
@@ -443,6 +480,7 @@ def search(
     # namespace and used throughout this route function; a param named `select` would shadow
     # it. Aliased exactly like `sessions.py`'s `list_messages` does for the same reason.
     select_: str | None = Query(default=None, alias="select"),
+    subagent_sessions: bool = False,
     limit: int = _DEFAULT_LIMIT,
     offset: int = 0,
 ) -> GlobalSearchResult | SessionSearchResult | JSONResponse:
@@ -469,6 +507,9 @@ def search(
         # `projects=` is accepted and explicitly IGNORED here (spec critique #7): threading it
         # into a session-scope search would risk filtering out the very session being read, so
         # this scope never passes project_slugs to the index -- unlike global scope below.
+        # `subagent_sessions=` (Task T13) is accepted and explicitly IGNORED here too, for the
+        # identical reason: the session is already pinned by `session=`, so filtering it out
+        # by its own origin would be self-defeating.
         if id_shaped:
             hits, total = _api_message_id_hits(
                 db, q, session_uuid=session, project_slugs=None, limit=limit, offset=offset
@@ -495,5 +536,7 @@ def search(
             db, q, project_slugs=project_slugs, sources=source_set, limit=limit, offset=offset
         )
     hits = _drop_archived_hits(db, hits)
+    if not subagent_sessions:
+        hits = _drop_subagent_origin_hits(db, hits)
     agent_hex = _agent_hex_by_transcript(db, hits)
     return GlobalSearchResult(groups=_group_hits(db, hits, agent_hex), total=total)

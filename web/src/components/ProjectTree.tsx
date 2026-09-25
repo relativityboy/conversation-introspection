@@ -10,6 +10,13 @@ export interface ProjectTreeProps {
   fav: boolean
   chips: string[]
   search: string
+  // Task T16: mirrors Sidebar's own reveal-toggle state -- ONE `?subagents=1` toggle governs
+  // BOTH the flat list and this tree view (owner ruling 2026-09-24: "the sidebar IS the main
+  // list in both modes"). false (default) hides subagent-origin sessions from every query this
+  // component makes, the same way Sidebar's own useSessions call does; true omits `origin`
+  // entirely (every origin, per the API's "absent = all" contract). Sidebar.tsx owns computing
+  // and toggling this boolean; ProjectTree only consumes it.
+  showSubagents: boolean
 }
 
 const SKELETON_ROWS = 3
@@ -63,7 +70,7 @@ const GROUP_HEADER_STYLE: CSSProperties = {
   ...STICKY_HEADER,
 }
 
-export function ProjectTree({ q, fav, chips, search }: ProjectTreeProps) {
+export function ProjectTree({ q, fav, chips, search, showSubagents }: ProjectTreeProps) {
   // Manual expand state survives filtered-mode roundtrips: FilteredTree never touches it (D3).
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const toggle = (slug: string) =>
@@ -88,7 +95,16 @@ export function ProjectTree({ q, fav, chips, search }: ProjectTreeProps) {
   }, [projects])
 
   if (q.length > 0 || fav)
-    return <FilteredTree q={q} fav={fav} chips={chips} search={search} labels={labels} />
+    return (
+      <FilteredTree
+        q={q}
+        fav={fav}
+        chips={chips}
+        search={search}
+        labels={labels}
+        showSubagents={showSubagents}
+      />
+    )
   return (
     <BrowseTree
       chips={chips}
@@ -96,6 +112,7 @@ export function ProjectTree({ q, fav, chips, search }: ProjectTreeProps) {
       expanded={expanded}
       onToggle={toggle}
       labels={labels}
+      showSubagents={showSubagents}
     />
   )
 }
@@ -113,9 +130,10 @@ interface BrowseTreeProps {
   expanded: ReadonlySet<string>
   onToggle: (slug: string) => void
   labels: ReadonlyMap<string, string>
+  showSubagents: boolean
 }
 
-function BrowseTree({ chips, search, expanded, onToggle, labels }: BrowseTreeProps) {
+function BrowseTree({ chips, search, expanded, onToggle, labels, showSubagents }: BrowseTreeProps) {
   const { data, isLoading, isError } = useProjects()
 
   if (isLoading) return <SkeletonRows />
@@ -154,7 +172,7 @@ function BrowseTree({ chips, search, expanded, onToggle, labels }: BrowseTreePro
             </button>
             {open && (
               <div style={{ paddingLeft: 14 }}>
-                <ProjectChildren slug={p.dir_slug} search={search} />
+                <ProjectChildren slug={p.dir_slug} search={search} showSubagents={showSubagents} />
               </div>
             )}
           </div>
@@ -164,8 +182,20 @@ function BrowseTree({ chips, search, expanded, onToggle, labels }: BrowseTreePro
   )
 }
 
-function ProjectChildren({ slug, search }: { slug: string; search: string }) {
-  const { data, isLoading, isError, refetch } = useSessions({ projects: [slug] })
+function ProjectChildren({
+  slug,
+  search,
+  showSubagents,
+}: {
+  slug: string
+  search: string
+  showSubagents: boolean
+}) {
+  const { data, isLoading, isError, refetch } = useSessions({
+    projects: [slug],
+    // Task T16: same default-hides / reveal-omits shape as Sidebar's own useSessions call.
+    ...(showSubagents ? {} : { origin: ['root', 'empty'] }),
+  })
 
   if (isLoading) return <SkeletonRows count={1} />
   if (isError) {
@@ -199,7 +229,7 @@ interface FilteredTreeProps extends ProjectTreeProps {
   labels: ReadonlyMap<string, string>
 }
 
-function FilteredTree({ q, fav, chips, search, labels }: FilteredTreeProps) {
+function FilteredTree({ q, fav, chips, search, labels, showSubagents }: FilteredTreeProps) {
   // ONE flat query — never per-project — is the whole point of filtered mode (spec §4.5): a
   // search or ★ Favorites toggle prunes the tree to matches across ALL projects at once, not
   // project-by-project. `expanded` (browse mode's manual toggle state) is never touched here.
@@ -207,6 +237,8 @@ function FilteredTree({ q, fav, chips, search, labels }: FilteredTreeProps) {
     q: q || undefined,
     favorite: fav || undefined,
     ...(chips.length > 0 ? { projects: chips } : {}),
+    // Task T16: same default-hides / reveal-omits shape as Sidebar's own useSessions call.
+    ...(showSubagents ? {} : { origin: ['root', 'empty'] }),
   })
   if (isLoading) return <SkeletonRows />
   if (isError) return <p style={MIST_TEXT}>archive offline</p>

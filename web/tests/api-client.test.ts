@@ -140,6 +140,39 @@ describe('query-string building', () => {
     expect(url.searchParams.get('sources')).toBe('all')
   })
 
+  // Task T14 --------------------------------------------------------------------------------
+
+  it('joins a non-empty origin filter with commas (fetchSessions)', async () => {
+    await fetchSessions({ origin: ['root', 'empty'] })
+
+    const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    const url = new URL(calledUrl, 'http://localhost')
+    expect(url.searchParams.get('origin')).toBe('root,empty')
+  })
+
+  it('omits the origin param entirely when not given (fetchSessions) — the reveal-all request', async () => {
+    await fetchSessions({})
+
+    const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(calledUrl).toBe('/api/v1/sessions')
+  })
+
+  it('omits subagent_sessions entirely when not given (fetchSearch)', async () => {
+    await fetchSearch('foo', 'global')
+
+    const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    const url = new URL(calledUrl, 'http://localhost')
+    expect(url.searchParams.has('subagent_sessions')).toBe(false)
+  })
+
+  it('sends subagent_sessions=true when explicitly passed (fetchSearch)', async () => {
+    await fetchSearch('foo', 'global', undefined, undefined, undefined, undefined, undefined, true)
+
+    const calledUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    const url = new URL(calledUrl, 'http://localhost')
+    expect(url.searchParams.get('subagent_sessions')).toBe('true')
+  })
+
   it('serializes view verbatim when provided (fetchMessages)', async () => {
     await fetchMessages(42, { view: 'chat-harness' })
 

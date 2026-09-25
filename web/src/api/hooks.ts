@@ -48,7 +48,8 @@ const searchKey = (
   sessionUuid: string | undefined,
   projects: string[] | undefined,
   select: string | undefined,
-) => ['search', q, scope, sessionUuid, projects, select] as const
+  subagentSessions: boolean | undefined,
+) => ['search', q, scope, sessionUuid, projects, select, subagentSessions] as const
 const rawRecordKey = (uuid: string) => ['rawRecord', uuid] as const
 const statusKey = ['status'] as const
 const projectsKey = ['projects'] as const
@@ -98,19 +99,28 @@ export function useMessages(transcriptId: number, opts: MessagesOptions = {}) {
 // passing it through (even as an explicit `undefined`): a bare 6-arg call when `select` is
 // undefined keeps every pre-T10 `fetchSearch` call-shape assertion byte-identical, since JS
 // records the exact arguments a call site writes, not the callee's full parameter list.
+// `subagentSessions` (Task T14, global-scope "include subagent sessions" toggle) is threaded the
+// SAME conditional way: only true when the SearchPage toggle is explicitly on. Session-scope
+// callers (ConversationSearchResults) never pass it, so their call shape is completely untouched
+// by this task.
 export function useSearch(
   q: string,
   scope: SearchScope,
   sessionUuid?: string,
   projects?: string[],
   select?: string,
+  subagentSessions?: boolean,
 ) {
   return useQuery({
-    queryKey: searchKey(q, scope, sessionUuid, projects, select),
-    queryFn: () =>
-      select !== undefined
+    queryKey: searchKey(q, scope, sessionUuid, projects, select, subagentSessions),
+    queryFn: () => {
+      if (subagentSessions) {
+        return fetchSearch(q, scope, sessionUuid, undefined, undefined, projects, select, true)
+      }
+      return select !== undefined
         ? fetchSearch(q, scope, sessionUuid, undefined, undefined, projects, select)
-        : fetchSearch(q, scope, sessionUuid, undefined, undefined, projects),
+        : fetchSearch(q, scope, sessionUuid, undefined, undefined, projects)
+    },
     enabled: q.trim().length > 0,
   })
 }

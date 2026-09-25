@@ -34,6 +34,9 @@ class SessionSummary(BaseModel):
     last_activity_at: datetime | None
     message_count: int
     favorite: bool
+    # 'root' | 'subagent' | 'empty' -- computed, not stored (Task T13). See
+    # introspect.api.routes.sessions._session_origin for the rule.
+    origin: str
     # Populated by GET /sessions?q= ONLY for rows matched by conversational content and NOT by
     # uuid/title (a <mark>-wrapped best snippet); null on unfiltered lists, detail, and title/
     # uuid matches. See routes/sessions.py `list_sessions` for the match-attribution rule.
